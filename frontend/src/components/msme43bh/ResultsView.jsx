@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Download, Search, Filter as FilterIcon, AlertCircle, CheckCheck, ShieldOff, BadgeCheck,
-  Wallet,
+  Wallet, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { MSME_API as API, formatINR, formatINRCompact, formatDate } from "@/lib/msme-api";
@@ -23,6 +23,32 @@ function StatusBadge({ status }) {
     <span className={`status-badge ${cls}`} data-testid={`status-${status.toLowerCase()}`}>
       {status}
     </span>
+  );
+}
+
+function SortableTh({ label, colKey, sort, onSort, numeric = false }) {
+  const active = sort.key === colKey;
+  const cls = [
+    "sortable",
+    numeric ? "num" : "",
+    active ? (sort.dir === "asc" ? "sort-asc" : "sort-desc") : "",
+  ].filter(Boolean).join(" ");
+  return (
+    <th
+      className={cls}
+      onClick={() => onSort(colKey)}
+      data-testid={`sort-th-${colKey}`}
+      title="Click to sort"
+    >
+      <span className="inline-flex items-center align-middle">
+        <span>{label}</span>
+        <span className="sort-marker" aria-hidden="true">
+          {active
+            ? (sort.dir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)
+            : <ChevronUp size={11} style={{ opacity: 0.3 }} />}
+        </span>
+      </span>
+    </th>
   );
 }
 
@@ -85,9 +111,18 @@ function KpiCard({ label, sub, value, hint, active, onClick, tone = "neutral", t
 export default function ResultsView({ session, results, onRecompute }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
 
   const summary = results?.summary;
   const rows = results?.audit_rows || [];
+
+  const toggleSort = (key) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: "asc" },
+    );
+  };
 
   const filtered = useMemo(() => {
     let out = rows;
@@ -99,8 +134,32 @@ export default function ResultsView({ session, results, onRecompute }) {
         (r.voucher_no || "").toLowerCase().includes(q),
       );
     }
+    if (sort.key) {
+      const numericKeys = new Set(["bill_amount", "disallowance", "delay_days"]);
+      const dateKeys = new Set(["voucher_date", "statutory_due_date", "payment_date"]);
+      const sign = sort.dir === "asc" ? 1 : -1;
+      out = [...out].sort((a, b) => {
+        let av = a[sort.key];
+        let bv = b[sort.key];
+        if (numericKeys.has(sort.key)) {
+          av = av === null || av === undefined ? -Infinity : Number(av);
+          bv = bv === null || bv === undefined ? -Infinity : Number(bv);
+          return (av - bv) * sign;
+        }
+        if (dateKeys.has(sort.key)) {
+          av = av ? new Date(av).getTime() : -Infinity;
+          bv = bv ? new Date(bv).getTime() : -Infinity;
+          return (av - bv) * sign;
+        }
+        av = (av ?? "").toString().toLowerCase();
+        bv = (bv ?? "").toString().toLowerCase();
+        if (av < bv) return -1 * sign;
+        if (av > bv) return 1 * sign;
+        return 0;
+      });
+    }
     return out;
-  }, [rows, filter, search]);
+  }, [rows, filter, search, sort]);
 
   const exportXlsx = () => {
     if (!session?.id) return;
@@ -232,33 +291,45 @@ export default function ResultsView({ session, results, onRecompute }) {
       <div className="border border-gray-200 rounded-sm overflow-hidden">
         <div className="max-h-[640px] overflow-auto">
           <table className="audit-table" data-testid="audit-table">
+            <colgroup>
+              <col style={{ width: "16%" }} />{/* Creditor */}
+              <col style={{ width: "9%" }} />{/* Invoice # */}
+              <col style={{ width: "8%" }} />{/* Bill Date */}
+              <col style={{ width: "10%" }} />{/* Amount */}
+              <col style={{ width: "11%" }} />{/* Statutory Due */}
+              <col style={{ width: "8%" }} />{/* Payment Date */}
+              <col style={{ width: "7%" }} />{/* Delay */}
+              <col style={{ width: "9%" }} />{/* Status */}
+              <col style={{ width: "10%" }} />{/* Disallowance */}
+              <col style={{ width: "12%" }} />{/* Reason (~half of earlier) */}
+            </colgroup>
             <thead>
               <tr>
-                <th style={{ minWidth: 180 }}>Creditor</th>
-                <th>Invoice #</th>
-                <th>Bill Date</th>
-                <th className="num">Amount</th>
-                <th style={{ minWidth: 150 }}>Statutory Due Date</th>
-                <th>Payment Date</th>
-                <th className="num">Delay (Days)</th>
-                <th>Status</th>
-                <th className="num">Disallowance</th>
-                <th style={{ minWidth: 280, maxWidth: 360 }}>Reason</th>
+                <SortableTh label="Creditor" colKey="ledger_name" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Invoice #" colKey="voucher_no" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Bill Date" colKey="voucher_date" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Amount" colKey="bill_amount" sort={sort} onSort={toggleSort} numeric />
+                <SortableTh label="Statutory Due Date" colKey="statutory_due_date" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Payment Date" colKey="payment_date" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Delay (Days)" colKey="delay_days" sort={sort} onSort={toggleSort} numeric />
+                <SortableTh label="Status" colKey="status" sort={sort} onSort={toggleSort} />
+                <SortableTh label="Disallowance" colKey="disallowance" sort={sort} onSort={toggleSort} numeric />
+                <SortableTh label="Reason" colKey="reason" sort={sort} onSort={toggleSort} />
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id} data-testid="audit-table-row">
                   <td>
-                    <div className="font-medium text-gray-900">{r.ledger_name}</div>
-                    <div className="text-[11px] text-gray-500 font-mono">{r.analysis_type}</div>
+                    <div className="font-medium text-gray-900 text-[12px] leading-tight">{r.ledger_name}</div>
+                    <div className="text-[10px] text-gray-500 font-mono mt-0.5">{r.analysis_type}</div>
                   </td>
-                  <td className="font-mono text-xs">{r.voucher_no}</td>
-                  <td className="font-mono text-xs">{formatDate(r.voucher_date)}</td>
+                  <td className="font-mono text-[11px]">{r.voucher_no}</td>
+                  <td className="font-mono text-[11px]">{formatDate(r.voucher_date)}</td>
                   <td className="num">{formatINR(r.bill_amount)}</td>
-                  <td className="font-mono text-xs">
+                  <td className="font-mono text-[11px] leading-tight">
                     <div>{formatDate(r.statutory_due_date)}</div>
-                    <div className="text-[10px] text-gray-500">{r.due_date_basis}</div>
+                    <div className="text-[10px] text-gray-500 mt-0.5">{r.due_date_basis}</div>
                     {r.fifo_forced && (
                       <span
                         className="inline-flex items-center mt-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-sm border border-amber-300 bg-amber-50 text-amber-800"
@@ -268,7 +339,7 @@ export default function ResultsView({ session, results, onRecompute }) {
                       </span>
                     )}
                   </td>
-                  <td className="font-mono text-xs">
+                  <td className="font-mono text-[11px]">
                     {r.payment_date ? formatDate(r.payment_date) : <span className="text-amber-600">Unpaid</span>}
                   </td>
                   <td className="num">
@@ -289,8 +360,8 @@ export default function ResultsView({ session, results, onRecompute }) {
                     )}
                   </td>
                   <td
-                    className="text-xs text-gray-700 leading-snug"
-                    style={{ minWidth: 280, maxWidth: 360, whiteSpace: "normal", wordBreak: "break-word" }}
+                    className="text-[11px] text-gray-700 leading-snug"
+                    style={{ whiteSpace: "normal", wordBreak: "break-word" }}
                     data-testid="audit-reason-cell"
                   >
                     {r.reason}

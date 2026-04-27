@@ -211,3 +211,69 @@ body {
     color: #0f172a;
     border-color: #0f172a;
 }
+
+/* ============ 43B(h) audit table ============ */
+.audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+.audit-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f3f4f1;
+    border-bottom: 1px solid #e5e5e0;
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #3d3d3a;
+    text-align: left;
+    padding: 9px 10px;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+.audit-table thead th.num {
+    text-align: right;
+}
+.audit-table tbody td {
+    border-bottom: 1px solid #ececea;
+    padding: 9px 10px;
+    font-size: 12px;
+    color: #1f2937;
+    vertical-align: top;
+    word-break: break-word;
+}
+.audit-table tbody td.num {
+    text-align: right;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.audit-table tbody tr:hover {
+    background: #f9fafb;
+}
+
+/* Sortable header affordance */
+.audit-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.12s;
+}
+.audit-table th.sortable:hover {
+    background: #e8ebe3;
+    color: #0f172a;
+}
+.audit-table th .sort-marker {
+    display: inline-block;
+    margin-left: 4px;
+    color: #9ca3af;
+    font-size: 9px;
+    transform: translateY(-1px);
+}
+.audit-table th.sort-asc .sort-marker,
+.audit-table th.sort-desc .sort-marker {
+    color: #0f172a;
+}
