@@ -1,0 +1,146 @@
+{
+  "theme_and_archetype": {
+    "domain": "Finance, Accounting, Tax Audit",
+    "theme": "Light",
+    "archetype": "Archetype 4 (Swiss & High-Contrast) adapted for a 'Fiscal Document' aesthetic.",
+    "reasoning": "A serious tax compliance product used by Chartered Accountants needs authoritative precision, dense data legibility, and an accountant-friendly tabular look. We blend Swiss structural clarity with warm, ledger-like off-whites."
+  },
+  "typography": {
+    "rules": [
+      "No Inter or Roboto.",
+      "Use tabular figures for numbers."
+    ],
+    "fonts": {
+      "headings": {
+        "family": "Cabinet Grotesk",
+        "weights": ["400", "500"],
+        "usage": "H1, H2, Page Titles"
+      },
+      "body": {
+        "family": "IBM Plex Sans",
+        "weights": ["400", "500"],
+        "usage": "General text, labels, instructions"
+      },
+      "monospace": {
+        "family": "IBM Plex Mono",
+        "weights": ["400", "500"],
+        "usage": "All table data cells containing numbers, voucher numbers, and dates."
+      }
+    },
+    "scales": {
+      "h1": "text-3xl sm:text-4xl font-medium tracking-tight",
+      "h2": "text-xl sm:text-2xl font-medium tracking-tight",
+      "h3": "text-lg font-medium",
+      "body": "text-sm leading-relaxed",
+      "table_header": "text-xs font-medium uppercase tracking-[0.05em]",
+      "table_data": "text-sm font-mono tracking-tight"
+    }
+  },
+  "colors": {
+    "background": {
+      "app": "#F9F9F8",
+      "surface": "#FFFFFF",
+      "sidebar": "#F3F4F1",
+      "table_header": "#F3F4F1",
+      "table_row_hover": "#F9F9F8"
+    },
+    "text": {
+      "primary": "#111110",
+      "secondary": "#52524E",
+      "muted": "#8A8A83",
+      "inverse": "#FFFFFF",
+      "accent": "#0F172A"
+    },
+    "borders": {
+      "default": "#E5E5E0",
+      "dark": "#D4D4D0",
+      "focus": "#0F172A"
+    },
+    "accents": {
+      "primary": "#0F172A",
+      "primary_hover": "#1E293B",
+      "destructive": "#991B1B"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "The 'Control Room' Grid - dense, structural, no wasted space. Use 1px crisp borders (Grid Borders pattern) and eliminate soft drop shadows.",
+    "app_shell": {
+      "structure": "grid grid-cols-1 md:grid-cols-[260px_1fr] h-screen overflow-hidden bg-[#F9F9F8]",
+      "sidebar": "border-r border-[#E5E5E0] bg-[#F3F4F1] flex flex-col",
+      "main": "flex flex-col h-full overflow-y-auto"
+    },
+    "containers": "p-6 md:p-10",
+    "tables": "Dense padding (py-2.5 px-3). Text left-aligned. Numbers right-aligned. Sticky headers.",
+    "borders": "Use rounded-sm or rounded-none to emphasize the technical/fiscal nature of the tool."
+  },
+  "components_customization": {
+    "Button": "bg-[#0F172A] text-white hover:bg-[#1E293B] rounded-sm shadow-none font-medium",
+    "Card": "bg-white border border-[#E5E5E0] rounded-sm shadow-none",
+    "Table": "border-collapse w-full text-sm. Header bg-[#F3F4F1] border-y border-[#E5E5E0]. Rows border-b border-[#E5E5E0].",
+    "Badge": "bg-slate-100 text-slate-800 border border-slate-200 rounded-sm px-2 py-0.5 text-xs (Use for mapping chips)",
+    "Input/Select": "border-[#E5E5E0] focus:border-[#0F172A] focus:ring-1 focus:ring-[#0F172A] rounded-sm shadow-none",
+    "Sheet": "Right-side slide-out (w-[600px] or w-[800px]) for detailed transaction audit trail."
+  },
+  "views_and_pages": {
+    "landing_login": {
+      "layout": "Split screen or centered clean card. Left/Background: Elegant, monochromatic paper-like tone or the professional portrait. Right/Center: Clean login box.",
+      "content": "Assure Ecosystem Wordmark. Minimal Google Login Button."
+    },
+    "sidebar_history": {
+      "functionality": "List of past runs. Elements show date, filename, and an 'Archive' hover action.",
+      "styling": "Text-sm, muted colors until hovered."
+    },
+    "step_1_upload": {
+      "layout": "Two stacked dashed-border dropzones (JSON and XLSX).",
+      "styling": "bg-[#F9F9F8] border-2 border-dashed border-[#E5E5E0] p-10 text-center hover:bg-slate-50 transition-colors."
+    },
+    "step_2_mapping": {
+      "layout": "Two structural sections.",
+      "itc_ledger": "Searchable multi-select (Command pattern). Pre-select/suggest ledgers matching 'GST', 'IGST', 'CGST', 'SGST'. Display selected as removable Badges.",
+      "expenditure_exclusion": "Similar to above, but excluding P&L ledgers like 'Depreciation', 'Salaries', 'Interest', 'PF', 'ESI'."
+    },
+    "step_3_report": {
+      "table_columns": [
+        "Ledger/Category",
+        "Col 2: Total",
+        "Col 3: Exempt Supply",
+        "Col 4: Composition Dealer",
+        "Col 5: Other Registered",
+        "Col 6: Total (3+4+5)",
+        "Col 7: Unregistered"
+      ],
+      "interaction": "Every numeric cell in Col 2-7 is clickable (cursor-pointer, hover:underline or slight bg change). Opens Drill-down Sheet.",
+      "header_actions": "Excel Export Button (Download icon)."
+    },
+    "drilldown_sheet": {
+      "content": "Transaction list: Date, Voucher No, Ledger Name, Party Name, Amount, Reason. High density table inside the sheet."
+    }
+  },
+  "specific_rules": {
+    "number_formatting": "Must use Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }). Do NOT display the Rupee symbol (\u20b9). Example: 1,50,000.00",
+    "testing": "All interactive elements, buttons, table cells, and form inputs MUST include data-testid attributes (e.g., data-testid='upload-json-input', data-testid='cell-col3-row1').",
+    "icons": "Use Phosphor Icons (@phosphor-icons/react) for a sharp, technical look.",
+    "javascript_only": "All guidelines apply to .js / .jsx files. Do not use TypeScript (.ts/.tsx)."
+  },
+  "media_assets": {
+    "images": [
+      {
+        "url": "https://images.pexels.com/photos/8297076/pexels-photo-8297076.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Professional Chartered Accountant portrait",
+        "usage_category": "landing_page_visual",
+        "instructions": "Use as a high-quality, professional background or side-panel image on the login/landing page to establish trust. Apply a grayscale or heavy navy/slate duotone overlay (e.g., mix-blend-multiply with bg-slate-900) to keep it from looking like a cheap stock photo and integrate perfectly with the Swiss UI."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Install and configure fonts: Cabinet Grotesk (headings), IBM Plex Sans (body), IBM Plex Mono (numbers/tables).",
+    "Install @phosphor-icons/react for icons.",
+    "Initialize Tailwind and Shadcn in a .js/.jsx React environment.",
+    "Implement the Layout shell with a sidebar and main content area.",
+    "Build the 3-step workflow (Upload -> Mapping -> Clause 44 Report) in the main area.",
+    "Override default Shadcn styles to remove border-radius (use rounded-sm at most) and drop-shadows, matching the 'Control Room / Fiscal Document' aesthetic.",
+    "Ensure the final Clause 44 table heavily uses the monospace font for numbers and strictly formats to the Indian numbering system.",
+    "Build the drill-down Sheet for transaction-level audit trails when a table cell is clicked.",
+    "Mock the authentication and Excel generation if backend integration is out of scope, but UI states must exist."
+  ]
+}

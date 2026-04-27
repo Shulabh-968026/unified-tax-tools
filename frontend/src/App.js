@@ -1,54 +1,51 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import "@/index.css";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { AuthProvider } from "@/lib/auth";
+import { Toaster } from "@/components/ui/sonner";
+import Login from "@/pages/Login";
+import AuthCallback from "@/pages/AuthCallback";
+import ProtectedRoute from "@/pages/ProtectedRoute";
+import ClientList from "@/pages/ClientList";
+import ClientUtilities from "@/pages/ClientUtilities";
+import ClientHome from "@/pages/ClientHome";
+import { MappingDashboard, ReportDashboard } from "@/pages/Dashboard";
+import Consolidated from "@/pages/Consolidated";
+import AdminUsers from "@/pages/AdminUsers";
+import Msme43bhLanding from "@/pages/msme43bh/Landing";
+import Msme43bhSessionDashboard from "@/pages/msme43bh/SessionDashboard";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+function AppRouter() {
+  const location = useLocation();
+  if (location.hash?.includes("session_id=")) {
+    return <AuthCallback/>;
+  }
 
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <Routes>
+      <Route path="/" element={<Navigate to="/dashboard" replace/>}/>
+      <Route path="/login" element={<Login/>}/>
+      <Route path="/dashboard" element={<ProtectedRoute><ClientList/></ProtectedRoute>}/>
+      <Route path="/dashboard/admin" element={<ProtectedRoute><AdminUsers/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId" element={<ProtectedRoute><ClientUtilities/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/clause-44" element={<ProtectedRoute><ClientHome/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/clause-44/consolidated/:period" element={<ProtectedRoute><Consolidated/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/msme-43bh" element={<ProtectedRoute><Msme43bhLanding/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/msme-43bh/sessions/:sid" element={<ProtectedRoute><Msme43bhSessionDashboard/></ProtectedRoute>}/>
+      <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><MappingDashboard/></ProtectedRoute>}/>
+      <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><ReportDashboard/></ProtectedRoute>}/>
+      <Route path="*" element={<Navigate to="/dashboard" replace/>}/>
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRouter/>
+        <Toaster position="top-right" richColors closeButton />
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}

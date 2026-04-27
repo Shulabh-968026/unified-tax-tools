@@ -1,0 +1,31 @@
+"""DAO layer for the 43B(h) MSME Disallowance utility. All Mongo access lives here."""
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
+
+from core.db import db
+
+SESSIONS = db.msme_sessions
+
+
+async def insert_session(doc: Dict[str, Any]) -> None:
+    await SESSIONS.insert_one(doc)
+
+
+async def find_session(sid: str) -> Optional[Dict[str, Any]]:
+    return await SESSIONS.find_one({"id": sid}, {"_id": 0})
+
+
+async def delete_session(sid: str) -> int:
+    res = await SESSIONS.delete_one({"id": sid})
+    return res.deleted_count
+
+
+async def list_sessions(client_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    query: Dict[str, Any] = {}
+    if client_id:
+        query["client_id"] = client_id
+    return await SESSIONS.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+async def set_session_fields(sid: str, fields: Dict[str, Any]) -> None:
+    await SESSIONS.update_one({"id": sid}, {"$set": fields})
