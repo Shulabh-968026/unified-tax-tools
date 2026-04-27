@@ -76,12 +76,23 @@ lib/
 - [x] Frontend routes + utility card wired for 43B(h)
 - [x] `utilities.jsx` → 43BH MSME Disallowance marked `status="active"`
 - [x] Frontend compiles clean; backend boots clean; endpoints return expected auth 401s
-- [ ] End-to-end testing with real login + upload flow (user to verify)
+- [x] Whitelisted `shulabh@transformautomations.com` as admin (invitations collection)
+- [x] 43B(h) Results table polish (2026-04-27)
+      • Amount & Disallowance right-justified
+      • All columns sortable (click header, chevron indicator)
+      • Reason column shrunk to ~12% width, wraps naturally
+      • Column widths via `<colgroup>`; denser fonts on mono columns
+      • Sticky table header on scroll
+- [x] Bug fix: removed duplicate "FIFO Forced" in Statutory Due Date cell
+      (backend `due_date_basis` now says "Voucher Date + 45 days"; pill badge is the sole "FIFO Forced" marker)
+- [ ] End-to-end testing with real login + upload flow (user to verify / to be done after more changes)
 
-## Phase 2 backlog
-- [ ] Migrate 43B(h) pages from shadcn → MUI (requested by user), preserving current look
+## Phase 2 backlog (pick up tomorrow)
+- [ ] Start the next module (user to specify which utility)
+- [ ] Migrate 43B(h) pages from shadcn → MUI + react-toastify (preserve current look)
 - [ ] Migrate Clause 44 pages from shadcn → MUI
 - [ ] Replace sonner with react-toastify (once MUI migration happens)
+- [ ] Run the testing sub-agent once the next round of changes is in
 
 ## Phase 3 / future utilities (status="soon" in `utilities.jsx`)
 GST Turnover Recon · TDS Disallowance & Recon · TDS Clause 34 — 3CD · AIS/TIS/26AS Recon · Fixed Assets · Balance Confirmation · GST Refund Clause 31
