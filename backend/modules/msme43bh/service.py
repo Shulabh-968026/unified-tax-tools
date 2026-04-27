@@ -200,7 +200,7 @@ def compute_disallowance(
             if force_fifo:
                 vd = date_from_iso(b["voucher_date"])
                 stat_due = (vd + timedelta(days=STATUTORY_DAYS)).isoformat() if vd else None
-                due_basis = "FIFO Forced"
+                due_basis = "Voucher Date + 45 days"
                 fifo_forced = b["analysis_type"] != "FIFO" and bool(b["due_date"])
             elif b["analysis_type"] == "FIFO":
                 vd = date_from_iso(b["voucher_date"])
