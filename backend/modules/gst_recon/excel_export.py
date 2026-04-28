@@ -16,7 +16,7 @@ file — every number in the dashboard cross-references the detailed sheets.
 from __future__ import annotations
 import io
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -208,9 +208,10 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
     period_results: {period_label: match_dict from match_invoices()}
     """
     ws.title = title
-    headers = ["Month", "Category", "Party GSTIN", "Books #", f"{portal_label} #",
+    headers = ["Month", "Category", "Party GSTIN", "Party Name",
+               "Books #", f"{portal_label} #",
                "Books Total", f"{portal_label} Total", "Δ Total",
-               "Books Date", f"{portal_label} Date", "Fuzzy"]
+               "Books Date", f"{portal_label} Date", "Fuzzy", "Relaxed"]
     _write_header(ws, 1, headers)
 
     cat_fills = {
@@ -234,6 +235,7 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
                     row = [
                         period_label, cat,
                         b.get("party_gstin") or p.get("party_gstin") or "",
+                        b.get("party_name") or p.get("party_name") or "",
                         b.get("voucher_no") or "",
                         p.get("invoice_no") or "",
                         b.get("total") or 0,
@@ -242,12 +244,14 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
                         item.get("books_date") or "",
                         item.get("portal_date") or "",
                         item.get("fuzzy_score") or "",
+                        "Yes" if item.get("relaxed_match") else "",
                     ]
                 else:
                     side = item if isinstance(item, dict) else {}
                     row = [
                         period_label, cat,
                         side.get("party_gstin", ""),
+                        side.get("party_name", ""),
                         side.get("voucher_no", "") if cat == "missing_in_portal" else "",
                         side.get("invoice_no", "") if cat == "missing_in_books" else "",
                         side.get("total", 0) if cat == "missing_in_portal" else 0,
@@ -255,12 +259,12 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
                         0,
                         side.get("date", "") if cat == "missing_in_portal" else "",
                         side.get("date", "") if cat == "missing_in_books" else "",
-                        "",
+                        "", "",
                     ]
                 _write_row(ws, r, row,
-                           formats=[None, None, None, None, None,
+                           formats=[None, None, None, None, None, None,
                                     INR_FMT, INR_FMT, INR_FMT,
-                                    None, None, None],
+                                    None, None, None, None],
                            fill=fill, font=font)
                 r += 1
 
@@ -268,7 +272,48 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
         ws.cell(row=2, column=1, value="No vouchers in this section").font = Font(italic=True, color="6B7280")
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
 
-    _set_widths(ws, [10, 20, 22, 18, 22, 14, 14, 12, 12, 12, 8])
+    _set_widths(ws, [10, 20, 22, 30, 18, 22, 14, 14, 12, 12, 12, 8, 8])
+    ws.freeze_panes = "A2"
+
+
+def _sheet_partywise(ws, title: str, partywise: Dict[str, Any], portal_label: str,
+                     r3b_total: float = 0.0):
+    """Annual Party-wise Summary — one row per GSTIN, sorted by largest variance first.
+    Columns: GSTIN | Party Name | Books | GSTR-3B (annual aggregate) | Portal Total | Books − Portal | Portal − R3B"""
+    ws.title = title
+    rows = partywise.get("rows", []) or []
+    totals = partywise.get("totals", {}) or {}
+
+    headers = ["Party GSTIN", "Party Name", "Books (Total)", "GSTR-3B",
+               f"{portal_label} (Total)", "Books − Portal", f"{portal_label} − R3B"]
+    _write_header(ws, 1, headers)
+
+    for i, r in enumerate(rows):
+        # R3B is monthly-only (no party detail); show "—" per row
+        _write_row(ws, 2 + i, [
+            r["party_gstin"], r["party_name"],
+            r["books_total"], "—", r["portal_total"],
+            r["diff_total"], "—",
+        ], formats=[None, None, INR_FMT, None, INR_FMT, INR_FMT, None],
+           fill=(SECTION_FILL if i % 2 else None))
+
+    if rows:
+        annual_row = 2 + len(rows)
+        portal_minus_r3b = round(totals.get("portal_total", 0) - r3b_total, 2)
+        _write_row(ws, annual_row, [
+            "ANNUAL TOTAL", f"{len(rows)} parties",
+            totals.get("books_total", 0),
+            r3b_total,
+            totals.get("portal_total", 0),
+            totals.get("diff_total", 0),
+            portal_minus_r3b,
+        ], formats=[None, None, INR_FMT, INR_FMT, INR_FMT, INR_FMT, INR_FMT],
+           fill=TOTAL_FILL, font=TOTAL_FONT)
+    else:
+        ws.cell(row=2, column=1, value="No party-wise records").font = Font(italic=True, color="6B7280")
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+
+    _set_widths(ws, [22, 36, 16, 16, 18, 16, 18])
     ws.freeze_panes = "A2"
 
 
@@ -336,10 +381,33 @@ def _sheet_metadata(ws, run: Dict[str, Any]):
 # ============================ Public entry ====================================
 def build_workbook(run: Dict[str, Any], summary: Dict[str, Any],
                    outward_matches: Dict[str, Dict[str, Any]],
-                   inward_matches: Dict[str, Dict[str, Any]]) -> bytes:
-    """Build the full audit workbook and return XLSX bytes."""
+                   inward_matches: Dict[str, Dict[str, Any]],
+                   partywise_outward: Optional[Dict[str, Any]] = None,
+                   partywise_inward: Optional[Dict[str, Any]] = None) -> bytes:
+    """Build the full audit workbook and return XLSX bytes.
+
+    Sheet order:
+      1. Dashboard
+      2. Annual Party-wise (Outward) — main reconciliation working-paper for sales
+      3. Annual Party-wise (Inward)  — main reconciliation working-paper for ITC
+      4. 12-Month Summary           — month-on-month detail
+      5. Outward Vouchers           — voucher-level Books↔GSTR-1
+      6. Inward Vouchers            — voucher-level Books↔GSTR-2B
+      7. Pending Classification
+      8. Run Metadata
+    """
+    totals = (summary or {}).get("totals") or {}
+    r3b_outward_total = totals.get("r3b_outward_taxable", 0) or 0
+    r3b_itc_total = totals.get("r3b_itc_total", 0) or 0
+
     wb = Workbook()
     _sheet_dashboard(wb.active, summary, run)
+    if partywise_outward:
+        _sheet_partywise(wb.create_sheet(), "Annual Party-wise (Outward)",
+                         partywise_outward, "GSTR-1", r3b_outward_total)
+    if partywise_inward:
+        _sheet_partywise(wb.create_sheet(), "Annual Party-wise (Inward)",
+                         partywise_inward, "GSTR-2B", r3b_itc_total)
     _sheet_summary(wb.create_sheet(), summary)
     _sheet_voucher_matches(wb.create_sheet(), "Outward Vouchers", outward_matches, "GSTR-1")
     _sheet_voucher_matches(wb.create_sheet(), "Inward Vouchers", inward_matches, "GSTR-2B")

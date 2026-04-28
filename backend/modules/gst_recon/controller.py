@@ -67,6 +67,78 @@ async def _reprocess_books(rid: str, content: bytes, rules: Dict[str, set], all_
         await INV.insert_many([{"run_id": rid, "source": "books", **r} for r in inv_records])
 
 
+async def _build_partywise(rid: str, direction: str) -> Dict[str, Any]:
+    """Aggregate gst_recon_invoices by party_gstin to produce annual party-wise
+    Books vs Portal totals.
+
+    direction='outward' → Books-Sales ↔ GSTR-1
+    direction='inward'  → Books-Purchase ↔ GSTR-2B
+
+    Returns { rows: [{party_gstin, party_name, books_total, portal_total,
+                     books_taxable, portal_taxable, books_tax, portal_tax,
+                     diff_total}], totals }
+    """
+    portal_src = "gstr1" if direction == "outward" else "gstr2b"
+    books = await INV.find(
+        {"run_id": rid, "source": "books", "direction": direction},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(50000)
+    portal = await INV.find(
+        {"run_id": rid, "source": portal_src},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(50000)
+
+    # Group both by party_gstin
+    by_gstin: Dict[str, Dict[str, Any]] = {}
+    for b in books:
+        g = b.get("party_gstin", "")
+        if not g:
+            continue
+        row = by_gstin.setdefault(g, {
+            "party_gstin": g, "party_name": b.get("party_name", ""),
+            "books_total": 0.0, "portal_total": 0.0,
+            "books_taxable": 0.0, "portal_taxable": 0.0,
+            "books_tax": 0.0, "portal_tax": 0.0,
+        })
+        row["books_total"] += float(b.get("total", 0) or 0)
+        row["books_taxable"] += float(b.get("taxable", 0) or 0)
+        row["books_tax"] += sum(float(b.get(k, 0) or 0) for k in ("igst", "cgst", "sgst", "cess"))
+        # Prefer the longer / non-empty name
+        if not row["party_name"] and b.get("party_name"):
+            row["party_name"] = b["party_name"]
+
+    for p in portal:
+        g = p.get("party_gstin", "")
+        if not g:
+            continue
+        row = by_gstin.setdefault(g, {
+            "party_gstin": g, "party_name": p.get("party_name", ""),
+            "books_total": 0.0, "portal_total": 0.0,
+            "books_taxable": 0.0, "portal_taxable": 0.0,
+            "books_tax": 0.0, "portal_tax": 0.0,
+        })
+        row["portal_total"] += float(p.get("total", 0) or 0)
+        row["portal_taxable"] += float(p.get("taxable", 0) or 0)
+        row["portal_tax"] += sum(float(p.get(k, 0) or 0) for k in ("igst", "cgst", "sgst", "cess"))
+        if not row["party_name"] and p.get("party_name"):
+            row["party_name"] = p["party_name"]
+
+    rows = []
+    for g, r in by_gstin.items():
+        for k in ("books_total", "portal_total", "books_taxable", "portal_taxable", "books_tax", "portal_tax"):
+            r[k] = round(r[k], 2)
+        r["diff_total"] = round(r["books_total"] - r["portal_total"], 2)
+        r["diff_taxable"] = round(r["books_taxable"] - r["portal_taxable"], 2)
+        r["diff_tax"] = round(r["books_tax"] - r["portal_tax"], 2)
+        rows.append(r)
+    rows.sort(key=lambda r: -abs(r["diff_total"]))  # largest variance first
+
+    totals = {k: round(sum(r[k] for r in rows), 2) for k in
+              ("books_total", "portal_total", "books_taxable", "portal_taxable",
+               "books_tax", "portal_tax", "diff_total", "diff_taxable", "diff_tax")}
+    return {"direction": direction, "rows": rows, "totals": totals}
+
+
 @router.post("/runs", response_model=RunOut)
 async def create_run(
     payload: RunCreate,
@@ -314,6 +386,7 @@ async def compute_match(
     request: Request,
     period: str,
     direction: str = "outward",
+    relaxed: bool = False,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -321,6 +394,8 @@ async def compute_match(
 
     direction='outward' → Books-Sales ↔ GSTR-1
     direction='inward'  → Books-Purchase ↔ GSTR-2B
+    relaxed=true        → Pass 3 (same gstin+period+total) auto-matches
+                          residual transactions where bill #s and dates differ.
 
     Returns: { matched, value_mismatch, date_mismatch, missing_in_books,
                missing_in_portal, counts }
@@ -343,7 +418,28 @@ async def compute_match(
         {"run_id": rid, "source": portal_src, "period": period},
         {"_id": 0, "run_id": 0, "source": 0},
     ).to_list(20000)
-    return match_invoices(books, portal)
+    return match_invoices(books, portal, relaxed=relaxed)
+
+
+@router.get("/runs/{rid}/partywise")
+async def get_partywise(
+    rid: str,
+    request: Request,
+    direction: str = "inward",
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Annual Party-wise Summary — group voucher records by party_gstin
+    across all months, return Books vs Portal totals per party with variance.
+    direction='outward' (Books vs GSTR-1) | 'inward' (Books vs GSTR-2B)
+    """
+    await _auth(request, session_token, authorization)
+    if direction not in ("outward", "inward"):
+        raise HTTPException(400, "direction must be 'outward' or 'inward'")
+    doc = await COLL.find_one({"id": rid}, {"_id": 0, "id": 1})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+    return await _build_partywise(rid, direction)
 
 
 
@@ -351,6 +447,7 @@ async def compute_match(
 async def export_workbook(
     rid: str,
     request: Request,
+    relaxed: bool = False,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -387,7 +484,7 @@ async def export_workbook(
             {"_id": 0, "run_id": 0, "source": 0},
         ).to_list(20000)
         if b_out or p_out:
-            outward_matches[label] = match_invoices(b_out, p_out)
+            outward_matches[label] = match_invoices(b_out, p_out, relaxed=relaxed)
         # Inward
         b_in = await INV.find(
             {"run_id": rid, "source": "books", "period": period, "direction": "inward"},
@@ -398,10 +495,16 @@ async def export_workbook(
             {"_id": 0, "run_id": 0, "source": 0},
         ).to_list(20000)
         if b_in or p_in:
-            inward_matches[label] = match_invoices(b_in, p_in)
+            inward_matches[label] = match_invoices(b_in, p_in, relaxed=relaxed)
 
-    xlsx_bytes = build_workbook(doc, summary, outward_matches, inward_matches)
-    filename = f"GST_Recon_FY{doc.get('fy', '')}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # Annual Party-wise summary aggregates (both directions)
+    partywise_outward = await _build_partywise(rid, "outward")
+    partywise_inward = await _build_partywise(rid, "inward")
+
+    xlsx_bytes = build_workbook(doc, summary, outward_matches, inward_matches,
+                                partywise_outward, partywise_inward)
+    suffix = "_relaxed" if relaxed else ""
+    filename = f"GST_Recon_FY{doc.get('fy', '')}{suffix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         iter([xlsx_bytes]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

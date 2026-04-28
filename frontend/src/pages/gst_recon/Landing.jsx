@@ -379,53 +379,177 @@ export default function GstReconLanding() {
 function SummaryPanel({ summary, runId }) {
   const { rows, totals, fy } = summary;
   const [drawer, setDrawer] = useState(null); // { period, month_label, direction }
+  const [tab, setTab] = useState("partywise"); // 'partywise' | 'monthly'
+  const [direction, setDirection] = useState("inward"); // partywise direction
 
   return (
     <div className="mt-8 space-y-4" data-testid="summary-panel">
       <DashboardCards totals={totals} rows={rows}/>
 
+      {/* Tab switcher */}
       <div className="border border-gray-200 rounded-sm bg-white overflow-hidden">
-      <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <div className="text-[11px] font-mono uppercase tracking-wider text-gray-600">
-          12-Month Reconciliation · FY {fy}
+        <div className="bg-gray-50 px-2 py-2 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex gap-1">
+            <TabBtn active={tab === "partywise"} onClick={() => setTab("partywise")} testid="tab-partywise">
+              Annual Party-wise
+            </TabBtn>
+            <TabBtn active={tab === "monthly"} onClick={() => setTab("monthly")} testid="tab-monthly">
+              12-Month Reconciliation
+            </TabBtn>
+          </div>
+          <div className="text-[10px] font-mono text-gray-500 pr-2">
+            FY {fy} · all values in INR
+          </div>
         </div>
-        <div className="text-[10px] font-mono text-gray-500">All values in INR · Click portal columns to drill into vouchers</div>
-      </div>
 
-      {/* Outward Turnover */}
-      <ReconTable
-        title="Outward Turnover (Books vs GSTR-1 vs GSTR-3B)"
-        rows={rows}
-        totals={totals}
-        cols={[
-          { key: "books_outward_taxable", label: "Books" },
-          { key: "r1_outward_taxable",    label: "GSTR-1", drillDirection: "outward" },
-          { key: "r3b_outward_taxable",   label: "GSTR-3B" },
-          { key: "var_books_vs_r1_outward", label: "Books − R1", variance: true },
-          { key: "var_r1_vs_r3b_outward",   label: "R1 − R3B",   variance: true },
-        ]}
-        onDrill={(period, monthLabel, direction) => setDrawer({ period, month_label: monthLabel, direction })}
-        testid="summary-outward"
-      />
+        {tab === "partywise" && (
+          <PartywisePanel runId={runId} totals={totals} direction={direction} onDirectionChange={setDirection} onDrill={(period, label, dir) => setDrawer({ period, month_label: label, direction: dir })}/>
+        )}
 
-      {/* ITC */}
-      <ReconTable
-        title="Input Tax Credit (Books vs GSTR-2B vs GSTR-3B)"
-        rows={rows}
-        totals={totals}
-        cols={[
-          { key: "books_itc_total",   label: "Books" },
-          { key: "r2b_itc_total",     label: "GSTR-2B", drillDirection: "inward" },
-          { key: "r3b_itc_total",     label: "GSTR-3B (Net)" },
-          { key: "var_books_vs_r2b_itc", label: "Books − R2B", variance: true },
-          { key: "var_r2b_vs_r3b_itc",   label: "R2B − R3B",   variance: true },
-        ]}
-        onDrill={(period, monthLabel, direction) => setDrawer({ period, month_label: monthLabel, direction })}
-        testid="summary-itc"
-      />
+        {tab === "monthly" && (
+          <>
+            <ReconTable
+              title="Outward Turnover (Books vs GSTR-1 vs GSTR-3B)"
+              rows={rows}
+              totals={totals}
+              cols={[
+                { key: "books_outward_taxable", label: "Books" },
+                { key: "r1_outward_taxable",    label: "GSTR-1", drillDirection: "outward" },
+                { key: "r3b_outward_taxable",   label: "GSTR-3B" },
+                { key: "var_books_vs_r1_outward", label: "Books − R1", variance: true },
+                { key: "var_r1_vs_r3b_outward",   label: "R1 − R3B",   variance: true },
+              ]}
+              onDrill={(period, monthLabel, dir) => setDrawer({ period, month_label: monthLabel, direction: dir })}
+              testid="summary-outward"
+            />
+            <ReconTable
+              title="Input Tax Credit (Books vs GSTR-2B vs GSTR-3B)"
+              rows={rows}
+              totals={totals}
+              cols={[
+                { key: "books_itc_total",   label: "Books" },
+                { key: "r2b_itc_total",     label: "GSTR-2B", drillDirection: "inward" },
+                { key: "r3b_itc_total",     label: "GSTR-3B (Net)" },
+                { key: "var_books_vs_r2b_itc", label: "Books − R2B", variance: true },
+                { key: "var_r2b_vs_r3b_itc",   label: "R2B − R3B",   variance: true },
+              ]}
+              onDrill={(period, monthLabel, dir) => setDrawer({ period, month_label: monthLabel, direction: dir })}
+              testid="summary-itc"
+            />
+          </>
+        )}
       </div>
 
       {drawer && <MatchDrawer runId={runId} period={drawer.period} monthLabel={drawer.month_label} direction={drawer.direction} onClose={() => setDrawer(null)} />}
+    </div>
+  );
+}
+
+function TabBtn({ active, onClick, children, testid }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-xs font-medium rounded-sm transition ${
+        active ? "bg-white border border-gray-300 text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
+      }`}
+      data-testid={testid}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    http.get(`/gst-recon/runs/${runId}/partywise?direction=${direction}`)
+      .then(({ data: d }) => { if (!cancelled) { setData(d); setLoading(false); } })
+      .catch(e => { if (!cancelled) { toast.error(e?.response?.data?.detail || "Party-wise failed"); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [runId, direction]);
+
+  const portalLabel = direction === "inward" ? "GSTR-2B" : "GSTR-1";
+  const r3bAnnual = direction === "inward" ? (totals.r3b_itc_total || 0) : (totals.r3b_outward_taxable || 0);
+
+  return (
+    <div data-testid="partywise-panel">
+      <div className="px-4 py-3 border-b border-gray-100 bg-white flex items-center justify-between">
+        <div className="text-[12px] font-medium text-gray-800">
+          Annual Party-wise Comparison
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-gray-500">View</span>
+          <select
+            value={direction}
+            onChange={(e) => onDirectionChange(e.target.value)}
+            className="border border-gray-300 rounded-sm h-7 px-2 text-xs font-mono bg-white"
+            data-testid="partywise-direction-select"
+          >
+            <option value="inward">Input Tax (Books vs GSTR-2B)</option>
+            <option value="outward">Outward (Books vs GSTR-1)</option>
+          </select>
+        </div>
+      </div>
+
+      {loading && <div className="p-8 text-center text-sm text-gray-500"><Loader2 className="inline animate-spin mr-2" size={14}/>Aggregating party-wise…</div>}
+      {!loading && data && <PartywiseTable data={data} portalLabel={portalLabel} r3bAnnual={r3bAnnual} direction={direction}/>}
+    </div>
+  );
+}
+
+function PartywiseTable({ data, portalLabel, r3bAnnual, direction }) {
+  const rows = data.rows || [];
+  const totals = data.totals || {};
+  if (!rows.length) {
+    return <div className="p-8 text-center text-sm text-gray-400 font-mono">No party-wise records — upload Books with party GSTINs and {portalLabel} files.</div>;
+  }
+  const portalMinusR3b = (totals.portal_total || 0) - r3bAnnual;
+
+  return (
+    <div className="overflow-x-auto" data-testid="partywise-table">
+      <table className="w-full text-[12px] font-mono">
+        <thead>
+          <tr className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider sticky top-0">
+            <th className="text-left px-3 py-2 border-b border-gray-200 w-44">GSTIN</th>
+            <th className="text-left px-3 py-2 border-b border-gray-200">Party Name</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200">Books</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200 text-gray-400">GSTR-3B</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200">{portalLabel}</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200 bg-amber-50/40">Books − {portalLabel}</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200 text-gray-400">{portalLabel} − R3B</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const diff = r.diff_total || 0;
+            const cls = Math.abs(diff) < 1 ? "text-emerald-700" : "text-amber-700 font-semibold";
+            return (
+              <tr key={r.party_gstin} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`partywise-row-${r.party_gstin}`}>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{r.party_gstin}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-900">{r.party_name || "—"}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r.books_total)}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right text-gray-400">—</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r.portal_total)}</td>
+                <td className={`px-3 py-2 border-b border-gray-100 text-right bg-amber-50/30 ${cls}`}>{fmtINR(diff)}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right text-gray-400">—</td>
+              </tr>
+            );
+          })}
+          <tr className="bg-gray-100 font-semibold border-t-2 border-gray-300">
+            <td className="px-3 py-2 text-gray-900">ANNUAL</td>
+            <td className="px-3 py-2 text-gray-700">{rows.length} parties</td>
+            <td className="px-3 py-2 text-right">{fmtINR(totals.books_total)}</td>
+            <td className="px-3 py-2 text-right">{fmtINR(r3bAnnual)}</td>
+            <td className="px-3 py-2 text-right">{fmtINR(totals.portal_total)}</td>
+            <td className="px-3 py-2 text-right bg-amber-100/60">{fmtINR(totals.diff_total)}</td>
+            <td className="px-3 py-2 text-right">{fmtINR(portalMinusR3b)}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -505,15 +629,16 @@ function MatchDrawer({ runId, period, monthLabel, direction, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("matched");
+  const [relaxed, setRelaxed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    http.post(`/gst-recon/runs/${runId}/match?period=${period}&direction=${direction}`)
+    http.post(`/gst-recon/runs/${runId}/match?period=${period}&direction=${direction}&relaxed=${relaxed}`)
       .then(({ data: d }) => { if (!cancelled) { setData(d); setLoading(false); } })
       .catch(e => { if (!cancelled) { toast.error(e?.response?.data?.detail || "Match failed"); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [runId, period, direction]);
+  }, [runId, period, direction, relaxed]);
 
   const counts = data?.counts || {};
   const portalLabel = direction === "outward" ? "GSTR-1" : "GSTR-2B";
@@ -530,7 +655,24 @@ function MatchDrawer({ runId, period, monthLabel, direction, onClose }) {
               {monthLabel} · Books ↔ {portalLabel} ({direction})
             </h2>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="match-drawer-close">×</button>
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2 text-xs font-medium cursor-pointer select-none" data-testid="relaxed-fuzzy-toggle">
+              <input
+                type="checkbox"
+                checked={relaxed}
+                onChange={(e) => setRelaxed(e.target.checked)}
+                className="h-4 w-4 accent-blue-600"
+                data-testid="relaxed-fuzzy-checkbox"
+              />
+              <span className={relaxed ? "text-blue-700" : "text-gray-700"}>
+                Relaxed Fuzzy
+              </span>
+              <span className="text-[10px] font-normal text-gray-500" title="When enabled, residual unmatched vouchers with same Party + Month + Amount are auto-matched even if bill numbers and dates differ.">
+                (party + month + amount)
+              </span>
+            </label>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="match-drawer-close">×</button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -582,6 +724,7 @@ function MatchTable({ rows, tab, portalLabel }) {
         <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider sticky top-0">
           <tr>
             <th className="text-left px-3 py-2 border-b border-gray-200">Party GSTIN</th>
+            <th className="text-left px-3 py-2 border-b border-gray-200">Party Name</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Books #</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">{portalLabel} #</th>
             <th className="text-right px-3 py-2 border-b border-gray-200">Books Total</th>
@@ -589,23 +732,29 @@ function MatchTable({ rows, tab, portalLabel }) {
             <th className="text-right px-3 py-2 border-b border-gray-200">Δ</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Books Date</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">{portalLabel} Date</th>
-            <th className="text-right px-3 py-2 border-b border-gray-200">Fuzzy</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200">Match</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((p, i) => (
-            <tr key={i} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`match-row-${tab}-${i}`}>
-              <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{p.books?.party_gstin || p.portal?.party_gstin}</td>
-              <td className="px-3 py-2 border-b border-gray-100">{p.books?.voucher_no || p.books?.invoice_no || "—"}</td>
-              <td className="px-3 py-2 border-b border-gray-100">{p.portal?.invoice_no || "—"}</td>
-              <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(p.books?.total)}</td>
-              <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(p.portal?.total)}</td>
-              <td className={`px-3 py-2 border-b border-gray-100 text-right ${Math.abs(p.value_diff || 0) < 1 ? "text-gray-500" : "text-amber-700 font-semibold"}`}>{fmtINR(p.value_diff)}</td>
-              <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{p.books_date || "—"}</td>
-              <td className={`px-3 py-2 border-b border-gray-100 ${tab === "date_mismatch" ? "text-blue-700 font-semibold" : "text-gray-700"}`}>{p.portal_date || "—"}</td>
-              <td className="px-3 py-2 border-b border-gray-100 text-right text-gray-500">{p.fuzzy_score ?? "—"}</td>
-            </tr>
-          ))}
+          {rows.map((p, i) => {
+            const pname = p.books?.party_name || p.portal?.party_name || "—";
+            const matchType = p.relaxed_match ? "Relaxed" : (p.fuzzy_score ? `Fuzzy ${p.fuzzy_score}` : "Exact");
+            const matchCls = p.relaxed_match ? "text-blue-700 font-semibold" : "text-gray-500";
+            return (
+              <tr key={i} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`match-row-${tab}-${i}`}>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{p.books?.party_gstin || p.portal?.party_gstin}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-900">{pname}</td>
+                <td className="px-3 py-2 border-b border-gray-100">{p.books?.voucher_no || p.books?.invoice_no || "—"}</td>
+                <td className="px-3 py-2 border-b border-gray-100">{p.portal?.invoice_no || "—"}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(p.books?.total)}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(p.portal?.total)}</td>
+                <td className={`px-3 py-2 border-b border-gray-100 text-right ${Math.abs(p.value_diff || 0) < 1 ? "text-gray-500" : "text-amber-700 font-semibold"}`}>{fmtINR(p.value_diff)}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{p.books_date || "—"}</td>
+                <td className={`px-3 py-2 border-b border-gray-100 ${tab === "date_mismatch" ? "text-blue-700 font-semibold" : "text-gray-700"}`}>{p.portal_date || "—"}</td>
+                <td className={`px-3 py-2 border-b border-gray-100 text-right ${matchCls}`}>{matchType}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     );

@@ -276,8 +276,16 @@ def _classify_pair(b: Dict[str, Any], p: Dict[str, Any], fuzzy_score: Optional[i
     return "matched", pair
 
 
-def match_invoices(books: List[Dict[str, Any]], portal: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Two-pass matching: (1) exact party_gstin + normalised invoice no, (2) rapidfuzz ≥85.
+def match_invoices(books: List[Dict[str, Any]], portal: List[Dict[str, Any]],
+                   relaxed: bool = False) -> Dict[str, Any]:
+    """Three-pass matching:
+       Pass 1: exact party_gstin + normalised invoice no
+       Pass 2: rapidfuzz fuzz.ratio ≥ 85 on inv-no within same gstin
+       Pass 3 (only when relaxed=True): same (gstin, period, total) — useful
+               when bill numbers differ entirely between Books and Portal but
+               the underlying transaction (party + month + amount) is the same.
+               Tolerance: max(₹1, 0.5%) of larger total. When multiple
+               candidates remain, picks the pair with the smallest |date diff|.
 
     Returns dict with `matched`, `value_mismatch`, `date_mismatch`,
     `missing_in_books` (portal-only), `missing_in_portal` (books-only), and `counts`.
@@ -335,6 +343,54 @@ def match_invoices(books: List[Dict[str, Any]], portal: List[Dict[str, Any]]) ->
             used_b[i] = True
             used_p[j] = True
             cat, pair = _classify_pair(b, portal[j], fuzzy_score=int(score))
+            {"matched": matched, "value_mismatch": value_mm, "date_mismatch": date_mm}[cat].append(pair)
+
+    # Pass 3 (Relaxed Fuzzy) — same (gstin, period, total) within tolerance
+    # Useful when bill no's differ entirely (e.g. Tally voucher # vs portal IRN).
+    if relaxed:
+        # Group remaining unmatched portal records by (gstin, period)
+        portal_by_key: Dict[Tuple[str, str], List[int]] = {}
+        for j, p in enumerate(portal):
+            if used_p[j]:
+                continue
+            portal_by_key.setdefault((p.get("party_gstin", ""), p.get("period", "")), []).append(j)
+
+        for i, b in enumerate(books):
+            if used_b[i]:
+                continue
+            key = (b.get("party_gstin", ""), b.get("period", ""))
+            cands = [j for j in portal_by_key.get(key, []) if not used_p[j]]
+            if not cands:
+                continue
+            b_total = float(b.get("total", 0) or 0)
+            tol = max(1.0, 0.005 * abs(b_total))
+            # candidates whose total is within ₹ tolerance
+            close = []
+            for j in cands:
+                p_total = float(portal[j].get("total", 0) or 0)
+                if abs(b_total - p_total) <= max(tol, 0.005 * abs(p_total)):
+                    close.append(j)
+            if not close:
+                continue
+            # Pick by smallest |date diff| if multiple, else the only one
+            best_j = close[0]
+            if len(close) > 1:
+                from datetime import date
+                b_iso = _to_iso_date(b.get("date"))
+
+                def _diff(j_idx: int) -> int:
+                    p_iso = _to_iso_date(portal[j_idx].get("date"))
+                    if not (b_iso and p_iso):
+                        return 10_000  # large
+                    try:
+                        return abs((date.fromisoformat(b_iso) - date.fromisoformat(p_iso)).days)
+                    except Exception:
+                        return 10_000
+                best_j = min(close, key=_diff)
+            used_b[i] = True
+            used_p[best_j] = True
+            cat, pair = _classify_pair(b, portal[best_j])
+            pair["relaxed_match"] = True
             {"matched": matched, "value_mismatch": value_mm, "date_mismatch": date_mm}[cat].append(pair)
 
     # Sweep remainders

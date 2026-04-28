@@ -215,3 +215,50 @@ def test_match_returns_no_internal_norm_keys():
     pair = out["matched"][0]
     assert "_norm" not in pair["books"]
     assert "_norm" not in pair["portal"]
+
+
+# ---------------- match_invoices: relaxed mode (Pass 3) -------------
+def test_relaxed_matches_same_gstin_period_total_when_inv_no_differs():
+    """Different bill numbers + dates, but same gstin+period+total → relaxed match."""
+    b = _book("Books-145", gstin="33A", total=327.73, date="2024-12-31")
+    p = _portal("3301122400701397", gstin="33A", total=327.73, date="31-12-2024")
+    # Strict mode — different inv-no, no fuzz hit → no match
+    strict = match_invoices([b], [p], relaxed=False)
+    assert strict["counts"]["matched"] == 0
+    assert strict["counts"]["missing_in_books"] == 1
+    assert strict["counts"]["missing_in_portal"] == 1
+    # Relaxed mode → should match via Pass 3
+    relaxed = match_invoices([b], [p], relaxed=True)
+    assert relaxed["counts"]["matched"] + relaxed["counts"]["date_mismatch"] + relaxed["counts"]["value_mismatch"] == 1
+    assert relaxed["counts"]["missing_in_books"] == 0
+    assert relaxed["counts"]["missing_in_portal"] == 0
+    # Find the relaxed_match flag
+    pair = (relaxed["matched"] + relaxed["value_mismatch"] + relaxed["date_mismatch"])[0]
+    assert pair.get("relaxed_match") is True
+
+
+def test_relaxed_does_not_cross_period_boundary():
+    """Same gstin+total but different MMYYYY periods must NOT match in relaxed."""
+    b = _book("S-1", total=1000)
+    b["period"] = "042024"
+    p = _portal("Diff-1", total=1000)
+    p["period"] = "052024"
+    out = match_invoices([b], [p], relaxed=True)
+    assert out["counts"]["matched"] == 0
+    assert out["counts"]["missing_in_books"] == 1
+    assert out["counts"]["missing_in_portal"] == 1
+
+
+def test_relaxed_picks_closest_date_when_multiple_candidates():
+    """Two portal candidates with same total — should match the one with closest date."""
+    b = _book("S-1", total=500, date="2024-04-15")
+    p1 = _portal("PortalA", total=500, date="01-04-2024")  # 14 days off
+    p2 = _portal("PortalB", total=500, date="14-04-2024")  # 1 day off
+    out = match_invoices([b], [p1, p2], relaxed=True)
+    assert out["counts"]["missing_in_portal"] == 0  # books matched
+    assert out["counts"]["missing_in_books"] == 1   # one portal still unmatched
+    # The matched portal must be PortalB (closer date)
+    pair = (out["matched"] + out["date_mismatch"] + out["value_mismatch"])[0]
+    assert pair["portal"]["invoice_no"] == "PortalB"
+    # PortalA remains missing-in-books
+    assert out["missing_in_books"][0]["invoice_no"] == "PortalA"

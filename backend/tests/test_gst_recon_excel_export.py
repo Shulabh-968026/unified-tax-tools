@@ -60,7 +60,30 @@ def _matches_one_period():
     }}
 
 
+def test_workbook_has_eight_sheets_in_correct_order():
+    """Adds Annual Party-wise sheets when partywise data is provided."""
+    pw = {"direction": "outward", "rows": [], "totals": {
+        "books_total": 0, "portal_total": 0, "diff_total": 0,
+        "books_taxable": 0, "portal_taxable": 0,
+        "books_tax": 0, "portal_tax": 0,
+        "diff_taxable": 0, "diff_tax": 0,
+    }}
+    out = build_workbook(_doc(), _summary(), _matches_one_period(), {}, pw, pw)
+    wb = openpyxl.load_workbook(io.BytesIO(out))
+    assert wb.sheetnames == [
+        "Dashboard",
+        "Annual Party-wise (Outward)",
+        "Annual Party-wise (Inward)",
+        "12-Month Summary",
+        "Outward Vouchers",
+        "Inward Vouchers",
+        "Pending Classification",
+        "Run Metadata",
+    ]
+
+
 def test_workbook_has_six_sheets_in_correct_order():
+    """Default: when no partywise data, still produces 6-sheet workbook."""
     out = build_workbook(_doc(), _summary(), _matches_one_period(), {})
     wb = openpyxl.load_workbook(io.BytesIO(out))
     assert wb.sheetnames == [
@@ -98,7 +121,10 @@ def test_outward_voucher_sheet_lists_matched_pair():
     assert ws["A1"].value == "Month"
     assert ws["A2"].value == "Apr 2024"
     assert ws["B2"].value == "matched"
-    assert ws["D2"].value == "S-1"
+    # Books # is column E now (after adding Party Name in column D)
+    assert ws["E2"].value == "S-1"
+    # Party Name column should exist
+    assert ws["D1"].value == "Party Name"
 
 
 def test_pending_classification_lists_unmapped_ledgers():
