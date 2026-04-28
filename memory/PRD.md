@@ -103,7 +103,14 @@ lib/
       • `_public()` includes `gstin` in response; stored upper-cased & trimmed, `None` when blank
       • Frontend: `CreateClientDialog` has new GSTIN input (optional, 15-char, uppercased, client-side regex) with hint text
       • `ClientUtilities` page header now shows `GSTIN · <value>` chip when set
-- [ ] GST Recon Phase B — Pre-flight validation gates (GSTIN gate can now use `clients.gstin`)
+- [x] GST Recon Phase B — Pre-flight validation gates complete (2026-04-28)
+      • Backend: new `modules/gst_recon/validation.py` with `inspect_file()` + `validate_run()`
+      • Upload endpoint now inspects each file: extracts GSTIN + return period from content (GSTR-1 `gstin`/`fp`, GSTR-2B `data.gstin`/`rtnprd`, PDF `%PDF` header), captures Books `booksFromDate`/`booksToDate`
+      • New route `POST /api/gst-recon/runs/{rid}/validate` → `{ok, errors[], warnings[], summary}`
+      • 4 gates enforced: (1) client GSTIN present, (2) file integrity (JSON parse, PDF `%PDF` header), (3) GSTIN match — every GSTR file's GSTIN must equal `clients.gstin`, (4) FY alignment — Books dates must cover the FY range, (5) completeness — mapping present + every month has R1/R2B/R3B
+      • Frontend: new "Run Pre-flight Check" button (enabled once coverage is full); "Run Reconciliation" button is now hard-gated on `validation.ok === true`
+      • Validation panel lists all blockers in red + warnings in amber, plus a mono-font summary line
+      • Smoke-tested end-to-end with user's real sample files: client `33AAEFA5684J1ZC`, 5 files uploaded (GSTR-1, GSTR-2B, GSTR-3B, Books, Mapping) → 0 integrity failures, 0 GSTIN mismatches, only the expected coverage-gap error
 - [ ] GST Recon Phase C — GSTR-3B PDF parser (Table 3.1 turnover + Table 4 ITC) in `helpers/parsers.py`, Pandas 12-month aggregation, Summary UI
 - [ ] GST Recon Phase D — Voucher-level rapidfuzz matching + drill-down UI with amber/red highlighting
 - [ ] GST Recon Phase E — Testing sub-agent

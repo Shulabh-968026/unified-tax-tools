@@ -47,6 +47,7 @@ export default function GstReconLanding() {
       setHasBooks(data.has_books);
       setHasMapping(data.has_mapping);
       setFiles(prev => [...prev, ...Array.from(list).map(f => f.name)]);
+      setValidation(null); // stale after a new upload
       toast.success(`${data.accepted} file(s) categorized`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
@@ -57,9 +58,26 @@ export default function GstReconLanding() {
   }, [runId, cid, fy]);
 
   const handleDrop = (e) => { e.preventDefault(); onFiles(e.dataTransfer.files); };
-  const isComplete =
+
+  const runValidation = async () => {
+    if (!runId) return;
+    setBusy(true);
+    try {
+      const { data } = await http.post(`/gst-recon/runs/${runId}/validate`);
+      setValidation(data);
+      if (data.ok) toast.success("Pre-flight validation passed");
+      else toast.error(`${data.errors.length} issue(s) — see below`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Validation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const coverageComplete =
     hasBooks && hasMapping &&
     months.length === 12 && months.every(m => m.gstr1 && m.gstr2b && m.gstr3b);
+  const canRun = coverageComplete && validation?.ok === true;
 
   return (
     <div className="min-h-screen bg-[#f9f9f8]">
@@ -146,17 +164,52 @@ export default function GstReconLanding() {
 
         <div className="flex items-center justify-between">
           <div className="text-xs text-gray-500 font-mono">
-            Phase A scaffold · Batch categorization + 12-month readiness grid
+            Phase B · Pre-flight validation gates active
           </div>
-          <button
-            disabled={!isComplete}
-            onClick={() => toast.info("Pre-flight validation & reconciliation engine will be wired in the next session (Phase B & C).")}
-            className={`btn-primary-swiss ${isComplete ? "" : "opacity-40 cursor-not-allowed"}`}
-            data-testid="run-reconciliation-btn"
-          >
-            <Upload size={14} className="mr-2 inline"/> Run Reconciliation
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              disabled={!coverageComplete || busy}
+              onClick={runValidation}
+              className={`h-9 px-4 rounded-sm border border-gray-300 text-sm font-medium bg-white hover:bg-gray-50 ${coverageComplete ? "" : "opacity-40 cursor-not-allowed"}`}
+              data-testid="validate-btn"
+            >
+              {busy ? "Validating…" : "Run Pre-flight Check"}
+            </button>
+            <button
+              disabled={!canRun}
+              onClick={() => toast.info("Reconciliation engine lands in Phase C (PDF parsing + aggregation).")}
+              className={`btn-primary-swiss ${canRun ? "" : "opacity-40 cursor-not-allowed"}`}
+              data-testid="run-reconciliation-btn"
+            >
+              <Upload size={14} className="mr-2 inline"/> Run Reconciliation
+            </button>
+          </div>
         </div>
+
+        {validation && (
+          <div className={`mt-6 border rounded-sm p-4 text-sm ${validation.ok ? "border-emerald-300 bg-emerald-50/50" : "border-red-300 bg-red-50/50"}`} data-testid="validation-result">
+            <div className="font-medium mb-2 flex items-center gap-2">
+              {validation.ok ? <CheckCircle2 size={16} className="text-emerald-600"/> : <XCircle size={16} className="text-red-600"/>}
+              {validation.ok ? "All gates passed — ready to reconcile" : `${validation.errors.length} blocker(s)`}
+            </div>
+            {validation.errors.length > 0 && (
+              <ul className="list-disc ml-6 space-y-1 text-red-800 text-[13px]" data-testid="validation-errors">
+                {validation.errors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            )}
+            {validation.warnings?.length > 0 && (
+              <ul className="list-disc ml-6 space-y-1 text-amber-800 text-[13px] mt-2">
+                {validation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+            <div className="mt-2 text-[11px] font-mono text-gray-500">
+              GSTIN: {validation.summary.client_gstin || "—"} ·
+              GST files: {validation.summary.gst_files} ·
+              Mismatches: {validation.summary.mismatched_gstins} ·
+              Integrity failures: {validation.summary.integrity_failures}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
