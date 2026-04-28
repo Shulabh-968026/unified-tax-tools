@@ -117,8 +117,18 @@ lib/
       • Extracts GSTIN + period from header text; Table 3.1 by header-match then row-prefix `(a)..(e)`; Table 4 by walking rows across the page split, flagging "ITC Available" vs "ITC Reversed" sections and capturing `Net ITC Available` directly
       • Handles stray watermark letters (D/E/F/I) in numeric cells and `-` placeholders
       • Verified against user's real sample (GSTR3B_33AAEFA5684J1ZC_012025.pdf): Outward ₹8.69L + IGST ₹43,454.65, RCM ₹13k + CGST/SGST ₹1,170 each, Net ITC CGST/SGST ₹21,204.58 each — all match the PDF exactly
-- [ ] GST Recon Phase C.2 — wire the parser into upload pipeline (persist parsed Table 3.1 + Table 4 per-month in Mongo)
-- [ ] GST Recon Phase C.3 — Pandas aggregation (12-month turnover: Books vs R1 vs R3B; ITC: Books vs R2B vs R3B) + Summary UI tables
+- [x] GST Recon Phase C.2 — parsers wired into upload pipeline (2026-04-28)
+      • Fixed SyntaxError in `controller.py` (stale leftover code at L175-180)
+      • New `modules/gst_recon/aggregators.py` with `aggregate_gstr1`, `aggregate_gstr2b`, `aggregate_books`
+      • `upload_batch` now persists per-file aggregates: `r1_outward`, `r2b_itc`, `books_per_month`, plus existing `table_3_1`/`table_4` for 3B PDFs
+      • Books aggregator excludes party (debtor/creditor) ledgers from taxable-value buckets to avoid double-counting
+- [x] GST Recon Phase C.3 — Pandas-style 12-month aggregation engine (2026-04-28)
+      • New `service.py::build_summary(run_doc)` produces 12 rows (Apr→Mar) + annual totals with 9 numeric columns + 4 variance columns (R1−R3B outward, R2B−R3B ITC, Books−R1 outward, Books−R2B ITC)
+      • New endpoint `POST /api/gst-recon/runs/{rid}/summary` — computes + persists summary; transitions run.status to "summarized"
+      • RunOut/FileBucketItem schemas extended with `extra="allow"` + explicit `summary` field so all C.2/C.3 fields survive `response_model` filtering
+      • Frontend: Summary panel in `pages/gst_recon/Landing.jsx` — two reconciliation tables (Outward + ITC) with sticky header, alternating rows, amber variance highlighting (green when |variance| < 1, amber otherwise), annual totals row
+      • Fixed latent bug: missing `useState` for `validation` / `setValidation` in Landing.jsx (would have crashed on upload)
+      • Tests: 12 unit tests in `tests/test_gst_recon_phase_c3.py` + 14 e2e tests in `tests/test_gst_recon_phase_c_e2e.py` — 48/48 passing including 22 prior regression
 - [ ] GST Recon Phase D — rapidfuzz voucher-level matching + drill-down UI
 - [ ] GST Recon Phase E — Testing sub-agent
 - [ ] Migrate 43B(h) pages from shadcn → MUI + react-toastify (preserve current look)

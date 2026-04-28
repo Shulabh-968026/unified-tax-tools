@@ -1,7 +1,7 @@
 """Pydantic schemas for the GST Turnover & ITC Reconciliation utility."""
 from __future__ import annotations
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class RunCreate(BaseModel):
@@ -11,6 +11,11 @@ class RunCreate(BaseModel):
 
 
 class FileBucketItem(BaseModel):
+    """File entry on a run. Phase C extras (r1_outward, r2b_itc, books_per_month,
+    table_3_1, table_4, integrity_ok, parse_error, books_from/to) flow through
+    via `extra=allow` so they survive the response_model filter."""
+    model_config = ConfigDict(extra="allow")
+
     filename: str
     bucket: str        # "gstr1" | "gstr2b" | "gstr3b" | "books" | "mapping" | "unknown"
     period: Optional[str] = None   # "MMYYYY" for monthly files
@@ -38,3 +43,4 @@ class RunOut(BaseModel):
     has_books: bool = False
     has_mapping: bool = False
     validation: Optional[Dict[str, Any]] = None
+    summary: Optional[Dict[str, Any]] = None
