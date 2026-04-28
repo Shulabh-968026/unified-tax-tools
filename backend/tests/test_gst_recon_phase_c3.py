@@ -56,6 +56,26 @@ def test_gstr2b_fallback_invoices_when_no_itcsumm():
     assert out == {"taxable": 1500.0, "igst": 90.0, "cgst": 90.0, "sgst": 90.0, "cess": 5.0}
 
 
+def test_gstr2b_camelcase_itcSumm_itcAvl_nonRevSup():
+    """OLD GSTN format (pre-Aug 2024) used camelCase keys. Must still parse."""
+    j = {"data": {"gstin": "33X", "rtnPrd": "042024",
+        "itcSumm": {"itcAvl": {"nonRevSup": {
+            "b2b":  {"iamt": 5000, "camt": 2500, "samt": 2500, "csamt": 0},
+            "impg": {"iamt": 1000, "camt": 0,    "samt": 0,    "csamt": 0},
+        }}}}}
+    out = aggregate_gstr2b(_bytes(j))
+    assert out == {"taxable": 0.0, "igst": 6000.0, "cgst": 2500.0, "sgst": 2500.0, "cess": 0.0}
+
+
+def test_gstr2b_itcavl_directly_no_nonrevsup_wrapper():
+    """Some export tools omit the nonrevsup wrapper and put b2b/impg directly under itcavl."""
+    j = {"data": {"itcsumm": {"itcavl": {
+        "b2b": {"iamt": 7000, "camt": 3500, "samt": 3500, "csamt": 50},
+    }}}}
+    out = aggregate_gstr2b(_bytes(j))
+    assert out == {"taxable": 0.0, "igst": 7000.0, "cgst": 3500.0, "sgst": 3500.0, "cess": 50.0}
+
+
 # ---------------- aggregate_books ----------------
 def test_books_outward_excludes_party_ledger():
     """Ensure customer/vendor ledger is NOT double-counted as taxable value."""

@@ -49,7 +49,7 @@ def _load_base_url() -> str:
 
 BASE_URL = _load_base_url()
 COOKIE = {"session_token": "qa_test_session_token_20260427_stable"}
-CLIENT_ID = "cli_bdf1e22faa7c"
+CLIENT_ID = "cli_7f0b86b1ab0b"  # Allman Knitwear — retained after DB cleanup
 GSTIN = "33AAEFA5684J1ZC"
 FY = "2024-25"
 

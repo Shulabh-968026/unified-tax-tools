@@ -347,7 +347,10 @@ function SummaryPanel({ summary, runId }) {
   const [drawer, setDrawer] = useState(null); // { period, month_label, direction }
 
   return (
-    <div className="mt-8 border border-gray-200 rounded-sm bg-white overflow-hidden" data-testid="summary-panel">
+    <div className="mt-8 space-y-4" data-testid="summary-panel">
+      <DashboardCards totals={totals} rows={rows}/>
+
+      <div className="border border-gray-200 rounded-sm bg-white overflow-hidden">
       <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
         <div className="text-[11px] font-mono uppercase tracking-wider text-gray-600">
           12-Month Reconciliation · FY {fy}
@@ -386,6 +389,7 @@ function SummaryPanel({ summary, runId }) {
         onDrill={(period, monthLabel, direction) => setDrawer({ period, month_label: monthLabel, direction })}
         testid="summary-itc"
       />
+      </div>
 
       {drawer && <MatchDrawer runId={runId} period={drawer.period} monthLabel={drawer.month_label} direction={drawer.direction} onClose={() => setDrawer(null)} />}
     </div>
@@ -695,4 +699,123 @@ function StatusPill({ status }) {
   };
   const s = map[status] || map.draft;
   return <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm ${s.cls}`}>{s.label}</span>;
+}
+
+// =========================================================================
+// Summary Dashboard — discrepancy cards
+// =========================================================================
+function DashboardCards({ totals, rows }) {
+  // Count months with material variance (|Δ| >= ₹1)
+  const monthsWithR1vs3b   = rows.filter(r => Math.abs(r.var_r1_vs_r3b_outward || 0) >= 1).length;
+  const monthsWithR2bvs3b  = rows.filter(r => Math.abs(r.var_r2b_vs_r3b_itc || 0) >= 1).length;
+  const monthsWithBooksR1  = rows.filter(r => Math.abs(r.var_books_vs_r1_outward || 0) >= 1).length;
+  const monthsWithBooksR2b = rows.filter(r => Math.abs(r.var_books_vs_r2b_itc || 0) >= 1).length;
+
+  const absTurnover = Math.abs(totals.var_r1_vs_r3b_outward || 0);
+  const absITC      = Math.abs(totals.var_r2b_vs_r3b_itc   || 0);
+  const absBooksR1  = Math.abs(totals.var_books_vs_r1_outward || 0);
+  const absBooksR2b = Math.abs(totals.var_books_vs_r2b_itc || 0);
+
+  const cards = [
+    {
+      testid: "card-books-vs-r1",
+      title: "Books vs GSTR-1",
+      subtitle: "Outward Turnover",
+      value: totals.books_outward_taxable - totals.r1_outward_taxable,
+      base: totals.r1_outward_taxable,
+      monthsFlagged: monthsWithBooksR1,
+      variant: monthsWithBooksR1 === 0 ? "ok" : "warn",
+    },
+    {
+      testid: "card-r1-vs-r3b",
+      title: "GSTR-1 vs GSTR-3B",
+      subtitle: "Outward Turnover",
+      value: totals.var_r1_vs_r3b_outward,
+      base: totals.r3b_outward_taxable,
+      monthsFlagged: monthsWithR1vs3b,
+      variant: monthsWithR1vs3b === 0 ? "ok" : "warn",
+    },
+    {
+      testid: "card-books-vs-r2b",
+      title: "Books vs GSTR-2B",
+      subtitle: "Input Tax Credit",
+      value: totals.var_books_vs_r2b_itc,
+      base: totals.r2b_itc_total,
+      monthsFlagged: monthsWithBooksR2b,
+      variant: monthsWithBooksR2b === 0 ? "ok" : (absBooksR2b > 100000 ? "danger" : "warn"),
+    },
+    {
+      testid: "card-r2b-vs-r3b",
+      title: "GSTR-2B vs GSTR-3B",
+      subtitle: "Input Tax Credit",
+      value: totals.var_r2b_vs_r3b_itc,
+      base: totals.r3b_itc_total,
+      monthsFlagged: monthsWithR2bvs3b,
+      variant: monthsWithR2bvs3b === 0 ? "ok" : (absITC > 100000 ? "danger" : "warn"),
+    },
+  ];
+
+  const totalFlagged = cards.reduce((acc, c) => acc + c.monthsFlagged, 0);
+  const worstVariant = cards.some(c => c.variant === "danger") ? "danger"
+                      : cards.some(c => c.variant === "warn") ? "warn" : "ok";
+
+  return (
+    <div className="border border-gray-200 rounded-sm bg-white overflow-hidden" data-testid="dashboard-cards">
+      <div className={`px-4 py-3 border-b border-gray-200 flex items-center justify-between ${
+        worstVariant === "danger" ? "bg-red-50" : worstVariant === "warn" ? "bg-amber-50" : "bg-emerald-50"
+      }`}>
+        <div className="text-[11px] font-mono uppercase tracking-wider text-gray-700">
+          Reconciliation Health · FY {summary_fy_from_rows(rows)}
+        </div>
+        <div className={`text-[11px] font-mono ${
+          worstVariant === "danger" ? "text-red-700" : worstVariant === "warn" ? "text-amber-700" : "text-emerald-700"
+        }`} data-testid="dashboard-overall-status">
+          {totalFlagged === 0 ? "ALL RECONCILED" : `${totalFlagged} MONTH-ISSUE${totalFlagged > 1 ? "S" : ""} FLAGGED`}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-gray-100">
+        {cards.map(c => <DashCard key={c.testid} {...c}/>)}
+      </div>
+    </div>
+  );
+}
+
+function summary_fy_from_rows(rows) {
+  if (!rows?.length) return "";
+  const first = rows[0]?.month_label || "";
+  const last = rows[rows.length - 1]?.month_label || "";
+  if (!first || !last) return "";
+  return `${first.split(" ")[1]}-${last.split(" ")[1].slice(-2)}`;
+}
+
+function DashCard({ title, subtitle, value, base, monthsFlagged, variant, testid }) {
+  const pct = base ? (Math.abs(value) / Math.abs(base)) * 100 : 0;
+  const sign = (value || 0) > 0 ? "+" : "";
+  const tone = variant === "danger" ? {
+    dot: "bg-red-500", border: "border-l-4 border-red-500", num: "text-red-700", chip: "bg-red-100 text-red-800",
+  } : variant === "warn" ? {
+    dot: "bg-amber-500", border: "border-l-4 border-amber-500", num: "text-amber-700", chip: "bg-amber-100 text-amber-800",
+  } : {
+    dot: "bg-emerald-500", border: "border-l-4 border-emerald-500", num: "text-emerald-700", chip: "bg-emerald-100 text-emerald-800",
+  };
+  return (
+    <div className={`p-4 hover:bg-gray-50 ${tone.border}`} data-testid={testid}>
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${tone.dot}`}/>
+        <div className="text-[11px] font-mono uppercase tracking-wider text-gray-500">{subtitle}</div>
+      </div>
+      <div className="text-sm font-medium text-gray-900">{title}</div>
+      <div className={`mt-3 text-2xl font-semibold font-mono ${tone.num}`} data-testid={`${testid}-value`}>
+        {sign}{fmtINR(value)}
+      </div>
+      <div className="mt-1 text-[11px] font-mono text-gray-500">
+        {pct.toFixed(2)}% of {fmtINR(base)}
+      </div>
+      <div className="mt-3 inline-flex items-center gap-1.5">
+        <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm ${tone.chip}`} data-testid={`${testid}-months`}>
+          {monthsFlagged === 0 ? "0 / 12 flagged" : `${monthsFlagged} / 12 flagged`}
+        </span>
+      </div>
+    </div>
+  );
 }

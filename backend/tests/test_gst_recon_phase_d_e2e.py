@@ -26,7 +26,7 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME")
 SESSION = "qa_test_session_token_20260427_stable"
-CLIENT_ID = "cli_bdf1e22faa7c"
+CLIENT_ID = "cli_7f0b86b1ab0b"  # Allman Knitwear — retained after DB cleanup
 CLIENT_GSTIN = "33AAEFA5684J1ZC"
 PERIOD = "042024"
 

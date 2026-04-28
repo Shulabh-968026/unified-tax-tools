@@ -84,34 +84,87 @@ def aggregate_gstr1(content: bytes) -> Dict[str, float]:
 
 
 # ============================ GSTR-2B ========================================
+def _ci_get(d: Any, key: str) -> Any:
+    """Case-insensitive dict.get — tolerant to GSTN's camelCase vs lowercase key drift."""
+    if not isinstance(d, dict):
+        return None
+    k_low = key.lower()
+    for k, v in d.items():
+        if isinstance(k, str) and k.lower() == k_low:
+            return v
+    return None
+
+
+def _ci_path(d: Any, *keys: str) -> Any:
+    cur = d
+    for k in keys:
+        cur = _ci_get(cur, k)
+        if cur is None:
+            return None
+    return cur
+
+
+def _sum_itc_dict(node: Any) -> Dict[str, float]:
+    """Accept either a dict of sub-buckets (b2b, impg, ...) OR a single flat dict
+    with iamt/camt/samt/csamt, and return the totals. Case-insensitive."""
+    out = {"igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
+    if not isinstance(node, dict):
+        return out
+    # Case 1: flat dict containing iamt/camt/samt/csamt
+    if any(_ci_get(node, k) is not None for k in ("iamt", "camt", "samt", "csamt")):
+        out["igst"] += _f(_ci_get(node, "iamt"))
+        out["cgst"] += _f(_ci_get(node, "camt"))
+        out["sgst"] += _f(_ci_get(node, "samt"))
+        out["cess"] += _f(_ci_get(node, "csamt"))
+        return out
+    # Case 2: nested — sum across children
+    for v in node.values():
+        if isinstance(v, dict):
+            out["igst"] += _f(_ci_get(v, "iamt"))
+            out["cgst"] += _f(_ci_get(v, "camt"))
+            out["sgst"] += _f(_ci_get(v, "samt"))
+            out["cess"] += _f(_ci_get(v, "csamt"))
+    return out
+
+
 def aggregate_gstr2b(content: bytes) -> Dict[str, float]:
-    """Prefer itcsumm.itcavl.nonrevsup totals; fallback to docdata.b2b invoice sums."""
+    """Sum ITC from a GSTR-2B JSON. Tolerates 3 known GSTN key-case variants:
+       v1 (pre-Aug-2024): `data.itcSumm.itcAvl.nonRevSup.{b2b,impg,...}`
+       v2 (post-Aug-2024): `data.itcsumm.itcavl.nonrevsup.{b2b,...}`
+       v3 (some tools):    `data.itcsumm.itcavl.{b2b,impg,...}` (no nonrevsup wrapper)
+
+    Falls back to summing `docdata.b2b.inv[].{txval,igst,cgst,sgst,cess}` if
+    no summary section is present.
+    """
     try:
         j = json.loads(content.decode("utf-8", errors="replace"))
     except Exception:
         return {}
-    data = j.get("data") or j
-    summ = ((data.get("itcsumm") or {}).get("itcavl") or {})
-    nrs = summ.get("nonrevsup") or {}
-    if isinstance(nrs, dict) and nrs:
-        igst = cgst = sgst = cess = 0.0
-        for v in nrs.values():
-            if isinstance(v, dict):
-                igst += _f(v.get("iamt"))
-                cgst += _f(v.get("camt"))
-                sgst += _f(v.get("samt"))
-                cess += _f(v.get("csamt"))
-        if igst or cgst or sgst or cess:
-            return _round_dict({"taxable": 0.0, "igst": igst, "cgst": cgst, "sgst": sgst, "cess": cess})
+    data = _ci_get(j, "data") or j
 
+    # Path A — itcsumm.itcavl.nonrevsup (any case)
+    itcavl = _ci_path(data, "itcsumm", "itcavl")
+    if itcavl is not None:
+        nrs = _ci_get(itcavl, "nonrevsup")
+        if isinstance(nrs, dict) and nrs:
+            tot = _sum_itc_dict(nrs)
+            if any(tot.values()):
+                return _round_dict({"taxable": 0.0, **tot})
+        # Path B — itcavl directly contains b2b/impg/... without nonrevsup
+        tot = _sum_itc_dict(itcavl)
+        if any(tot.values()):
+            return _round_dict({"taxable": 0.0, **tot})
+
+    # Path C — fallback: invoice-level b2b under docdata (case-insensitive)
+    b2b_list = _ci_path(data, "docdata", "b2b") or []
     tot = {"taxable": 0.0, "igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
-    for sup in ((data.get("docdata") or {}).get("b2b") or []):
-        for inv in (sup.get("inv") or []):
-            tot["taxable"] += _f(inv.get("txval"))
-            tot["igst"]    += _f(inv.get("igst"))
-            tot["cgst"]    += _f(inv.get("cgst"))
-            tot["sgst"]    += _f(inv.get("sgst"))
-            tot["cess"]    += _f(inv.get("cess"))
+    for sup in b2b_list:
+        for inv in (_ci_get(sup, "inv") or []):
+            tot["taxable"] += _f(_ci_get(inv, "txval"))
+            tot["igst"]    += _f(_ci_get(inv, "igst"))
+            tot["cgst"]    += _f(_ci_get(inv, "cgst"))
+            tot["sgst"]    += _f(_ci_get(inv, "sgst"))
+            tot["cess"]    += _f(_ci_get(inv, "cess"))
     return _round_dict(tot)
 
 
@@ -359,30 +412,30 @@ def extract_gstr1_invoices(content: bytes, default_period: str = "") -> List[Dic
 
 
 def extract_gstr2b_invoices(content: bytes, default_period: str = "") -> List[Dict[str, Any]]:
-    """Walk GSTR-2B docdata.b2b → each invoice as a flat record."""
+    """Walk GSTR-2B docdata.b2b → each invoice as a flat record. Case-insensitive."""
     try:
         j = json.loads(content.decode("utf-8", errors="replace"))
     except Exception:
         return []
-    data = j.get("data") or j
-    fp = data.get("rtnprd") or default_period or ""
+    data = _ci_get(j, "data") or j
+    fp = _ci_get(data, "rtnprd") or default_period or ""
     out: List[Dict[str, Any]] = []
-    for sup in ((data.get("docdata") or {}).get("b2b") or []):
-        ctin = (sup.get("ctin") or "").upper().strip()
-        trdnm = sup.get("trdnm") or ""
-        for inv in (sup.get("inv") or []):
+    for sup in (_ci_path(data, "docdata", "b2b") or []):
+        ctin = (_ci_get(sup, "ctin") or "").upper().strip()
+        trdnm = _ci_get(sup, "trdnm") or ""
+        for inv in (_ci_get(sup, "inv") or []):
             out.append({
                 "period": fp,
                 "direction": "inward",
                 "party_gstin": ctin,
                 "party_name": trdnm,
-                "invoice_no": (inv.get("inum") or "").strip(),
-                "date": inv.get("dt") or "",
-                "taxable": round(_f(inv.get("txval")), 2),
-                "igst": round(_f(inv.get("igst")), 2),
-                "cgst": round(_f(inv.get("cgst")), 2),
-                "sgst": round(_f(inv.get("sgst")), 2),
-                "cess": round(_f(inv.get("cess")), 2),
-                "total": round(_f(inv.get("val")), 2),
+                "invoice_no": (_ci_get(inv, "inum") or "").strip(),
+                "date": _ci_get(inv, "dt") or "",
+                "taxable": round(_f(_ci_get(inv, "txval")), 2),
+                "igst": round(_f(_ci_get(inv, "igst")), 2),
+                "cgst": round(_f(_ci_get(inv, "cgst")), 2),
+                "sgst": round(_f(_ci_get(inv, "sgst")), 2),
+                "cess": round(_f(_ci_get(inv, "cess")), 2),
+                "total": round(_f(_ci_get(inv, "val")), 2),
             })
     return out

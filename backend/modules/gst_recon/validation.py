@@ -32,9 +32,11 @@ def inspect_file(filename: str, bucket: str, content: bytes) -> Dict[str, Any]:
                 out["gstin"] = j.get("gstin") or _extract_gstin(filename)
                 out["period"] = j.get("fp") or _extract_period(filename)
             elif bucket == "gstr2b":
-                data = j.get("data") or j
-                out["gstin"] = data.get("gstin") or _extract_gstin(filename)
-                out["period"] = data.get("rtnprd") or _extract_period(filename)
+                # Case-insensitive lookups — GSTN uses camelCase in older files
+                from modules.gst_recon.aggregators import _ci_get
+                data = _ci_get(j, "data") or j
+                out["gstin"] = _ci_get(data, "gstin") or _extract_gstin(filename)
+                out["period"] = _ci_get(data, "rtnprd") or _ci_get(data, "retPeriod") or _extract_period(filename)
             else:  # books
                 company = j.get("company") or {}
                 out["books_from"] = company.get("booksFromDate") or j.get("booksFromDate")
