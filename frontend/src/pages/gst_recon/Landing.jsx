@@ -381,6 +381,7 @@ function SummaryPanel({ summary, runId }) {
   const [drawer, setDrawer] = useState(null); // { period, month_label, direction }
   const [tab, setTab] = useState("partywise"); // 'partywise' | 'monthly'
   const [direction, setDirection] = useState("inward"); // partywise direction
+  const [relaxed, setRelaxed] = useState(false); // persisted across drawer opens within this run
 
   return (
     <div className="mt-8 space-y-4" data-testid="summary-panel">
@@ -403,7 +404,7 @@ function SummaryPanel({ summary, runId }) {
         </div>
 
         {tab === "partywise" && (
-          <PartywisePanel runId={runId} totals={totals} direction={direction} onDirectionChange={setDirection} onDrill={(period, label, dir) => setDrawer({ period, month_label: label, direction: dir })}/>
+          <PartywisePanel runId={runId} direction={direction} onDirectionChange={setDirection}/>
         )}
 
         {tab === "monthly" && (
@@ -440,7 +441,7 @@ function SummaryPanel({ summary, runId }) {
         )}
       </div>
 
-      {drawer && <MatchDrawer runId={runId} period={drawer.period} monthLabel={drawer.month_label} direction={drawer.direction} onClose={() => setDrawer(null)} />}
+      {drawer && <MatchDrawer runId={runId} period={drawer.period} monthLabel={drawer.month_label} direction={drawer.direction} relaxed={relaxed} onRelaxedChange={setRelaxed} onClose={() => setDrawer(null)} />}
     </div>
   );
 }
@@ -473,13 +474,15 @@ function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }
   }, [runId, direction]);
 
   const portalLabel = direction === "inward" ? "GSTR-2B" : "GSTR-1";
-  const r3bAnnual = direction === "inward" ? (totals.r3b_itc_total || 0) : (totals.r3b_outward_taxable || 0);
 
   return (
     <div data-testid="partywise-panel">
       <div className="px-4 py-3 border-b border-gray-100 bg-white flex items-center justify-between">
         <div className="text-[12px] font-medium text-gray-800">
           Annual Party-wise Comparison
+          <span className="ml-2 text-[10px] font-mono text-gray-500">
+            {direction === "inward" ? "(ITC values)" : "(Taxable values)"}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono uppercase tracking-wider text-gray-500">View</span>
@@ -496,18 +499,25 @@ function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }
       </div>
 
       {loading && <div className="p-8 text-center text-sm text-gray-500"><Loader2 className="inline animate-spin mr-2" size={14}/>Aggregating party-wise…</div>}
-      {!loading && data && <PartywiseTable data={data} portalLabel={portalLabel} r3bAnnual={r3bAnnual} direction={direction}/>}
+      {!loading && data && <PartywiseTable data={data} portalLabel={portalLabel} direction={direction}/>}
     </div>
   );
 }
 
-function PartywiseTable({ data, portalLabel, r3bAnnual, direction }) {
+function PartywiseTable({ data, portalLabel, direction }) {
   const rows = data.rows || [];
   const totals = data.totals || {};
   if (!rows.length) {
     return <div className="p-8 text-center text-sm text-gray-400 font-mono">No party-wise records — upload Books with party GSTINs and {portalLabel} files.</div>;
   }
-  const portalMinusR3b = (totals.portal_total || 0) - r3bAnnual;
+
+  // Column choice depends on direction:
+  //   inward  → ITC = igst+cgst+sgst+cess (tax only)
+  //   outward → taxable value (excludes tax — that's the "turnover" comparison)
+  const booksKey  = direction === "inward" ? "books_tax"  : "books_taxable";
+  const portalKey = direction === "inward" ? "portal_tax" : "portal_taxable";
+  const diffKey   = direction === "inward" ? "diff_tax"   : "diff_taxable";
+  const valueLabel = direction === "inward" ? "ITC" : "Taxable Value";
 
   return (
     <div className="overflow-x-auto" data-testid="partywise-table">
@@ -516,37 +526,31 @@ function PartywiseTable({ data, portalLabel, r3bAnnual, direction }) {
           <tr className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider sticky top-0">
             <th className="text-left px-3 py-2 border-b border-gray-200 w-44">GSTIN</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Party Name</th>
-            <th className="text-right px-3 py-2 border-b border-gray-200">Books</th>
-            <th className="text-right px-3 py-2 border-b border-gray-200 text-gray-400">GSTR-3B</th>
-            <th className="text-right px-3 py-2 border-b border-gray-200">{portalLabel}</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200">Books ({valueLabel})</th>
+            <th className="text-right px-3 py-2 border-b border-gray-200">{portalLabel} ({valueLabel})</th>
             <th className="text-right px-3 py-2 border-b border-gray-200 bg-amber-50/40">Books − {portalLabel}</th>
-            <th className="text-right px-3 py-2 border-b border-gray-200 text-gray-400">{portalLabel} − R3B</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => {
-            const diff = r.diff_total || 0;
+            const diff = r[diffKey] || 0;
             const cls = Math.abs(diff) < 1 ? "text-emerald-700" : "text-amber-700 font-semibold";
             return (
               <tr key={r.party_gstin} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`partywise-row-${r.party_gstin}`}>
                 <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{r.party_gstin}</td>
                 <td className="px-3 py-2 border-b border-gray-100 text-gray-900">{r.party_name || "—"}</td>
-                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r.books_total)}</td>
-                <td className="px-3 py-2 border-b border-gray-100 text-right text-gray-400">—</td>
-                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r.portal_total)}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r[booksKey])}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r[portalKey])}</td>
                 <td className={`px-3 py-2 border-b border-gray-100 text-right bg-amber-50/30 ${cls}`}>{fmtINR(diff)}</td>
-                <td className="px-3 py-2 border-b border-gray-100 text-right text-gray-400">—</td>
               </tr>
             );
           })}
           <tr className="bg-gray-100 font-semibold border-t-2 border-gray-300">
             <td className="px-3 py-2 text-gray-900">ANNUAL</td>
             <td className="px-3 py-2 text-gray-700">{rows.length} parties</td>
-            <td className="px-3 py-2 text-right">{fmtINR(totals.books_total)}</td>
-            <td className="px-3 py-2 text-right">{fmtINR(r3bAnnual)}</td>
-            <td className="px-3 py-2 text-right">{fmtINR(totals.portal_total)}</td>
-            <td className="px-3 py-2 text-right bg-amber-100/60">{fmtINR(totals.diff_total)}</td>
-            <td className="px-3 py-2 text-right">{fmtINR(portalMinusR3b)}</td>
+            <td className="px-3 py-2 text-right">{fmtINR(totals[booksKey])}</td>
+            <td className="px-3 py-2 text-right">{fmtINR(totals[portalKey])}</td>
+            <td className="px-3 py-2 text-right bg-amber-100/60">{fmtINR(totals[diffKey])}</td>
           </tr>
         </tbody>
       </table>
@@ -660,7 +664,7 @@ function MatchDrawer({ runId, period, monthLabel, direction, onClose }) {
               <input
                 type="checkbox"
                 checked={relaxed}
-                onChange={(e) => setRelaxed(e.target.checked)}
+                onChange={(e) => onRelaxedChange(e.target.checked)}
                 className="h-4 w-4 accent-blue-600"
                 data-testid="relaxed-fuzzy-checkbox"
               />

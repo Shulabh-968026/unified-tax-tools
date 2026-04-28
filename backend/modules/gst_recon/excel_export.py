@@ -277,43 +277,49 @@ def _sheet_voucher_matches(ws, title: str, period_results: Dict[str, Dict[str, A
 
 
 def _sheet_partywise(ws, title: str, partywise: Dict[str, Any], portal_label: str,
-                     r3b_total: float = 0.0):
+                     direction: str = "inward"):
     """Annual Party-wise Summary — one row per GSTIN, sorted by largest variance first.
-    Columns: GSTIN | Party Name | Books | GSTR-3B (annual aggregate) | Portal Total | Books − Portal | Portal − R3B"""
+    Direction-aware columns:
+      inward  → ITC (tax) values per party (Books vs GSTR-2B)
+      outward → Taxable values per party  (Books vs GSTR-1)
+    Columns: Party GSTIN | Party Name | Books | Portal | Books − Portal."""
     ws.title = title
     rows = partywise.get("rows", []) or []
     totals = partywise.get("totals", {}) or {}
 
-    headers = ["Party GSTIN", "Party Name", "Books (Total)", "GSTR-3B",
-               f"{portal_label} (Total)", "Books − Portal", f"{portal_label} − R3B"]
+    if direction == "inward":
+        books_key, portal_key, diff_key = "books_tax", "portal_tax", "diff_tax"
+        value_label = "ITC"
+    else:
+        books_key, portal_key, diff_key = "books_taxable", "portal_taxable", "diff_taxable"
+        value_label = "Taxable Value"
+
+    headers = ["Party GSTIN", "Party Name",
+               f"Books ({value_label})", f"{portal_label} ({value_label})",
+               f"Books − {portal_label}"]
     _write_header(ws, 1, headers)
 
     for i, r in enumerate(rows):
-        # R3B is monthly-only (no party detail); show "—" per row
         _write_row(ws, 2 + i, [
             r["party_gstin"], r["party_name"],
-            r["books_total"], "—", r["portal_total"],
-            r["diff_total"], "—",
-        ], formats=[None, None, INR_FMT, None, INR_FMT, INR_FMT, None],
+            r.get(books_key, 0), r.get(portal_key, 0), r.get(diff_key, 0),
+        ], formats=[None, None, INR_FMT, INR_FMT, INR_FMT],
            fill=(SECTION_FILL if i % 2 else None))
 
     if rows:
         annual_row = 2 + len(rows)
-        portal_minus_r3b = round(totals.get("portal_total", 0) - r3b_total, 2)
         _write_row(ws, annual_row, [
             "ANNUAL TOTAL", f"{len(rows)} parties",
-            totals.get("books_total", 0),
-            r3b_total,
-            totals.get("portal_total", 0),
-            totals.get("diff_total", 0),
-            portal_minus_r3b,
-        ], formats=[None, None, INR_FMT, INR_FMT, INR_FMT, INR_FMT, INR_FMT],
+            totals.get(books_key, 0),
+            totals.get(portal_key, 0),
+            totals.get(diff_key, 0),
+        ], formats=[None, None, INR_FMT, INR_FMT, INR_FMT],
            fill=TOTAL_FILL, font=TOTAL_FONT)
     else:
         ws.cell(row=2, column=1, value="No party-wise records").font = Font(italic=True, color="6B7280")
         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
 
-    _set_widths(ws, [22, 36, 16, 16, 18, 16, 18])
+    _set_widths(ws, [22, 36, 18, 20, 18])
     ws.freeze_panes = "A2"
 
 
@@ -396,18 +402,14 @@ def build_workbook(run: Dict[str, Any], summary: Dict[str, Any],
       7. Pending Classification
       8. Run Metadata
     """
-    totals = (summary or {}).get("totals") or {}
-    r3b_outward_total = totals.get("r3b_outward_taxable", 0) or 0
-    r3b_itc_total = totals.get("r3b_itc_total", 0) or 0
-
     wb = Workbook()
     _sheet_dashboard(wb.active, summary, run)
     if partywise_outward:
         _sheet_partywise(wb.create_sheet(), "Annual Party-wise (Outward)",
-                         partywise_outward, "GSTR-1", r3b_outward_total)
+                         partywise_outward, "GSTR-1", direction="outward")
     if partywise_inward:
         _sheet_partywise(wb.create_sheet(), "Annual Party-wise (Inward)",
-                         partywise_inward, "GSTR-2B", r3b_itc_total)
+                         partywise_inward, "GSTR-2B", direction="inward")
     _sheet_summary(wb.create_sheet(), summary)
     _sheet_voucher_matches(wb.create_sheet(), "Outward Vouchers", outward_matches, "GSTR-1")
     _sheet_voucher_matches(wb.create_sheet(), "Inward Vouchers", inward_matches, "GSTR-2B")
