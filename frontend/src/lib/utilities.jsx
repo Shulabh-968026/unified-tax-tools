@@ -3,7 +3,7 @@ import { ACCENTS } from "@/lib/colors";
 
 // id matches a route under /dashboard/clients/:clientId/utilities/<id>
 export const UTILITIES = [
-  { id: "gst-turnover-recon", title: "GST Turnover Recon", description: "Reconcile turnover declared in books against GSTR-1, GSTR-3B and GSTR-9.", icon: ArrowsLeftRight, status: "soon", accent: "indigo" },
+  { id: "gst-turnover-recon", title: "GST Turnover Recon", description: "Reconcile turnover declared in books against GSTR-1, GSTR-3B and GSTR-9.", icon: ArrowsLeftRight, status: "active", accent: "indigo" },
   { id: "tds-disallowance",   title: "TDS Disallowance & Recon", description: "Identify Section 40(a)(ia) disallowances; reconcile TDS deducted vs deposited.", icon: Scales, status: "soon", accent: "teal" },
   { id: "msme-43bh",          title: "43BH MSME Disallowance", description: "Section 43B(h) disallowance for delayed payments to MSME suppliers.", icon: Buildings, status: "active", accent: "amber" },
   { id: "clause-44",          title: "Clause 44 — 3CD", description: "Expenditure schedule with ITC + exclusion mapping, drill-down and Excel breakup.", icon: FileText, status: "active", accent: "emerald" },

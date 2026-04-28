@@ -14,6 +14,7 @@ import Consolidated from "@/pages/Consolidated";
 import AdminUsers from "@/pages/AdminUsers";
 import Msme43bhLanding from "@/pages/msme43bh/Landing";
 import Msme43bhSessionDashboard from "@/pages/msme43bh/SessionDashboard";
+import GstReconLanding from "@/pages/gst_recon/Landing";
 
 function AppRouter() {
   const location = useLocation();
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/dashboard/clients/:clientId/utilities/clause-44/consolidated/:period" element={<ProtectedRoute><Consolidated/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/msme-43bh" element={<ProtectedRoute><Msme43bhLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/msme-43bh/sessions/:sid" element={<ProtectedRoute><Msme43bhSessionDashboard/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/gst-recon" element={<ProtectedRoute><GstReconLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><MappingDashboard/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><ReportDashboard/></ProtectedRoute>}/>
       <Route path="*" element={<Navigate to="/dashboard" replace/>}/>

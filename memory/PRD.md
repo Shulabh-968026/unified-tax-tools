@@ -88,11 +88,33 @@ lib/
 - [ ] End-to-end testing with real login + upload flow (user to verify / to be done after more changes)
 
 ## Phase 2 backlog (pick up tomorrow)
-- [ ] Start the next module (user to specify which utility)
+- [x] GST Turnover Recon — Phase A scaffold (2026-04-28)
+      • Backend: `modules/gst_recon/{controller,service,schemas}.py` with filename categorizer + 12-month grid builder
+      • Routes: POST/GET/DELETE `/api/gst-recon/runs`, POST `/api/gst-recon/runs/{rid}/files` (batch upload + categorize)
+      • Mongo: new `gst_recon_runs` collection
+      • Frontend: `pages/gst_recon/Landing.jsx` — multi-file dropzone + 5-bucket counters + 12-month coverage grid + "Run Reconciliation" CTA (disabled until complete)
+      • Route: `/dashboard/clients/:clientId/utilities/gst-recon`
+      • `utilities.jsx` → `gst-turnover-recon` flipped to `status="active"`
+      • `ClientUtilities.jsx` navigates to it
+      • Smoke-tested: sample filenames (`33AAEFA5684J1ZC_GSTR1_April_2024-2025_0.json`, `returns_R2B_..._042024.json`, `GSTR3B_..._042024.pdf`) correctly classified + mapped to Apr 2024 row
+- [ ] GST Recon Phase B — Pre-flight validation gates
+      • GSTIN mismatch check (requires adding `gstin` field to client model — user chose single client-level gstin)
+      • FY alignment check (Books `booksFromDate`/`booksToDate` must cover 12 months)
+      • File integrity (JSON parse + GSTR-3B PDF header scan for "Form GSTR-3B")
+      • Completeness gate (hard-block Run button if any month/file missing)
+- [ ] GST Recon Phase C — GSTR-3B PDF parser (Table 3.1 turnover + Table 4 ITC) in `helpers/parsers.py`, Pandas 12-month aggregation, Summary UI
+- [ ] GST Recon Phase D — Voucher-level rapidfuzz matching + drill-down UI with amber/red highlighting
+- [ ] GST Recon Phase E — Testing sub-agent
 - [ ] Migrate 43B(h) pages from shadcn → MUI + react-toastify (preserve current look)
 - [ ] Migrate Clause 44 pages from shadcn → MUI
 - [ ] Replace sonner with react-toastify (once MUI migration happens)
-- [ ] Run the testing sub-agent once the next round of changes is in
+
+### Real-sample file formats (captured from user's uploads — for Phase B/C)
+- **Books JSON** (Tally export): top-level `company.booksFromDate / booksToDate`, `vouchers[]` with `voucherTypeName`, `date`, `voucherNumber`, `partyGSTIN`, `consigneeGSTIN`, `ledgerEntries[]` (tax amounts are in per-ledger entries like "Input CGST @ 2.5%", "Output IGST @ 5%"). No top-level `clientGstin` → infer via `consigneeGSTIN` on sales or match against `clients.gstin`.
+- **GSTR-1 JSON**: `gstin`, `fp` (MMYYYY), `b2b[]` → each item has `ctin` (counterparty) + `inv[]` with `inum`, `idt` (DD-MM-YYYY), `val`, `itms[].itm_det.{txval,camt,samt,iamt,csamt,rt}`.
+- **GSTR-2B JSON**: `data.docdata.b2b[]` → `ctin`, `trdnm`, `supfildt`, `supprd`, `inv[]` with `inum`, `dt`, `val`, `txval`, `cgst`, `sgst`, `igst`, `cess`, `itcavl`, `imsStatus`. Also `data.itcsumm.itcavl.nonrevsup.b2b` for ITC totals.
+- **GSTR-3B PDF**: needs `pdfplumber` (not yet installed) to extract Table 3.1 (Outward supplies) and Table 4 (ITC).
+- **Ledger Mapping**: XLSX (not CSV as originally spec'd). Exact column names to be confirmed from the sample during Phase B.
 
 ## Phase 3 / future utilities (status="soon" in `utilities.jsx`)
 GST Turnover Recon · TDS Disallowance & Recon · TDS Clause 34 — 3CD · AIS/TIS/26AS Recon · Fixed Assets · Balance Confirmation · GST Refund Clause 31

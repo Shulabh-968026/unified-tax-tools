@@ -14,6 +14,7 @@ from modules.auth.controller import router as auth_router
 from modules.clause44.controller import router as clause44_router
 from modules.clients.controller import router as clients_router
 from modules.msme43bh.controller import router as msme_router
+from modules.gst_recon.controller import router as gst_recon_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 log = logging.getLogger("app")
@@ -25,6 +26,7 @@ api.include_router(clients_router)
 api.include_router(clause44_router)
 api.include_router(admin_router)
 api.include_router(msme_router)
+api.include_router(gst_recon_router)
 
 
 @api.get("/")
