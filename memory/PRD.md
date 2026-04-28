@@ -97,11 +97,13 @@ lib/
       • `utilities.jsx` → `gst-turnover-recon` flipped to `status="active"`
       • `ClientUtilities.jsx` navigates to it
       • Smoke-tested: sample filenames (`33AAEFA5684J1ZC_GSTR1_April_2024-2025_0.json`, `returns_R2B_..._042024.json`, `GSTR3B_..._042024.pdf`) correctly classified + mapped to Apr 2024 row
-- [ ] GST Recon Phase B — Pre-flight validation gates
-      • GSTIN mismatch check (requires adding `gstin` field to client model — user chose single client-level gstin)
-      • FY alignment check (Books `booksFromDate`/`booksToDate` must cover 12 months)
-      • File integrity (JSON parse + GSTR-3B PDF header scan for "Form GSTR-3B")
-      • Completeness gate (hard-block Run button if any month/file missing)
+- [x] GST Recon Phase A scaffold complete (see above)
+- [x] Client model extended with optional `gstin` field (2026-04-28)
+      • Backend: `ClientCreate` / `ClientUpdate` now accept `gstin` with regex `^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$` (server-side 422 on invalid)
+      • `_public()` includes `gstin` in response; stored upper-cased & trimmed, `None` when blank
+      • Frontend: `CreateClientDialog` has new GSTIN input (optional, 15-char, uppercased, client-side regex) with hint text
+      • `ClientUtilities` page header now shows `GSTIN · <value>` chip when set
+- [ ] GST Recon Phase B — Pre-flight validation gates (GSTIN gate can now use `clients.gstin`)
 - [ ] GST Recon Phase C — GSTR-3B PDF parser (Table 3.1 turnover + Table 4 ITC) in `helpers/parsers.py`, Pandas 12-month aggregation, Summary UI
 - [ ] GST Recon Phase D — Voucher-level rapidfuzz matching + drill-down UI with amber/red highlighting
 - [ ] GST Recon Phase E — Testing sub-agent

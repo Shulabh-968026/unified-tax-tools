@@ -41,6 +41,14 @@ export default function ClientUtilities() {
         subtitle={
           <span className="inline-flex items-center gap-2 flex-wrap">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#52524E]">File · {client.file_number}</span>
+            {client.gstin && (
+              <>
+                <span>·</span>
+                <span className="font-mono text-[11px] tracking-[0.12em] text-[#52524E]" data-testid="client-gstin-display">
+                  GSTIN · <span className="text-[#0F172A] font-semibold">{client.gstin}</span>
+                </span>
+              </>
+            )}
             <span>·</span>
             <Badge className={`${isMulti ? "bg-amber-50 text-amber-900 border-amber-200" : "bg-emerald-50 text-emerald-900 border-emerald-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}>
               {isMulti ? <><Stack size={10} className="mr-1"/>Multi · {client.divisions?.length || 0} div</> : <><Buildings size={10} className="mr-1"/>Single</>}

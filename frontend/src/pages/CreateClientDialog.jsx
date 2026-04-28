@@ -11,17 +11,25 @@ import { toast } from "sonner";
 export default function CreateClientDialog({ open, onOpenChange, onCreated }) {
   const [fileNumber, setFileNumber] = useState("");
   const [name, setName] = useState("");
+  const [gstin, setGstin] = useState("");
   const [type, setType] = useState("single");
   const [divisions, setDivisions] = useState([""]);
   const [busy, setBusy] = useState(false);
 
+  const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
+
   const reset = () => {
-    setFileNumber(""); setName(""); setType("single"); setDivisions([""]); setBusy(false);
+    setFileNumber(""); setName(""); setGstin(""); setType("single"); setDivisions([""]); setBusy(false);
   };
 
   const submit = async () => {
     if (!fileNumber.trim() || !name.trim()) {
       toast.error("File Number and Name are required");
+      return;
+    }
+    const g = gstin.trim().toUpperCase();
+    if (g && !GSTIN_RE.test(g)) {
+      toast.error("GSTIN must be 15 characters (e.g. 33AAEFA5684J1ZC)");
       return;
     }
     const divs = type === "multi" ? divisions.map((d) => d.trim()).filter(Boolean) : [];
@@ -31,7 +39,9 @@ export default function CreateClientDialog({ open, onOpenChange, onCreated }) {
     }
     setBusy(true);
     try {
-      const c = await createClient({ file_number: fileNumber.trim(), name: name.trim(), type, divisions: divs });
+      const payload = { file_number: fileNumber.trim(), name: name.trim(), type, divisions: divs };
+      if (g) payload.gstin = g;
+      const c = await createClient(payload);
       toast.success("Client created");
       onCreated?.(c);
       reset();
@@ -61,6 +71,20 @@ export default function CreateClientDialog({ open, onOpenChange, onCreated }) {
           <div>
             <Label className="text-[11px] uppercase tracking-[0.12em] font-mono text-[#52524E]">Client Name</Label>
             <Input data-testid="client-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ABC Textile Mills" className="mt-1 rounded-sm shadow-none border-[#D4D4D0]"/>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-[0.12em] font-mono text-[#52524E]">
+              GSTIN <span className="text-[#8a8a84] normal-case tracking-normal">(optional)</span>
+            </Label>
+            <Input
+              data-testid="client-gstin"
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value.toUpperCase())}
+              placeholder="33AAEFA5684J1ZC"
+              maxLength={15}
+              className="mt-1 rounded-sm shadow-none border-[#D4D4D0] font-mono tracking-wider"
+            />
+            <p className="mt-1 text-[10px] text-[#8a8a84] font-mono">Required later for GST Recon utility. Format: 15 characters.</p>
           </div>
           <div>
             <Label className="text-[11px] uppercase tracking-[0.12em] font-mono text-[#52524E]">Client Structure</Label>

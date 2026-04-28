@@ -12,16 +12,21 @@ from modules.auth.controller import get_current_user
 router = APIRouter()
 
 
+GSTIN_PATTERN = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$"
+
+
 class ClientCreate(BaseModel):
     file_number: str
     name: str
     type: str = Field(pattern="^(single|multi)$")
+    gstin: Optional[str] = Field(default=None, pattern=GSTIN_PATTERN)
     divisions: List[str] = Field(default_factory=list)
 
 
 class ClientUpdate(BaseModel):
     file_number: Optional[str] = None
     name: Optional[str] = None
+    gstin: Optional[str] = Field(default=None, pattern=GSTIN_PATTERN)
     add_divisions: List[str] = Field(default_factory=list)
     archived: Optional[bool] = None
 
@@ -32,6 +37,7 @@ def _public(c: Dict[str, Any]) -> Dict[str, Any]:
         "file_number": c.get("file_number", ""),
         "name": c.get("name", ""),
         "type": c.get("type", "single"),
+        "gstin": c.get("gstin") or "",
         "divisions": c.get("divisions", []),
         "archived": c.get("archived", False),
         "created_at": c.get("created_at"),
@@ -75,6 +81,7 @@ async def create_client(
         "file_number": file_number,
         "name": name,
         "type": body.type,
+        "gstin": (body.gstin or "").upper().strip() or None,
         "divisions": divisions,
         "archived": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -130,6 +137,8 @@ async def update_client(
         update["file_number"] = body.file_number.strip()
     if body.name is not None:
         update["name"] = body.name.strip()
+    if body.gstin is not None:
+        update["gstin"] = body.gstin.upper().strip() or None
     if body.archived is not None:
         update["archived"] = body.archived
     if body.add_divisions:
