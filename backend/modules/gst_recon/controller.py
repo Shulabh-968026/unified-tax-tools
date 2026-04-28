@@ -421,6 +421,42 @@ async def compute_match(
     return match_invoices(books, portal, relaxed=relaxed)
 
 
+@router.post("/runs/{rid}/match-party")
+async def compute_match_party(
+    rid: str,
+    request: Request,
+    party_gstin: str,
+    direction: str = "inward",
+    relaxed: bool = True,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Whole-year voucher-level matching for ONE party.
+
+    Loads all 12 months of books and portal vouchers for the given party_gstin
+    and direction, then runs the same 3-pass matching engine. Useful when a CA
+    wants to drill into a single supplier's full annual variance.
+    """
+    await _auth(request, session_token, authorization)
+    if direction not in ("outward", "inward"):
+        raise HTTPException(400, "direction must be 'outward' or 'inward'")
+    if not party_gstin:
+        raise HTTPException(400, "party_gstin is required")
+    doc = await COLL.find_one({"id": rid}, {"_id": 0, "id": 1})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+    portal_src = "gstr1" if direction == "outward" else "gstr2b"
+    books = await INV.find(
+        {"run_id": rid, "source": "books", "direction": direction, "party_gstin": party_gstin},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(20000)
+    portal = await INV.find(
+        {"run_id": rid, "source": portal_src, "party_gstin": party_gstin},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(20000)
+    return match_invoices(books, portal, relaxed=relaxed)
+
+
 @router.get("/runs/{rid}/partywise")
 async def get_partywise(
     rid: str,

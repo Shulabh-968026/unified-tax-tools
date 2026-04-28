@@ -262,3 +262,33 @@ def test_relaxed_picks_closest_date_when_multiple_candidates():
     assert pair["portal"]["invoice_no"] == "PortalB"
     # PortalA remains missing-in-books
     assert out["missing_in_books"][0]["invoice_no"] == "PortalA"
+
+
+def test_relaxed_handles_user_screenshot_scenario():
+    """Reproduces the specific bug from user's screenshot: same party, same period,
+    same exact total but completely different bill numbers (Tally voucher # vs
+    portal IRN-style ID)."""
+    # User's data — May 2024, party 33AAACS8577K1ZW (Tata-AIG)
+    books = _book("32", gstin="33AAACS8577K1ZW", total=11.80, date="2024-05-31")
+    books["period"] = "052024"
+    portal = _portal("T0524331W4309", gstin="33AAACS8577K1ZW", total=11.80, date="31-05-2024")
+    portal["period"] = "052024"
+
+    # Strict: should NOT match (bill numbers differ entirely, no fuzz hit)
+    strict = match_invoices([books], [portal], relaxed=False)
+    assert strict["counts"]["matched"] == 0
+    assert strict["counts"]["missing_in_portal"] == 1
+    assert strict["counts"]["missing_in_books"] == 1
+
+    # Relaxed: SHOULD match via Pass 3
+    relaxed = match_invoices([books], [portal], relaxed=True)
+    total_matched = (relaxed["counts"]["matched"]
+                    + relaxed["counts"]["value_mismatch"]
+                    + relaxed["counts"]["date_mismatch"])
+    assert total_matched == 1
+    assert relaxed["counts"]["missing_in_books"] == 0
+    assert relaxed["counts"]["missing_in_portal"] == 0
+    pair = (relaxed["matched"] + relaxed["value_mismatch"] + relaxed["date_mismatch"])[0]
+    assert pair.get("relaxed_match") is True
+    assert pair["books"]["voucher_no"] == "32"
+    assert pair["portal"]["invoice_no"] == "T0524331W4309"

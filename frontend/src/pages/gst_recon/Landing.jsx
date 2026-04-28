@@ -45,6 +45,7 @@ export default function GstReconLanding() {
   const [pastRuns, setPastRuns] = useState([]);
   const [unmapped, setUnmapped] = useState([]);
   const [showPast, setShowPast] = useState(true);
+  const [relaxed, setRelaxed] = useState(true); // ON by default — auto-matches same-party + same-period + same-amount
   const inputRef = useRef();
 
   // Load past runs on mount + after any new run is created
@@ -169,7 +170,7 @@ export default function GstReconLanding() {
     if (!runId) return;
     setBusy(true);
     try {
-      const res = await http.get(`/gst-recon/runs/${runId}/export.xlsx`, { responseType: "blob" });
+      const res = await http.get(`/gst-recon/runs/${runId}/export.xlsx?relaxed=${relaxed}`, { responseType: "blob" });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const cd = res.headers["content-disposition"] || "";
       const m = cd.match(/filename="(.+?)"/);
@@ -178,7 +179,7 @@ export default function GstReconLanding() {
       a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); a.remove();
       window.URL.revokeObjectURL(url);
-      toast.success("Workbook downloaded");
+      toast.success(`Workbook downloaded${relaxed ? " (relaxed fuzzy)" : ""}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Download failed");
     } finally {
@@ -370,18 +371,17 @@ export default function GstReconLanding() {
           </div>
         )}
 
-        {summary && <SummaryPanel summary={summary} runId={runId} />}
+        {summary && <SummaryPanel summary={summary} runId={runId} relaxed={relaxed} onRelaxedChange={setRelaxed} />}
       </div>
     </div>
   );
 }
 
-function SummaryPanel({ summary, runId }) {
+function SummaryPanel({ summary, runId, relaxed, onRelaxedChange }) {
   const { rows, totals, fy } = summary;
-  const [drawer, setDrawer] = useState(null); // { period, month_label, direction }
+  const [drawer, setDrawer] = useState(null); // { mode:'period'|'party', period?, month_label?, direction, party_gstin?, party_name? }
   const [tab, setTab] = useState("partywise"); // 'partywise' | 'monthly'
   const [direction, setDirection] = useState("inward"); // partywise direction
-  const [relaxed, setRelaxed] = useState(false); // persisted across drawer opens within this run
 
   return (
     <div className="mt-8 space-y-4" data-testid="summary-panel">
@@ -404,7 +404,8 @@ function SummaryPanel({ summary, runId }) {
         </div>
 
         {tab === "partywise" && (
-          <PartywisePanel runId={runId} direction={direction} onDirectionChange={setDirection}/>
+          <PartywisePanel runId={runId} direction={direction} onDirectionChange={setDirection}
+                          onPartyDrill={(party_gstin, party_name) => setDrawer({ mode: "party", direction, party_gstin, party_name })}/>
         )}
 
         {tab === "monthly" && (
@@ -420,7 +421,7 @@ function SummaryPanel({ summary, runId }) {
                 { key: "var_books_vs_r1_outward", label: "Books − R1", variance: true },
                 { key: "var_r1_vs_r3b_outward",   label: "R1 − R3B",   variance: true },
               ]}
-              onDrill={(period, monthLabel, dir) => setDrawer({ period, month_label: monthLabel, direction: dir })}
+              onDrill={(period, monthLabel, dir) => setDrawer({ mode: "period", period, month_label: monthLabel, direction: dir })}
               testid="summary-outward"
             />
             <ReconTable
@@ -434,14 +435,14 @@ function SummaryPanel({ summary, runId }) {
                 { key: "var_books_vs_r2b_itc", label: "Books − R2B", variance: true },
                 { key: "var_r2b_vs_r3b_itc",   label: "R2B − R3B",   variance: true },
               ]}
-              onDrill={(period, monthLabel, dir) => setDrawer({ period, month_label: monthLabel, direction: dir })}
+              onDrill={(period, monthLabel, dir) => setDrawer({ mode: "period", period, month_label: monthLabel, direction: dir })}
               testid="summary-itc"
             />
           </>
         )}
       </div>
 
-      {drawer && <MatchDrawer runId={runId} period={drawer.period} monthLabel={drawer.month_label} direction={drawer.direction} relaxed={relaxed} onRelaxedChange={setRelaxed} onClose={() => setDrawer(null)} />}
+      {drawer && <MatchDrawer runId={runId} drawer={drawer} relaxed={relaxed} onRelaxedChange={onRelaxedChange} onClose={() => setDrawer(null)} />}
     </div>
   );
 }
@@ -460,7 +461,7 @@ function TabBtn({ active, onClick, children, testid }) {
   );
 }
 
-function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }) {
+function PartywisePanel({ runId, direction, onDirectionChange, onPartyDrill }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -481,7 +482,7 @@ function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }
         <div className="text-[12px] font-medium text-gray-800">
           Annual Party-wise Comparison
           <span className="ml-2 text-[10px] font-mono text-gray-500">
-            {direction === "inward" ? "(ITC values)" : "(Taxable values)"}
+            {direction === "inward" ? "(ITC values · click row to drill)" : "(Taxable values · click row to drill)"}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -499,12 +500,12 @@ function PartywisePanel({ runId, totals, direction, onDirectionChange, onDrill }
       </div>
 
       {loading && <div className="p-8 text-center text-sm text-gray-500"><Loader2 className="inline animate-spin mr-2" size={14}/>Aggregating party-wise…</div>}
-      {!loading && data && <PartywiseTable data={data} portalLabel={portalLabel} direction={direction}/>}
+      {!loading && data && <PartywiseTable data={data} portalLabel={portalLabel} direction={direction} onPartyDrill={onPartyDrill}/>}
     </div>
   );
 }
 
-function PartywiseTable({ data, portalLabel, direction }) {
+function PartywiseTable({ data, portalLabel, direction, onPartyDrill }) {
   const rows = data.rows || [];
   const totals = data.totals || {};
   if (!rows.length) {
@@ -536,9 +537,12 @@ function PartywiseTable({ data, portalLabel, direction }) {
             const diff = r[diffKey] || 0;
             const cls = Math.abs(diff) < 1 ? "text-emerald-700" : "text-amber-700 font-semibold";
             return (
-              <tr key={r.party_gstin} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`partywise-row-${r.party_gstin}`}>
+              <tr key={r.party_gstin} className={`${i % 2 ? "bg-gray-50/40" : "bg-white"} cursor-pointer hover:bg-blue-50`}
+                  onClick={() => onPartyDrill && onPartyDrill(r.party_gstin, r.party_name)}
+                  title={`Drill into ${r.party_name || r.party_gstin} (all months)`}
+                  data-testid={`partywise-row-${r.party_gstin}`}>
                 <td className="px-3 py-2 border-b border-gray-100 text-gray-700">{r.party_gstin}</td>
-                <td className="px-3 py-2 border-b border-gray-100 text-gray-900">{r.party_name || "—"}</td>
+                <td className="px-3 py-2 border-b border-gray-100 text-gray-900 hover:underline">{r.party_name || "—"}</td>
                 <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r[booksKey])}</td>
                 <td className="px-3 py-2 border-b border-gray-100 text-right">{fmtINR(r[portalKey])}</td>
                 <td className={`px-3 py-2 border-b border-gray-100 text-right bg-amber-50/30 ${cls}`}>{fmtINR(diff)}</td>
@@ -629,23 +633,32 @@ const TABS = [
   { id: "missing_in_portal",label: "Missing in Portal",dot: "bg-red-500" },
 ];
 
-function MatchDrawer({ runId, period, monthLabel, direction, onClose }) {
+function MatchDrawer({ runId, drawer, relaxed, onRelaxedChange, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("matched");
-  const [relaxed, setRelaxed] = useState(false);
+  const isPartyMode = drawer.mode === "party";
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    http.post(`/gst-recon/runs/${runId}/match?period=${period}&direction=${direction}&relaxed=${relaxed}`)
+    const url = isPartyMode
+      ? `/gst-recon/runs/${runId}/match-party?party_gstin=${encodeURIComponent(drawer.party_gstin)}&direction=${drawer.direction}&relaxed=${relaxed}`
+      : `/gst-recon/runs/${runId}/match?period=${drawer.period}&direction=${drawer.direction}&relaxed=${relaxed}`;
+    http.post(url)
       .then(({ data: d }) => { if (!cancelled) { setData(d); setLoading(false); } })
       .catch(e => { if (!cancelled) { toast.error(e?.response?.data?.detail || "Match failed"); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [runId, period, direction, relaxed]);
+  }, [runId, drawer.period, drawer.party_gstin, drawer.direction, relaxed, isPartyMode]);
 
   const counts = data?.counts || {};
-  const portalLabel = direction === "outward" ? "GSTR-1" : "GSTR-2B";
+  const portalLabel = drawer.direction === "outward" ? "GSTR-1" : "GSTR-2B";
+  const headerTitle = isPartyMode
+    ? `${drawer.party_name || drawer.party_gstin} · all months`
+    : `${drawer.month_label} · ${drawer.direction}`;
+  const headerSubtitle = isPartyMode
+    ? `${drawer.party_gstin} · Books ↔ ${portalLabel}`
+    : `Books ↔ ${portalLabel}`;
 
   return (
     <>
@@ -656,8 +669,9 @@ function MatchDrawer({ runId, period, monthLabel, direction, onClose }) {
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-gray-500">Voucher-level match</div>
             <h2 className="text-lg font-semibold text-gray-900 mt-1">
-              {monthLabel} · Books ↔ {portalLabel} ({direction})
+              {headerTitle}
             </h2>
+            <div className="text-[11px] font-mono text-gray-500 mt-0.5">{headerSubtitle}</div>
           </div>
           <div className="flex items-center gap-3">
             <label className="inline-flex items-center gap-2 text-xs font-medium cursor-pointer select-none" data-testid="relaxed-fuzzy-toggle">
