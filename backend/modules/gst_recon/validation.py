@@ -48,8 +48,17 @@ def inspect_file(filename: str, bucket: str, content: bytes) -> Dict[str, Any]:
                 out["parse_error"] = "Not a PDF (missing %PDF header)"
                 return out
             out["integrity_ok"] = True
-            out["gstin"] = _extract_gstin(filename)
-            out["period"] = _extract_period(filename)
+            # Full table extraction (Phase C.2)
+            from helpers.parsers import parse_gstr3b_pdf
+            parsed = parse_gstr3b_pdf(content)
+            out["gstin"] = parsed.get("gstin") or _extract_gstin(filename)
+            out["period"] = parsed.get("period") or _extract_period(filename)
+            out["table_3_1"] = parsed.get("table_3_1") or {}
+            out["table_4"] = parsed.get("table_4") or {}
+            if parsed.get("errors"):
+                # Don't hard-fail integrity — surface as warning text
+                out["parse_error"] = "; ".join(parsed["errors"])
+                out["integrity_ok"] = bool(out["table_3_1"] or out["table_4"])
         elif bucket == "mapping":
             # CSV or XLSX — byte-level size check only for Phase B
             if len(content) < 20:

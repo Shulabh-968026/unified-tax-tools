@@ -118,6 +118,9 @@ async def upload_batch(
         if entry["bucket"] == "books":
             entry["books_from"] = meta.get("books_from")
             entry["books_to"] = meta.get("books_to")
+        if entry["bucket"] == "gstr3b":
+            entry["table_3_1"] = meta.get("table_3_1") or {}
+            entry["table_4"] = meta.get("table_4") or {}
         new_entries.append(entry)
 
     merged = {(x["filename"]): x for x in doc.get("files", [])}
@@ -164,6 +167,12 @@ async def validate(
     doc = await COLL.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    client = await db.clients.find_one({"client_id": doc["client_id"]}, {"_id": 0})
+    doc["client_gstin"] = (client or {}).get("gstin", "") or ""
+    verdict = validate_run(doc)
+    await COLL.update_one({"id": rid}, {"$set": {"validation": verdict}})
+    return verdict
+04, "Run not found")
     client = await db.clients.find_one({"client_id": doc["client_id"]}, {"_id": 0})
     doc["client_gstin"] = (client or {}).get("gstin", "") or ""
     verdict = validate_run(doc)
