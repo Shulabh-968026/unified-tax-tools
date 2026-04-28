@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 
 from core.db import db
 from helpers.mapping import parse_ledger_mapping
@@ -20,6 +21,7 @@ from modules.gst_recon.aggregators import (
     extract_gstr1_invoices,
     extract_gstr2b_invoices,
 )
+from modules.gst_recon.excel_export import build_workbook
 from modules.gst_recon.service import build_month_grid, build_summary, categorize_file, match_invoices
 from modules.gst_recon.validation import inspect_file, validate_run
 
@@ -342,3 +344,66 @@ async def compute_match(
         {"_id": 0, "run_id": 0, "source": 0},
     ).to_list(20000)
     return match_invoices(books, portal)
+
+
+
+@router.get("/runs/{rid}/export.xlsx")
+async def export_workbook(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Audit working-paper export — multi-sheet XLSX with Dashboard, 12-month
+    summary, voucher-level matches per direction, Pending Classification, and
+    run metadata. The sheet matches the on-screen layout 1:1 so the file can
+    be saved directly to the audit working-paper folder."""
+    await _auth(request, session_token, authorization)
+    doc = await COLL.find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+
+    # Make sure the latest summary is on the doc; recompute on the fly if missing
+    summary = doc.get("summary")
+    if not summary:
+        summary = build_summary(doc)
+        await COLL.update_one({"id": rid}, {"$set": {"summary": summary, "status": "summarized"}})
+
+    # Run match_invoices per (period, direction) — only for periods that have
+    # at least one party-GSTIN-bearing voucher on either side
+    rows = summary.get("rows", [])
+    outward_matches: Dict[str, Dict[str, Any]] = {}
+    inward_matches: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        period = row["period"]
+        label = row["month_label"]
+        # Outward
+        b_out = await INV.find(
+            {"run_id": rid, "source": "books", "period": period, "direction": "outward"},
+            {"_id": 0, "run_id": 0, "source": 0},
+        ).to_list(20000)
+        p_out = await INV.find(
+            {"run_id": rid, "source": "gstr1", "period": period},
+            {"_id": 0, "run_id": 0, "source": 0},
+        ).to_list(20000)
+        if b_out or p_out:
+            outward_matches[label] = match_invoices(b_out, p_out)
+        # Inward
+        b_in = await INV.find(
+            {"run_id": rid, "source": "books", "period": period, "direction": "inward"},
+            {"_id": 0, "run_id": 0, "source": 0},
+        ).to_list(20000)
+        p_in = await INV.find(
+            {"run_id": rid, "source": "gstr2b", "period": period},
+            {"_id": 0, "run_id": 0, "source": 0},
+        ).to_list(20000)
+        if b_in or p_in:
+            inward_matches[label] = match_invoices(b_in, p_in)
+
+    xlsx_bytes = build_workbook(doc, summary, outward_matches, inward_matches)
+    filename = f"GST_Recon_FY{doc.get('fy', '')}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        iter([xlsx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

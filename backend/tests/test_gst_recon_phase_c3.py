@@ -76,6 +76,42 @@ def test_gstr2b_itcavl_directly_no_nonrevsup_wrapper():
     assert out == {"taxable": 0.0, "igst": 7000.0, "cgst": 3500.0, "sgst": 3500.0, "cess": 50.0}
 
 
+def test_gstr2b_real_user_format_igst_keys_with_totals_at_nonrevsup_level():
+    """User's actual GSTR-2B JSON (Apr 2024) — uses igst/cgst/sgst/cess keys
+    (not iamt/camt/samt/csamt), AND the totals sit at nonrevsup level alongside
+    the b2b sub-dict. Parser must read the parent totals and not double-count
+    by also summing the b2b child."""
+    j = {"data": {"gstin": "33X", "rtnprd": "042024",
+        "itcsumm": {"itcavl": {"nonrevsup": {
+            "sgst": 15776.96, "cgst": 15776.96, "igst": 0, "cess": 0,
+            "b2b": {"sgst": 15776.96, "txval": 581347.24,
+                    "cgst": 15776.96, "cess": 0, "igst": 0},
+        }}}}}
+    out = aggregate_gstr2b(_bytes(j))
+    # Must match parent totals exactly — NOT 2x because of double-summing
+    assert out == {"taxable": 0.0, "igst": 0.0, "cgst": 15776.96, "sgst": 15776.96, "cess": 0.0}
+
+
+def test_gstr2b_invoice_extractor_reads_items_array():
+    """Real 2B invoices put tax breakdown inside items[] array, NOT at invoice level."""
+    j = {"data": {"rtnprd": "042024", "docdata": {"b2b": [{
+        "ctin": "33SUPPL", "trdnm": "ARUN PACKS",
+        "inv": [{"inum": "11", "dt": "30-04-2024", "val": 21169.2,
+            "items": [{"sgst": 1614.6, "rt": 18, "txval": 17940, "cgst": 1614.6, "cess": 0, "igst": 0}],
+        }],
+    }]}}}
+    from modules.gst_recon.aggregators import extract_gstr2b_invoices
+    invs = extract_gstr2b_invoices(_bytes(j), "042024")
+    assert len(invs) == 1
+    inv = invs[0]
+    assert inv["taxable"] == 17940.0
+    assert inv["cgst"] == 1614.6
+    assert inv["sgst"] == 1614.6
+    assert inv["igst"] == 0.0
+    assert inv["invoice_no"] == "11"
+    assert inv["party_gstin"] == "33SUPPL"
+
+
 # ---------------- aggregate_books ----------------
 def test_books_outward_excludes_party_ledger():
     """Ensure customer/vendor ledger is NOT double-counted as taxable value."""

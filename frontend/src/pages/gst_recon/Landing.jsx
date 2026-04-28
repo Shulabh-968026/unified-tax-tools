@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History } from "lucide-react";
+import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History, Download } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 
@@ -165,6 +165,27 @@ export default function GstReconLanding() {
     }
   };
 
+  const downloadWorkbook = async () => {
+    if (!runId) return;
+    setBusy(true);
+    try {
+      const res = await http.get(`/gst-recon/runs/${runId}/export.xlsx`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const cd = res.headers["content-disposition"] || "";
+      const m = cd.match(/filename="(.+?)"/);
+      const filename = m ? m[1] : `GST_Recon_FY${fy}.xlsx`;
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Workbook downloaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Download failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const coverageComplete =
     hasBooks && hasMapping &&
     months.length === 12 && months.every(m => m.gstr1 && m.gstr2b && m.gstr3b);
@@ -307,6 +328,19 @@ export default function GstReconLanding() {
               data-testid="run-reconciliation-btn"
             >
               <Calculator size={14} className="mr-2 inline"/> Run Reconciliation
+            </button>
+            <button
+              disabled={!summary || busy}
+              onClick={downloadWorkbook}
+              className={`h-9 px-3 rounded-sm border text-xs font-medium inline-flex items-center gap-1.5 ${
+                summary && !busy
+                  ? "border-emerald-700 bg-white text-emerald-800 hover:bg-emerald-50"
+                  : "border-gray-200 text-gray-400 cursor-not-allowed bg-white"
+              }`}
+              data-testid="download-workbook-btn"
+              title={summary ? "Download audit working-paper (XLSX)" : "Run reconciliation first"}
+            >
+              <Download size={13}/> Audit Working-Paper
             </button>
           </div>
         </div>

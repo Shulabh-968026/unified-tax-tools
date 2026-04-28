@@ -138,7 +138,21 @@ lib/
       • New endpoint `POST /api/gst-recon/runs/{rid}/match?period=MMYYYY&direction=outward|inward`
       • Cascade delete of invoices on run delete
       • 16 unit tests in `tests/test_gst_recon_phase_d.py` — all passing
-- [x] **GST Recon — 2B parser fix + data cleanup + Summary Dashboard** (2026-04-28)
+- [x] **GST Recon — Excel audit working-paper export + 2B real-format fix** (2026-04-28)
+      • **BUG**: Despite earlier 2B fix, real GSTR-2B JSON files for Apr-May 2024 still showed 0.00. **Root causes** (TWO issues):
+        1. User's actual 2B files use `igst/cgst/sgst/cess` keys (NOT the GSTN-spec `iamt/camt/samt/csamt`)
+        2. Invoice tax breakdown sits inside `inv.items[]` array, not at invoice level
+      • **FIX**: New `_itc_pick(node)` helper accepts BOTH key namings. `_sum_itc_dict` reads totals at the `nonrevsup` parent level (which equal sum of children) instead of double-counting. Invoice extractor sums `items[]` array when invoice-level tax fields are absent.
+      • **Verified with user's real Apr/May 2024 2B JSONs**: Apr ITC = ₹31,553.92, May ITC = ₹44,857.86 (matches GSTR-3B Net values exactly). Was 0.00 before fix.
+      • **NEW: `GET /api/gst-recon/runs/{rid}/export.xlsx`** — multi-sheet audit working-paper:
+        - Sheet 1: Dashboard with 4 KPI cards + traffic-light coloring + status banner
+        - Sheet 2: 12-Month Summary (Outward + ITC blocks with Annual totals)
+        - Sheet 3: Outward Vouchers (every Books↔GSTR-1 match, categorised by status)
+        - Sheet 4: Inward Vouchers (every Books↔GSTR-2B match)
+        - Sheet 5: Pending Classification (unmapped ledgers)
+        - Sheet 6: Run Metadata + uploaded files list
+      • Frontend: new "Audit Working-Paper" download button next to Run Reconciliation (enabled once summary computed)
+      • **Tests**: 70/70 passing — 3 new 2B real-format tests + 6 new Excel export tests
       • **BUG**: GSTR-2B values showed 0.00 for Apr-Sep 2024 but worked Oct-Mar (user's screenshot). **Root cause**: GSTN's 2B JSON format changed mid-year — older files use camelCase (`itcSumm.itcAvl.nonRevSup`) while newer use lowercase (`itcsumm.itcavl.nonrevsup`). Parser was lowercase-only.
       • **FIX**: All 2B JSON key lookups now case-insensitive (`_ci_get` / `_ci_path` helpers). Tolerates 4 variants: v1 camelCase, v2 lowercase, v3 itcavl-without-nonrevsup wrapper, v4 docdata.b2b invoice-level fallback. Same fix applied to `validation.py::inspect_file` for period / gstin extraction.
       • **Data cleanup**: deleted 19 test clients + 6 Allman trial runs + cascading invoice + books_raw collections. DB now has only Allman Knitwear + ABC Textile Mills with their legitimate data intact.

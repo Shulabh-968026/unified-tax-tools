@@ -104,26 +104,41 @@ def _ci_path(d: Any, *keys: str) -> Any:
     return cur
 
 
-def _sum_itc_dict(node: Any) -> Dict[str, float]:
-    """Accept either a dict of sub-buckets (b2b, impg, ...) OR a single flat dict
-    with iamt/camt/samt/csamt, and return the totals. Case-insensitive."""
+def _itc_pick(node: Any) -> Dict[str, float]:
+    """Read igst/cgst/sgst/cess from a dict — tolerates BOTH naming conventions:
+       (a) GSTN standard:    iamt / camt / samt / csamt
+       (b) User-export tools: igst / cgst / sgst / cess
+    Returns {igst,cgst,sgst,cess} (zeros if none of those keys present)."""
     out = {"igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
     if not isinstance(node, dict):
         return out
-    # Case 1: flat dict containing iamt/camt/samt/csamt
-    if any(_ci_get(node, k) is not None for k in ("iamt", "camt", "samt", "csamt")):
-        out["igst"] += _f(_ci_get(node, "iamt"))
-        out["cgst"] += _f(_ci_get(node, "camt"))
-        out["sgst"] += _f(_ci_get(node, "samt"))
-        out["cess"] += _f(_ci_get(node, "csamt"))
-        return out
-    # Case 2: nested — sum across children
+    out["igst"] = _f(_ci_get(node, "iamt") or _ci_get(node, "igst"))
+    out["cgst"] = _f(_ci_get(node, "camt") or _ci_get(node, "cgst"))
+    out["sgst"] = _f(_ci_get(node, "samt") or _ci_get(node, "sgst"))
+    out["cess"] = _f(_ci_get(node, "csamt") or _ci_get(node, "cess"))
+    return out
+
+
+def _sum_itc_dict(node: Any) -> Dict[str, float]:
+    """Sum ITC totals from a 2B summary node. Strategy:
+      1. Try reading igst/cgst/sgst/cess (or iamt/camt/samt/csamt) directly off the node.
+         Many real-world 2B files put the rolled-up totals at this level
+         (with sub-buckets b2b/impg/... ALSO present as siblings — those are NOT
+         re-summed because the parent already aggregates them).
+      2. If the node has zero direct totals, sum its dict children.
+    """
+    if not isinstance(node, dict):
+        return {"igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
+    direct = _itc_pick(node)
+    if any(direct.values()):
+        return direct
+    # Fallback: sum the immediate dict children
+    out = {"igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
     for v in node.values():
         if isinstance(v, dict):
-            out["igst"] += _f(_ci_get(v, "iamt"))
-            out["cgst"] += _f(_ci_get(v, "camt"))
-            out["sgst"] += _f(_ci_get(v, "samt"))
-            out["cess"] += _f(_ci_get(v, "csamt"))
+            sub = _itc_pick(v)
+            for k in out:
+                out[k] += sub[k]
     return out
 
 
@@ -155,16 +170,28 @@ def aggregate_gstr2b(content: bytes) -> Dict[str, float]:
         if any(tot.values()):
             return _round_dict({"taxable": 0.0, **tot})
 
-    # Path C — fallback: invoice-level b2b under docdata (case-insensitive)
+    # Path C — fallback: invoice-level b2b under docdata (case-insensitive).
+    # Tax fields may be at invoice level OR inside items[] array.
     b2b_list = _ci_path(data, "docdata", "b2b") or []
     tot = {"taxable": 0.0, "igst": 0.0, "cgst": 0.0, "sgst": 0.0, "cess": 0.0}
     for sup in b2b_list:
         for inv in (_ci_get(sup, "inv") or []):
-            tot["taxable"] += _f(_ci_get(inv, "txval"))
-            tot["igst"]    += _f(_ci_get(inv, "igst"))
-            tot["cgst"]    += _f(_ci_get(inv, "cgst"))
-            tot["sgst"]    += _f(_ci_get(inv, "sgst"))
-            tot["cess"]    += _f(_ci_get(inv, "cess"))
+            inv_total = _itc_pick(inv)
+            inv_taxable = _f(_ci_get(inv, "txval"))
+            items = _ci_get(inv, "items") or []
+            if not any(inv_total.values()) and items:
+                # Tax breakdown is in items[]
+                inv_taxable = 0.0
+                for it in items:
+                    it_total = _itc_pick(it)
+                    inv_total["igst"] += it_total["igst"]
+                    inv_total["cgst"] += it_total["cgst"]
+                    inv_total["sgst"] += it_total["sgst"]
+                    inv_total["cess"] += it_total["cess"]
+                    inv_taxable += _f(_ci_get(it, "txval"))
+            tot["taxable"] += inv_taxable
+            for k in ("igst", "cgst", "sgst", "cess"):
+                tot[k] += inv_total[k]
     return _round_dict(tot)
 
 
@@ -412,7 +439,9 @@ def extract_gstr1_invoices(content: bytes, default_period: str = "") -> List[Dic
 
 
 def extract_gstr2b_invoices(content: bytes, default_period: str = "") -> List[Dict[str, Any]]:
-    """Walk GSTR-2B docdata.b2b → each invoice as a flat record. Case-insensitive."""
+    """Walk GSTR-2B docdata.b2b → each invoice as a flat record. Tolerates both
+    the legacy invoice-level tax fields AND the modern items[] array (where each
+    line carries its own igst/cgst/sgst/cess + txval)."""
     try:
         j = json.loads(content.decode("utf-8", errors="replace"))
     except Exception:
@@ -424,6 +453,16 @@ def extract_gstr2b_invoices(content: bytes, default_period: str = "") -> List[Di
         ctin = (_ci_get(sup, "ctin") or "").upper().strip()
         trdnm = _ci_get(sup, "trdnm") or ""
         for inv in (_ci_get(sup, "inv") or []):
+            tax = _itc_pick(inv)
+            taxable = _f(_ci_get(inv, "txval"))
+            items = _ci_get(inv, "items") or []
+            if not any(tax.values()) and items:
+                taxable = 0.0
+                for it in items:
+                    sub = _itc_pick(it)
+                    for k in ("igst", "cgst", "sgst", "cess"):
+                        tax[k] += sub[k]
+                    taxable += _f(_ci_get(it, "txval"))
             out.append({
                 "period": fp,
                 "direction": "inward",
@@ -431,11 +470,11 @@ def extract_gstr2b_invoices(content: bytes, default_period: str = "") -> List[Di
                 "party_name": trdnm,
                 "invoice_no": (_ci_get(inv, "inum") or "").strip(),
                 "date": _ci_get(inv, "dt") or "",
-                "taxable": round(_f(_ci_get(inv, "txval")), 2),
-                "igst": round(_f(_ci_get(inv, "igst")), 2),
-                "cgst": round(_f(_ci_get(inv, "cgst")), 2),
-                "sgst": round(_f(_ci_get(inv, "sgst")), 2),
-                "cess": round(_f(_ci_get(inv, "cess")), 2),
-                "total": round(_f(_ci_get(inv, "val")), 2),
+                "taxable": round(taxable, 2),
+                "igst": round(tax["igst"], 2),
+                "cgst": round(tax["cgst"], 2),
+                "sgst": round(tax["sgst"], 2),
+                "cess": round(tax["cess"], 2),
+                "total": round(_f(_ci_get(inv, "val")) or (taxable + sum(tax.values())), 2),
             })
     return out
