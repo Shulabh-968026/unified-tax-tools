@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2 } from "lucide-react";
+import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 

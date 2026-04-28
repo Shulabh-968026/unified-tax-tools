@@ -90,40 +90,34 @@ def parse_ledger_mapping(content: bytes) -> Dict[str, Any]:
         group = _lower(row[col_group]) if col_group else ""
         sub = _lower(row[col_sub]) if col_sub else ""
 
-        classified = False
-
-        # A. Revenue / Outward Supply (Sales source)
-        #    Head is "Revenue from Operations" or "Other Income"
-        #    (spec also mentioned GroupParent 'Sales Accounts' but Head-only is
-        #     sufficient because 'Other Income' group parents vary.)
-        if head in ("revenue from operations", "other income"):
-            rules["revenue"].add(ledger)
-            classified = True
+        # MUTUALLY-EXCLUSIVE classification (prevents double-counting tax amounts)
+        # Precedence: Output Tax → Input Tax → Revenue
+        #   Tax ledgers checked first because some Output/Input ledgers may also
+        #   sit under a Sales/Purchase parent group.
 
         # C. Output Tax (GSTR-3B liability source)
-        #    Group Parent = "Output Credit" is the direct marker in this dataset.
-        #    Fallback: Head=Other Current Liabilities + name contains Output + GST letters.
         if group == "output credit" or (
-            head == "other current liabilities"
-            and output_name_re.search(ledger)
+            head == "other current liabilities" and output_name_re.search(ledger)
         ):
             rules["output_tax"].add(ledger)
-            classified = True
+            continue
 
         # B. ITC / Input Tax (GSTR-2B source)
-        #    Group Parent = "Input Credit" is the direct marker.
-        #    Fallback: Head="Other Current Assets" + Subhead contains "Balance with Revenue"
-        #             + name contains Input/ITC/GST-letters (covers Deferred ITC ledgers).
         if group == "input credit" or (
             head == "other current assets"
             and ("balance with revenue" in sub or group in ("duties & taxes", "duties and taxes"))
             and (tax_kw_re.search(ledger) or tax_letter_re.search(ledger))
         ):
             rules["input_tax"].add(ledger)
-            classified = True
+            continue
 
-        if not classified and tax_kw_re.search(ledger):
-            # Looks like it might be tax-related but we couldn't place it — flag.
+        # A. Revenue / Outward Supply (Sales source)
+        if head in ("revenue from operations", "other income"):
+            rules["revenue"].add(ledger)
+            continue
+
+        # Not classified — if it looks tax-related, flag for manual review
+        if tax_kw_re.search(ledger):
             unmapped.append(ledger)
 
     return out
