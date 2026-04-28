@@ -1,12 +1,15 @@
 """GST Recon routes — Phase A scaffold (prefix: /gst-recon)."""
 from __future__ import annotations
+import base64
+import gzip
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
 
 from core.db import db
+from helpers.mapping import parse_ledger_mapping
 from modules.auth.controller import get_current_user
 from modules.gst_recon.schemas import RunCreate, RunOut
 from modules.gst_recon.aggregators import (
@@ -23,10 +26,43 @@ from modules.gst_recon.validation import inspect_file, validate_run
 router = APIRouter(prefix="/gst-recon")
 COLL = db.gst_recon_runs
 INV = db.gst_recon_invoices  # Phase D — voucher-level invoice records
+BOOKS_RAW = db.gst_recon_books_raw  # Raw Books JSON stored for re-processing when Mapping arrives
 
 
 async def _auth(request, tok, auth):
     return await get_current_user(request, tok, auth)
+
+
+def _load_rules_from_doc(doc: Dict[str, Any]) -> Optional[Dict[str, set]]:
+    """Convert stored mapping_rules (lists) back to sets for aggregator consumption."""
+    stored = doc.get("mapping_rules") or {}
+    if not stored:
+        return None
+    return {k: set(v or []) for k, v in stored.items()}
+
+
+async def _load_books_content(rid: str) -> Optional[bytes]:
+    raw = await BOOKS_RAW.find_one({"run_id": rid}, {"_id": 0, "content_b64": 1})
+    if not raw or not raw.get("content_b64"):
+        return None
+    try:
+        return gzip.decompress(base64.b64decode(raw["content_b64"]))
+    except Exception:
+        return None
+
+
+async def _reprocess_books(rid: str, content: bytes, rules: Dict[str, set], all_files: List[Dict[str, Any]]):
+    """Re-aggregate books with current mapping rules; rewrite invoices collection."""
+    # Re-aggregate the books file entry
+    books_per_month = aggregate_books(content, rules)
+    for entry in all_files:
+        if entry.get("bucket") == "books":
+            entry["books_per_month"] = books_per_month
+    # Rewrite voucher-level invoice records
+    await INV.delete_many({"run_id": rid, "source": "books"})
+    inv_records = extract_books_invoices(content, rules)
+    if inv_records:
+        await INV.insert_many([{"run_id": rid, "source": "books", **r} for r in inv_records])
 
 
 @router.post("/runs", response_model=RunOut)
@@ -96,6 +132,7 @@ async def delete_run(
         raise HTTPException(404, "Run not found")
     # Cascade — Phase D invoices are tied to the run
     await INV.delete_many({"run_id": rid})
+    await BOOKS_RAW.delete_many({"run_id": rid})
     return {"deleted": True}
 
 
@@ -114,7 +151,13 @@ async def upload_batch(
     if not doc:
         raise HTTPException(404, "Run not found")
 
+    # Load any pre-existing mapping rules to re-process Books on upload
+    existing_rules = _load_rules_from_doc(doc)
+
     new_entries = []
+    pending_books_content: Optional[bytes] = None
+    new_mapping_rules: Optional[Dict[str, Any]] = None
+    mapping_meta: Dict[str, Any] = {}
     for f in files:
         content = await f.read()
         entry = categorize_file(f.filename or "", size=len(content))
@@ -130,12 +173,31 @@ async def upload_batch(
             entry["books_from"] = meta.get("books_from")
             entry["books_to"] = meta.get("books_to")
             if meta.get("integrity_ok"):
-                entry["books_per_month"] = aggregate_books(content)
-                # Phase D — drop & re-insert per-voucher records (idempotent on re-upload)
-                await INV.delete_many({"run_id": rid, "source": "books"})
-                inv_records = extract_books_invoices(content)
-                if inv_records:
-                    await INV.insert_many([{"run_id": rid, "source": "books", **r} for r in inv_records])
+                # Store raw content so a later Mapping upload can re-process
+                await BOOKS_RAW.delete_many({"run_id": rid})
+                await BOOKS_RAW.insert_one({
+                    "run_id": rid,
+                    "filename": entry["filename"],
+                    "content_b64": base64.b64encode(gzip.compress(content)).decode("ascii"),
+                    "size": len(content),
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                })
+                pending_books_content = content
+        if entry["bucket"] == "mapping" and meta.get("integrity_ok"):
+            parsed = parse_ledger_mapping(content)
+            if parsed.get("error"):
+                entry["parse_error"] = parsed["error"]
+                entry["integrity_ok"] = False
+            else:
+                # Serialise sets → sorted lists for Mongo
+                new_mapping_rules = {k: sorted(v) for k, v in parsed["rules"].items()}
+                mapping_meta = {
+                    "mapping_unmapped_ledgers": parsed["unmapped_candidates"],
+                    "mapping_row_count": parsed["row_count"],
+                    "mapping_filename": entry["filename"],
+                }
+                entry["mapping_rules_counts"] = {k: len(v) for k, v in parsed["rules"].items()}
+                entry["mapping_unmapped"] = len(parsed["unmapped_candidates"])
         if entry["bucket"] == "gstr3b":
             entry["table_3_1"] = meta.get("table_3_1") or {}
             entry["table_4"] = meta.get("table_4") or {}
@@ -158,19 +220,36 @@ async def upload_batch(
         merged[e["filename"]] = e
     all_files = list(merged.values())
 
+    # Resolve which mapping rules to use for Books aggregation:
+    #   - new mapping this batch? → use the fresh rules
+    #   - otherwise → fall back to rules previously stored on the run
+    active_rules_sets: Optional[Dict[str, set]] = None
+    if new_mapping_rules is not None:
+        active_rules_sets = {k: set(v) for k, v in new_mapping_rules.items()}
+    elif existing_rules:
+        active_rules_sets = existing_rules
+
+    # Re-aggregate Books if we have both rules and content (either newly uploaded or from disk)
+    if active_rules_sets:
+        books_content = pending_books_content or await _load_books_content(rid)
+        if books_content:
+            await _reprocess_books(rid, books_content, active_rules_sets, all_files)
+
     months = build_month_grid(doc.get("fy", ""), all_files)
     has_books = any(x["bucket"] == "books" for x in all_files)
     has_mapping = any(x["bucket"] == "mapping" for x in all_files)
 
-    await COLL.update_one(
-        {"id": rid},
-        {"$set": {
-            "files": all_files,
-            "months": months,
-            "has_books": has_books,
-            "has_mapping": has_mapping,
-        }},
-    )
+    set_fields: Dict[str, Any] = {
+        "files": all_files,
+        "months": months,
+        "has_books": has_books,
+        "has_mapping": has_mapping,
+    }
+    if new_mapping_rules is not None:
+        set_fields["mapping_rules"] = new_mapping_rules
+        set_fields.update(mapping_meta)
+
+    await COLL.update_one({"id": rid}, {"$set": set_fields})
 
     return {
         "accepted": len(new_entries),
@@ -182,6 +261,8 @@ async def upload_batch(
         "months": months,
         "has_books": has_books,
         "has_mapping": has_mapping,
+        "mapping_unmapped_ledgers": mapping_meta.get("mapping_unmapped_ledgers", []),
+        "books_reprocessed": bool(active_rules_sets and (pending_books_content is not None or new_mapping_rules is not None)),
     }
 
 

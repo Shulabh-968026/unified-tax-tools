@@ -38,18 +38,21 @@ def test_to_iso_date_handles_dd_mm_yyyy_and_iso():
 def test_books_extractor_only_emits_party_gstin_b2b():
     j = {"vouchers": [
         {"date": "2024-04-15", "voucherTypeName": "Sales", "voucherNumber": "S-1",
-         "partyGSTIN": "33ABCDE1234F1Z5", "partyName": "Acme Ltd",
+         "partyGSTIN": "33ABCDE1234F1Z5", "partyLedgerName": "Acme Ltd",
          "ledgerEntries": [
-             {"ledgerName": "Sales Account",     "amount": 1000},
-             {"ledgerName": "Output CGST @ 9%",  "amount": 90},
-             {"ledgerName": "Output SGST @ 9%",  "amount": 90},
-             {"ledgerName": "Acme Ltd",          "amount": -1180},
+             {"ledger": "Acme Ltd",          "isPartyLedger": "Yes", "amount": -1180},
+             {"ledger": "Sales Account",     "amount": 1000},
+             {"ledger": "Output CGST @ 9%",  "amount": 90},
+             {"ledger": "Output SGST @ 9%",  "amount": 90},
          ]},
         {"date": "2024-04-16", "voucherTypeName": "Sales", "voucherNumber": "S-2",
          "partyGSTIN": "",  # B2C — must be skipped
-         "ledgerEntries": [{"ledgerName": "Sales", "amount": 100}]},
+         "ledgerEntries": [{"ledger": "Sales", "amount": 100}]},
     ]}
-    out = extract_books_invoices(_bytes(j))
+    rules = {"revenue": {"Sales Account"},
+             "output_tax": {"Output CGST @ 9%", "Output SGST @ 9%"},
+             "input_tax": set()}
+    out = extract_books_invoices(_bytes(j), rules)
     assert len(out) == 1
     rec = out[0]
     assert rec["period"] == "042024"
@@ -68,16 +71,18 @@ def test_books_extractor_purchase_inward():
         "date": "2024-05-10", "voucherTypeName": "Purchase", "voucherNumber": "P-1",
         "partyGSTIN": "33SUPPL1234F1Z5",
         "ledgerEntries": [
-            {"ledgerName": "Purchase Account",   "amount": -500},
-            {"ledgerName": "Input CGST @ 9%",    "amount": -45},
-            {"ledgerName": "Input SGST @ 9%",    "amount": -45},
-            {"ledgerName": "Suppl Vendor",       "amount": 590},
+            {"ledger": "Purchase Account",   "amount": -500},
+            {"ledger": "Input CGST @ 9%",    "amount": -45},
+            {"ledger": "Input SGST @ 9%",    "amount": -45},
+            {"ledger": "Suppl Vendor",       "isPartyLedger": "Yes", "amount": 590},
         ],
     }]}
-    out = extract_books_invoices(_bytes(j))
+    rules = {"revenue": set(), "output_tax": set(),
+             "input_tax": {"Input CGST @ 9%", "Input SGST @ 9%"}}
+    out = extract_books_invoices(_bytes(j), rules)
     assert len(out) == 1
     assert out[0]["direction"] == "inward"
-    assert out[0]["taxable"] == 500.0
+    assert out[0]["taxable"] == 500.0   # 590 creditor − 90 tax
     assert out[0]["cgst"] == 45.0
 
 

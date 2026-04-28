@@ -32,6 +32,9 @@ class MonthStatus(BaseModel):
 
 
 class RunOut(BaseModel):
+    # extra='allow' so mapping_rules / mapping_unmapped_ledgers / mapping_row_count /
+    # mapping_filename / created_by survive the GET /runs/{rid} response filter.
+    model_config = ConfigDict(extra="allow")
     id: str
     client_id: str
     fy: str

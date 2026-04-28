@@ -1,0 +1,52 @@
+{
+  "summary": "GST Recon iteration 4 testing — mapping-driven Books refactor + past-runs sidebar. Regenerated both stale Phase C/D e2e suites (now include synthetic mapping XLSX upload built with openpyxl + new Tally voucher contract using `ledger`/`partyLedgerName` keys). Backend: 60/60 GST recon tests PASS (17 phase-C e2e + 17 phase-D e2e + 12 phase-C3 unit + 16 phase-D unit). Verified end-to-end: mapping rules persisted+returned with correct counts, 'Writeoff ITC Expenses' surfaces in mapping_unmapped_ledgers, Books-first→Mapping auto-reprocesses (books_reprocessed=true), Mapping-first→Books processes immediately, books_per_month populated only when mapping present (legacy contract change), DELETE /runs/{rid} cascades to gst_recon_invoices AND gst_recon_books_raw, GET /runs/{rid} now exposes mapping_rules + mapping_unmapped_ledgers. Frontend: discovered + fixed CRITICAL runtime error 'ReferenceError: Plus is not defined' caused by missing import in Landing.jsx PastRunsPanel (Plus + Trash2 icons used at L633/L679 but only the basic FileText/CheckCircle2 set was imported from lucide-react). After fix, second runtime error appeared 'TypeError: Illegal constructor' — could not isolate; reported back to main agent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/gst-recon/runs/{rid}", "issue": "Schema RunOut originally lacked extra='allow' so mapping_rules / mapping_unmapped_ledgers / mapping_row_count / mapping_filename / created_by were silently stripped on response. Fixed during this iteration by adding ConfigDict(extra='allow') to RunOut. Verified by new test test_runout_carries_mapping_rules_after_mapping_upload."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "pages/gst_recon/Landing.jsx :: PastRunsPanel", "issue": "Plus + Trash2 icons used but not imported from lucide-react → 'ReferenceError: Plus is not defined' on every render of the recon Landing page. FIXED by extending the lucide-react import line.", "selector": "[data-testid='past-runs-panel']", "priority": "HIGH"},
+      {"component": "pages/gst_recon/Landing.jsx (post-fix)", "issue": "After the Plus import fix the page still throws 'TypeError: Illegal constructor' at react_stack_bottom_frame. Stack trace doesn't name a component (no PastRunsPanel frame this time). Likely a different lucide-react icon being referenced as a class, an instance like `new Date()` misuse, or a Set/Map constructor call against a non-iterable. Could not isolate within fix budget — main agent should reproduce with React dev overlay open and grep Landing.jsx for `new ` and any other lucide icons (e.g. Trash2 import may be wrong name; try Trash if Trash2 is unavailable in the installed lucide-react version).", "selector": "[data-testid='past-runs-panel']", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gst_recon_phase_c_e2e.py",
+    "/app/backend/tests/test_gst_recon_phase_d_e2e.py",
+    "/app/backend/tests/_gst_recon_helpers.py",
+    "/app/test_reports/pytest/iteration_4.xml"
+  ],
+  "action_items": [
+    "Investigate 'Illegal constructor' runtime error on GST Recon Landing — appears AFTER the Plus/Trash2 import fix. Likely candidates: (a) Trash2 is not exported by the installed lucide-react — verify with `node -e \"console.log(Object.keys(require('lucide-react')).filter(k=>k.startsWith('Trash')))\"`; (b) any `new X()` call where X is a Web API not available in current React rendering context; (c) a select-component value handler invoked with class instance.",
+    "Old fixture-chain tests in test_clause44_backend.py / test_iteration2_clients_recon.py / test_iteration5_admin_users.py / test_iteration6_workspace_shared.py / test_merged_backend.py fail with KeyError 'sid' / ModuleNotFoundError 'email_module' — these are pre-existing (not caused by GST Recon changes). Out of scope but worth scheduling a separate cleanup."
+  ],
+  "critical_code_review_comments": [
+    "controller.py L177-184: BOOKS_RAW.delete_many({'run_id': rid}) before insert is correct idempotency — but storing entire books JSON gzipped+b64 in Mongo will grow rapidly for prod-size files (the user's real Allman_Knit_Wear file is ~165KB raw → ~25KB gzipped). Acceptable now; consider GridFS or S3 if file grows >16MB Mongo doc limit.",
+    "controller.py L226-236 `_reprocess_books` correctly rewrites both per-month aggregates AND voucher-level invoice records; idempotency verified by Mapping re-upload test.",
+    "helpers/mapping.py: classification logic is comprehensive (Head, Group Parent, Subhead, ledger-name regex), but a ledger that matches multiple categories (e.g. group='Output Credit' AND head='Other Income') will be added to TWO sets — could silently double-count tax. Consider mutually-exclusive elif chain or document the precedence.",
+    "schemas.RunOut needed extra='allow' (added this iteration) for mapping_rules / mapping_unmapped_ledgers to round-trip; the prior agent's note in iteration_3.json incorrectly stated extra='allow' was already on RunOut — only FileBucketItem had it.",
+    "Landing.jsx import block must list every lucide icon used in the file. The Plus/Trash2 omission caused complete page crash — add a lint rule (eslint-plugin-react/jsx-no-undef is already on by default; check why this slipped through — likely the dev hot-reload had stale module cache)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_gst_recon_phase_c_e2e.py",
+    "/app/backend/tests/test_gst_recon_phase_d_e2e.py",
+    "/app/backend/tests/_gst_recon_helpers.py",
+    "/app/backend/modules/gst_recon/schemas.py",
+    "/app/frontend/src/pages/gst_recon/Landing.jsx"
+  ],
+  "success_rate": {
+    "backend": "100% on GST Recon scope (60/60 — 17 phase-C e2e + 17 phase-D e2e + 12 phase-C3 unit + 16 phase-D unit). Pre-existing non-GST-Recon test files (clause44, iterations 2/5/6, merged_backend) still fail with same errors as before this iteration — out of scope.",
+    "frontend": "Recon Landing page still crashes with 'Illegal constructor' after fixing the Plus/Trash2 import. Phase D footer + past-runs panel + dropzone testids never mounted because the entire page is unmounted by the runtime error overlay. Main agent needs to debug the second error before frontend can be re-validated."
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260427_stable (admin user_qa_bot_fixed_01) — verified working.",
+  "seed_data_creation": "Each test creates TEST_phase_*_* runs under cli_bdf1e22faa7c, uploads synthetic GSTR-1/2B/3B/Books JSON + mapping.xlsx (built in-memory via openpyxl), then DELETE /runs/{rid} in finally. Cascade verified to clear gst_recon_invoices + gst_recon_books_raw to zero. No persistent test data.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Backend GST Recon contract is solid (60/60 pass). The frontend has a SECOND runtime error after the Plus/Trash2 import fix — needs investigation before any further UI testing. Reproduction: navigate to /dashboard/clients/cli_bdf1e22faa7c/utilities/gst-recon as the seeded QA admin → React Dev Overlay shows 'TypeError: Illegal constructor'. The new helpers file /app/backend/tests/_gst_recon_helpers.py exposes synthetic_mapping_xlsx() / sales_voucher() / purchase_voucher() / books_payload() — reuse for any future Phase E/F e2e tests. New schema field `mapping_rules` (sorted lists per category) is now exposed via GET /runs/{rid}.",
+  "rca of the issue": "Frontend root cause #1 (FIXED): Landing.jsx L633 references <Plus> and L679 references <Trash2> but the lucide-react import on L3 only listed FileText/CheckCircle2/XCircle/FolderUp/Loader2/ArrowLeft/Calculator. Added Plus + Trash2 to that import. Root cause #2 (UNFIXED): a different runtime error 'Illegal constructor' fires after the import fix. Stack trace lacks component name; my best hypothesis is Trash2 may not exist in the installed lucide-react version (some lucide versions ship `Trash` only). Quick verification: `cd /app/frontend && node -e \"console.log('Trash2' in require('lucide-react'))\"`. If false, change to <Trash size={12}/>."
+}

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator } from "lucide-react";
+import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 
@@ -19,6 +19,17 @@ const fmtINR = (n) => {
   return v < 0 ? `(${s})` : s;
 };
 
+const formatRunDate = (iso) => {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("en-IN", {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit", hour12: true,
+    }).toUpperCase();
+  } catch { return iso; }
+};
+
 export default function GstReconLanding() {
   const { clientId: cid } = useParams();
   const [runId, setRunId] = useState(null);
@@ -31,13 +42,64 @@ export default function GstReconLanding() {
   const [busy, setBusy] = useState(false);
   const [validation, setValidation] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [pastRuns, setPastRuns] = useState([]);
+  const [unmapped, setUnmapped] = useState([]);
+  const [showPast, setShowPast] = useState(true);
   const inputRef = useRef();
+
+  // Load past runs on mount + after any new run is created
+  const refreshPastRuns = useCallback(async () => {
+    try {
+      const { data } = await http.get(`/gst-recon/runs?client_id=${cid}`);
+      setPastRuns(data || []);
+    } catch {
+      // silent — page still usable without past runs
+    }
+  }, [cid]);
+
+  useEffect(() => { refreshPastRuns(); }, [refreshPastRuns]);
+
+  const resumeRun = async (r) => {
+    setRunId(r.id);
+    setFy(r.fy);
+    setMonths(r.months || []);
+    setHasBooks(r.has_books);
+    setHasMapping(r.has_mapping);
+    setValidation(r.validation || null);
+    setSummary(r.summary || null);
+    setUnmapped(r.mapping_unmapped_ledgers || []);
+    const bcounts = {};
+    for (const f of (r.files || [])) bcounts[f.bucket] = (bcounts[f.bucket] || 0) + 1;
+    setBuckets(bcounts);
+    setFiles((r.files || []).map(f => f.filename));
+    setShowPast(false);
+    toast.success(`Resumed run · FY ${r.fy}`);
+  };
+
+  const newRun = () => {
+    setRunId(null); setFy("2024-25"); setFiles([]); setBuckets({}); setMonths([]);
+    setHasBooks(false); setHasMapping(false); setValidation(null); setSummary(null); setUnmapped([]);
+    setShowPast(false);
+  };
+
+  const deleteRun = async (r) => {
+    if (!window.confirm(`Delete run "${r.name}" from ${formatRunDate(r.created_at)}? This cannot be undone.`)) return;
+    try {
+      await http.delete(`/gst-recon/runs/${r.id}`);
+      toast.success("Run deleted");
+      if (runId === r.id) newRun();
+      refreshPastRuns();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Delete failed");
+    }
+  };
 
   const ensureRun = async () => {
     if (runId) return runId;
     const { data } = await http.post("/gst-recon/runs", { client_id: cid, fy });
     setRunId(data.id);
     setMonths(data.months);
+    refreshPastRuns();
     return data.id;
   };
 
@@ -55,10 +117,12 @@ export default function GstReconLanding() {
       setMonths(data.months);
       setHasBooks(data.has_books);
       setHasMapping(data.has_mapping);
+      setUnmapped(data.mapping_unmapped_ledgers || []);
       setFiles(prev => [...prev, ...Array.from(list).map(f => f.name)]);
       setValidation(null); // stale after a new upload
       setSummary(null);    // stale after a new upload
-      toast.success(`${data.accepted} file(s) categorized`);
+      const reprocess = data.books_reprocessed ? " · books re-aggregated with mapping" : "";
+      toast.success(`${data.accepted} file(s) categorized${reprocess}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
     } finally {
@@ -120,6 +184,15 @@ export default function GstReconLanding() {
             <p className="text-sm text-gray-600 mt-1">Upload 38 files (12× GSTR-1, 12× GSTR-2B, 12× GSTR-3B, Books, Mapping) for the financial year.</p>
           </div>
           <div className="flex items-center gap-3">
+            {runId && (
+              <button
+                onClick={() => setShowPast(true)}
+                className="h-9 px-3 rounded-sm border border-gray-300 text-xs font-medium bg-white hover:bg-gray-50 inline-flex items-center gap-1.5"
+                data-testid="view-past-runs-btn"
+              >
+                <History size={13}/> Past Runs
+              </button>
+            )}
             <label className="text-[11px] font-mono uppercase text-gray-500">FY</label>
             <select
               value={fy}
@@ -132,6 +205,31 @@ export default function GstReconLanding() {
             </select>
           </div>
         </div>
+
+        {/* Past Runs panel — shown when no active run OR user clicks History */}
+        {(showPast || !runId) && pastRuns.length > 0 && (
+          <PastRunsPanel runs={pastRuns} activeId={runId} onResume={resumeRun} onDelete={deleteRun} onNew={newRun}/>
+        )}
+
+        {/* Pending Classification — ledgers the Mapping parser couldn't categorise */}
+        {unmapped.length > 0 && (
+          <div className="mb-6 border border-amber-300 bg-amber-50/60 rounded-sm p-4" data-testid="unmapped-ledgers">
+            <div className="flex items-center gap-2 mb-2 text-amber-900 font-medium text-sm">
+              <XCircle size={14}/> Pending Classification · {unmapped.length} ledger{unmapped.length !== 1 ? "s" : ""}
+            </div>
+            <p className="text-xs text-amber-800 mb-2">
+              The Ledger Mapping file doesn't classify these tax-related ledgers. Books figures for transactions
+              using these ledgers will NOT appear in the reconciliation until the Mapping is updated.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {unmapped.map((l, i) => (
+                <span key={i} className="inline-block px-2 py-0.5 text-[11px] font-mono bg-white border border-amber-200 rounded-sm text-amber-900" data-testid={`unmapped-${i}`}>
+                  {l}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Dropzone */}
         <div
@@ -518,4 +616,83 @@ function Row({ ok, label }) {
       {ok ? <CheckCircle2 size={11}/> : <XCircle size={11}/>}
     </div>
   );
+}
+
+function PastRunsPanel({ runs, activeId, onResume, onDelete, onNew }) {
+  return (
+    <div className="mb-8 border border-gray-200 rounded-sm bg-white overflow-hidden" data-testid="past-runs-panel">
+      <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wider text-gray-600">
+          <History size={13}/> Past Runs · {runs.length}
+        </div>
+        <button
+          onClick={onNew}
+          className="h-7 px-3 rounded-sm border border-gray-900 bg-gray-900 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-gray-800"
+          data-testid="new-run-btn"
+        >
+          <Plus size={12}/> New Run
+        </button>
+      </div>
+      <div className="divide-y divide-gray-100">
+        {runs.map(r => {
+          const fileCount = (r.files || []).length;
+          const coverage = (r.months || []).filter(m => m.gstr1 && m.gstr2b && m.gstr3b).length;
+          const isActive = r.id === activeId;
+          return (
+            <div
+              key={r.id}
+              className={`px-4 py-3 flex items-center justify-between hover:bg-gray-50 ${isActive ? "bg-blue-50/40" : ""}`}
+              data-testid={`past-run-${r.id}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3">
+                  <div className="font-medium text-sm text-gray-900">{r.name || `Run ${r.id.slice(0, 8)}`}</div>
+                  <span className="text-[10px] font-mono uppercase tracking-wider bg-gray-100 text-gray-700 px-2 py-0.5 rounded-sm">FY {r.fy}</span>
+                  {isActive && <span className="text-[10px] font-mono uppercase tracking-wider bg-blue-100 text-blue-800 px-2 py-0.5 rounded-sm">Active</span>}
+                  <StatusPill status={r.status}/>
+                </div>
+                <div className="mt-1 text-[11px] font-mono text-gray-500 flex items-center gap-3">
+                  <span>{formatRunDate(r.created_at)}</span>
+                  <span>·</span>
+                  <span>{fileCount} files</span>
+                  <span>·</span>
+                  <span>{coverage}/12 months</span>
+                  {r.validation?.ok && <><span>·</span><span className="text-emerald-700">validated</span></>}
+                  {r.summary && <><span>·</span><span className="text-blue-700">summarised</span></>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 ml-3">
+                <button
+                  onClick={() => onResume(r)}
+                  disabled={isActive}
+                  className={`h-8 px-3 rounded-sm border text-xs font-medium ${isActive ? "border-gray-200 text-gray-400 cursor-not-allowed" : "border-gray-300 bg-white hover:bg-gray-100"}`}
+                  data-testid={`resume-run-${r.id}`}
+                >
+                  {isActive ? "Current" : "Resume"}
+                </button>
+                <button
+                  onClick={() => onDelete(r)}
+                  className="h-8 w-8 rounded-sm border border-gray-200 bg-white text-gray-500 hover:border-red-300 hover:text-red-600 inline-flex items-center justify-center"
+                  title="Delete run"
+                  data-testid={`delete-run-${r.id}`}
+                >
+                  <Trash2 size={12}/>
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ status }) {
+  const map = {
+    draft:       { cls: "bg-gray-100 text-gray-700",   label: "Draft" },
+    summarized:  { cls: "bg-blue-100 text-blue-800",   label: "Summarised" },
+    complete:    { cls: "bg-emerald-100 text-emerald-800", label: "Complete" },
+  };
+  const s = map[status] || map.draft;
+  return <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm ${s.cls}`}>{s.label}</span>;
 }

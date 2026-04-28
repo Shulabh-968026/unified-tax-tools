@@ -62,13 +62,16 @@ def test_books_outward_excludes_party_ledger():
     j = {"vouchers": [{
         "date": "2024-04-15", "voucherTypeName": "Sales",
         "ledgerEntries": [
-            {"ledgerName": "ABC Customer Ltd", "amount": -1180},
-            {"ledgerName": "Sales Account",     "amount": 1000},
-            {"ledgerName": "Output CGST @ 9%",  "amount": 90},
-            {"ledgerName": "Output SGST @ 9%",  "amount": 90},
+            {"ledger": "ABC Customer Ltd",   "isPartyLedger": "Yes", "amount": -1180},
+            {"ledger": "Sales Account",      "amount": 1000},
+            {"ledger": "Output CGST @ 9%",   "amount": 90},
+            {"ledger": "Output SGST @ 9%",   "amount": 90},
         ],
     }]}
-    out = aggregate_books(_bytes(j))
+    rules = {"revenue": {"Sales Account"},
+             "output_tax": {"Output CGST @ 9%", "Output SGST @ 9%"},
+             "input_tax": set()}
+    out = aggregate_books(_bytes(j), rules)
     assert "042024" in out
     apr = out["042024"]
     assert apr["out_taxable"] == 1000.0  # NOT 2180 — party ledger excluded
@@ -80,15 +83,23 @@ def test_books_outward_excludes_party_ledger():
 def test_books_groups_by_month():
     j = {"vouchers": [
         {"date": "2024-04-15", "voucherTypeName": "Sales",
-         "ledgerEntries": [{"ledgerName": "Sales", "amount": 100}]},
+         "ledgerEntries": [{"ledger": "Sales", "amount": 100}]},
         {"date": "2024-05-10", "voucherTypeName": "Purchase",
-         "ledgerEntries": [{"ledgerName": "Purchase", "amount": -50}]},
+         "ledgerEntries": [
+             {"ledger": "Vendor", "isPartyLedger": "Yes", "amount": 50},
+             {"ledger": "Input CGST @ 9%", "amount": -4.5},
+             {"ledger": "Input SGST @ 9%", "amount": -4.5},
+         ]},
         {"date": "2025-03-31", "voucherTypeName": "Sales",
-         "ledgerEntries": [{"ledgerName": "Sales", "amount": 200}]},
+         "ledgerEntries": [{"ledger": "Sales", "amount": 200}]},
     ]}
-    out = aggregate_books(_bytes(j))
+    rules = {"revenue": {"Sales"}, "output_tax": set(),
+             "input_tax": {"Input CGST @ 9%", "Input SGST @ 9%"}}
+    out = aggregate_books(_bytes(j), rules)
     assert out["042024"]["out_taxable"] == 100.0
-    assert out["052024"]["in_taxable"] == 50.0
+    # Purchase voucher: party Cr = 50, tax = 9 (4.5+4.5), so taxable = 41
+    assert out["052024"]["in_taxable"] == 41.0
+    assert out["052024"]["in_cgst"] == 4.5
     assert out["032025"]["out_taxable"] == 200.0
 
 
