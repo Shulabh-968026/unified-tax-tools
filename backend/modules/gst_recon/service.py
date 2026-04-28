@@ -97,3 +97,123 @@ def build_month_grid(fy: str, files: List[Dict[str, Any]]) -> List[Dict[str, Any
         {"period": p, "month_label": label, **period_map[p]}
         for p, label in months
     ]
+
+
+# ============================ Phase C.3: 12-month Summary =====================
+_SUM_KEYS = (
+    "books_outward_taxable", "books_outward_tax", "books_itc_total",
+    "r1_outward_taxable", "r1_outward_tax",
+    "r2b_itc_total",
+    "r3b_outward_taxable", "r3b_outward_tax", "r3b_itc_total",
+    "var_r1_vs_r3b_outward", "var_r2b_vs_r3b_itc",
+    "var_books_vs_r1_outward", "var_books_vs_r2b_itc",
+)
+
+
+def build_summary(run_doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Stitch per-file aggregates into a 12-month Turnover & ITC table.
+
+    Pulls:
+      • Books:   from books_file["books_per_month"][period]
+      • GSTR-1:  from gstr1_file["r1_outward"]
+      • GSTR-2B: from gstr2b_file["r2b_itc"]
+      • GSTR-3B: from gstr3b_file["table_3_1"] (rows a/b/c → outward) and table_4.c_net_itc
+
+    Variance columns:
+      • R1 vs R3B (outward taxable) — must reconcile per GSTR-9 line 7
+      • R2B vs R3B (ITC total) — must reconcile per GSTR-9C
+      • Books vs R1 (outward taxable) — Tally vs portal
+      • Books vs R2B (ITC total)
+
+    Returns: {fy, rows: [12], totals: {…}}
+    """
+    files = run_doc.get("files", [])
+    fy = run_doc.get("fy", "")
+    months = run_doc.get("months", [])
+
+    by_period: Dict[str, Dict[str, Any]] = {
+        m["period"]: {"period": m["period"], "month_label": m["month_label"]}
+        for m in months
+    }
+
+    # Books — single file, per-month dict
+    books_file = next((f for f in files if f.get("bucket") == "books"), None)
+    books_agg: Dict[str, Dict[str, float]] = (books_file or {}).get("books_per_month") or {}
+    for p, row in by_period.items():
+        b = books_agg.get(p, {})
+        row["books_outward_taxable"] = b.get("out_taxable", 0.0)
+        row["books_outward_tax"] = round(
+            b.get("out_igst", 0.0) + b.get("out_cgst", 0.0)
+            + b.get("out_sgst", 0.0) + b.get("out_cess", 0.0), 2,
+        )
+        row["books_itc_total"] = round(
+            b.get("in_igst", 0.0) + b.get("in_cgst", 0.0)
+            + b.get("in_sgst", 0.0) + b.get("in_cess", 0.0), 2,
+        )
+
+    # GSTR-1
+    for f in files:
+        if f.get("bucket") != "gstr1":
+            continue
+        p = f.get("period")
+        if p not in by_period:
+            continue
+        a = f.get("r1_outward") or {}
+        by_period[p]["r1_outward_taxable"] = a.get("taxable", 0.0)
+        by_period[p]["r1_outward_tax"] = round(
+            a.get("igst", 0.0) + a.get("cgst", 0.0)
+            + a.get("sgst", 0.0) + a.get("cess", 0.0), 2,
+        )
+
+    # GSTR-2B
+    for f in files:
+        if f.get("bucket") != "gstr2b":
+            continue
+        p = f.get("period")
+        if p not in by_period:
+            continue
+        a = f.get("r2b_itc") or {}
+        by_period[p]["r2b_itc_total"] = round(
+            a.get("igst", 0.0) + a.get("cgst", 0.0)
+            + a.get("sgst", 0.0) + a.get("cess", 0.0), 2,
+        )
+
+    # GSTR-3B — rows (a) outward taxable, (b) zero-rated, (c) other outward
+    # Excludes (d) inward RCM and (e) non-GST since they're not part of turnover.
+    for f in files:
+        if f.get("bucket") != "gstr3b":
+            continue
+        p = f.get("period")
+        if p not in by_period:
+            continue
+        t31 = f.get("table_3_1") or {}
+        out_tax = sum((t31.get(k) or {}).get("taxable_value", 0.0) for k in ("a", "b", "c"))
+        out_tax_amt = sum(
+            (t31.get(k) or {}).get("igst", 0.0)
+            + (t31.get(k) or {}).get("cgst", 0.0)
+            + (t31.get(k) or {}).get("sgst", 0.0)
+            + (t31.get(k) or {}).get("cess", 0.0)
+            for k in ("a", "b", "c")
+        )
+        by_period[p]["r3b_outward_taxable"] = round(out_tax, 2)
+        by_period[p]["r3b_outward_tax"] = round(out_tax_amt, 2)
+        net = (f.get("table_4") or {}).get("c_net_itc") or {}
+        by_period[p]["r3b_itc_total"] = round(
+            net.get("igst", 0.0) + net.get("cgst", 0.0)
+            + net.get("sgst", 0.0) + net.get("cess", 0.0), 2,
+        )
+
+    # Zero-fill + variance columns + ordered rows
+    rows: List[Dict[str, Any]] = []
+    for m in months:
+        r = by_period[m["period"]]
+        for k in _SUM_KEYS:
+            r.setdefault(k, 0.0)
+        r["var_r1_vs_r3b_outward"] = round(r["r1_outward_taxable"] - r["r3b_outward_taxable"], 2)
+        r["var_r2b_vs_r3b_itc"] = round(r["r2b_itc_total"] - r["r3b_itc_total"], 2)
+        r["var_books_vs_r1_outward"] = round(r["books_outward_taxable"] - r["r1_outward_taxable"], 2)
+        r["var_books_vs_r2b_itc"] = round(r["books_itc_total"] - r["r2b_itc_total"], 2)
+        rows.append(r)
+
+    totals = {k: round(sum(r[k] for r in rows), 2) for k in _SUM_KEYS}
+    return {"fy": fy, "rows": rows, "totals": totals}

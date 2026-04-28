@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
-import { Upload, FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft } from "lucide-react";
+import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 
@@ -12,6 +12,13 @@ const BUCKETS = [
   { id: "mapping", label: "Ledger Mapping", expected: 1 },
 ];
 
+const fmtINR = (n) => {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const v = Number(n);
+  const s = Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  return v < 0 ? `(${s})` : s;
+};
+
 export default function GstReconLanding() {
   const { clientId: cid } = useParams();
   const [runId, setRunId] = useState(null);
@@ -22,6 +29,8 @@ export default function GstReconLanding() {
   const [hasBooks, setHasBooks] = useState(false);
   const [hasMapping, setHasMapping] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [validation, setValidation] = useState(null);
+  const [summary, setSummary] = useState(null);
   const inputRef = useRef();
 
   const ensureRun = async () => {
@@ -48,6 +57,7 @@ export default function GstReconLanding() {
       setHasMapping(data.has_mapping);
       setFiles(prev => [...prev, ...Array.from(list).map(f => f.name)]);
       setValidation(null); // stale after a new upload
+      setSummary(null);    // stale after a new upload
       toast.success(`${data.accepted} file(s) categorized`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
@@ -164,7 +174,7 @@ export default function GstReconLanding() {
 
         <div className="flex items-center justify-between">
           <div className="text-xs text-gray-500 font-mono">
-            Phase B · Pre-flight validation gates active
+            Phase C · 12-month Turnover & ITC reconciliation
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -177,11 +187,11 @@ export default function GstReconLanding() {
             </button>
             <button
               disabled={!canRun}
-              onClick={() => toast.info("Reconciliation engine lands in Phase C (PDF parsing + aggregation).")}
+              onClick={runReconciliation}
               className={`btn-primary-swiss ${canRun ? "" : "opacity-40 cursor-not-allowed"}`}
               data-testid="run-reconciliation-btn"
             >
-              <Upload size={14} className="mr-2 inline"/> Run Reconciliation
+              <Calculator size={14} className="mr-2 inline"/> Run Reconciliation
             </button>
           </div>
         </div>
@@ -210,6 +220,108 @@ export default function GstReconLanding() {
             </div>
           </div>
         )}
+
+        {summary && <SummaryPanel summary={summary} />}
+      </div>
+    </div>
+  );
+}
+
+function SummaryPanel({ summary }) {
+  const { rows, totals, fy } = summary;
+  return (
+    <div className="mt-8 border border-gray-200 rounded-sm bg-white overflow-hidden" data-testid="summary-panel">
+      <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+        <div className="text-[11px] font-mono uppercase tracking-wider text-gray-600">
+          12-Month Reconciliation · FY {fy}
+        </div>
+        <div className="text-[10px] font-mono text-gray-500">All values in INR</div>
+      </div>
+
+      {/* Outward Turnover */}
+      <ReconTable
+        title="Outward Turnover (Books vs GSTR-1 vs GSTR-3B)"
+        rows={rows}
+        totals={totals}
+        cols={[
+          { key: "books_outward_taxable", label: "Books" },
+          { key: "r1_outward_taxable",    label: "GSTR-1" },
+          { key: "r3b_outward_taxable",   label: "GSTR-3B" },
+          { key: "var_books_vs_r1_outward", label: "Books − R1", variance: true },
+          { key: "var_r1_vs_r3b_outward",   label: "R1 − R3B",   variance: true },
+        ]}
+        testid="summary-outward"
+      />
+
+      {/* ITC */}
+      <ReconTable
+        title="Input Tax Credit (Books vs GSTR-2B vs GSTR-3B)"
+        rows={rows}
+        totals={totals}
+        cols={[
+          { key: "books_itc_total",   label: "Books" },
+          { key: "r2b_itc_total",     label: "GSTR-2B" },
+          { key: "r3b_itc_total",     label: "GSTR-3B (Net)" },
+          { key: "var_books_vs_r2b_itc", label: "Books − R2B", variance: true },
+          { key: "var_r2b_vs_r3b_itc",   label: "R2B − R3B",   variance: true },
+        ]}
+        testid="summary-itc"
+      />
+    </div>
+  );
+}
+
+function ReconTable({ title, rows, totals, cols, testid }) {
+  return (
+    <div className="border-t border-gray-200" data-testid={testid}>
+      <div className="px-4 py-2 bg-white border-b border-gray-100 text-[12px] font-medium text-gray-800">
+        {title}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px] font-mono">
+          <thead>
+            <tr className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
+              <th className="text-left px-3 py-2 w-28 border-b border-gray-200">Month</th>
+              {cols.map(c => (
+                <th key={c.key} className={`text-right px-3 py-2 border-b border-gray-200 ${c.variance ? "bg-amber-50/40" : ""}`}>
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.period} className={i % 2 ? "bg-gray-50/40" : "bg-white"} data-testid={`${testid}-row-${r.period}`}>
+                <td className="px-3 py-2 text-gray-800 border-b border-gray-100">{r.month_label}</td>
+                {cols.map(c => {
+                  const v = r[c.key] || 0;
+                  const cls = c.variance
+                    ? Math.abs(v) < 1 ? "text-emerald-700" : "text-amber-700 font-semibold"
+                    : "text-gray-900";
+                  return (
+                    <td key={c.key} className={`text-right px-3 py-2 border-b border-gray-100 ${cls} ${c.variance ? "bg-amber-50/30" : ""}`}>
+                      {fmtINR(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            <tr className="bg-gray-100 font-semibold border-t-2 border-gray-300">
+              <td className="px-3 py-2 text-gray-900">Annual</td>
+              {cols.map(c => {
+                const v = totals[c.key] || 0;
+                const cls = c.variance
+                  ? Math.abs(v) < 1 ? "text-emerald-800" : "text-amber-800"
+                  : "text-gray-900";
+                return (
+                  <td key={c.key} className={`text-right px-3 py-2 ${cls} ${c.variance ? "bg-amber-100/60" : ""}`} data-testid={`${testid}-total-${c.key}`}>
+                    {fmtINR(v)}
+                  </td>
+                );
+              })}
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   );

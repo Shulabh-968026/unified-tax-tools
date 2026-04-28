@@ -1,0 +1,38 @@
+{
+  "summary": "Backend-only e2e testing of GST Recon Phase C.2 (GSTR-3B PDF parser + GSTR-1/2B/Books aggregators wired into upload pipeline) and Phase C.3 (POST /api/gst-recon/runs/{rid}/summary 12-month Books-vs-R1-vs-R3B + R2B-vs-R3B reconciliation with variance columns). Created /app/backend/tests/test_gst_recon_phase_c_e2e.py — 14 tests, all passing. Re-ran existing /app/backend/tests/test_gst_recon_phase_c3.py (12 unit) and /app/backend/tests/test_merged_backend.py (22 regression). 48/48 PASS overall. Phase C.2 aggregator outputs (r1_outward, r2b_itc, books_per_month, table_3_1, table_4) ARE persisted to MongoDB correctly — verified both directly via pymongo read AND indirectly via summary endpoint math (1 b2b GSTR-1 invoice → r1_outward.taxable=1000, summary row 'Apr 2024' books_outward_taxable=1000, r1_outward_taxable=1000, r2b_itc_total=180, var_r1_vs_r3b_outward=1000, totals reconciled). Empty run returns 12 zero rows. Run.status transitions to 'summarized'. Auth gate works (401 unauthenticated). Existing CRUD (create/list/get/delete/files/validate) all green. PDF stub upload (only %PDF header) succeeds without crash; table_3_1/table_4 keys present as empty dicts when content is unparseable — matches spec.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/gst-recon/runs/{rid}",
+        "issue": "RunOut + FileBucketItem Pydantic schemas in /app/backend/modules/gst_recon/schemas.py do NOT declare the Phase C.2 persisted fields (r1_outward, r2b_itc, books_per_month, table_3_1, table_4, integrity_ok, parse_error, books_from, books_to) nor the Phase C.3 'summary' field on RunOut. As a result, FastAPI's response_model strips them from the GET response. The fields ARE persisted in Mongo (verified directly + via summary math), but any frontend or API consumer calling GET /runs/{rid} will see only filename/bucket/period/gstin/size on each file entry and no top-level summary. Frontend Summary panel works because it calls POST /summary which returns the freshly built object, but a page-refresh re-fetch via GET /runs/{rid} cannot rehydrate the 12-month table from cache."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_gst_recon_phase_c_e2e.py",
+    "/app/backend/tests/test_gst_recon_phase_c3.py",
+    "/app/test_reports/pytest/iteration_2.xml"
+  ],
+  "action_items": [
+    "Extend FileBucketItem in /app/backend/modules/gst_recon/schemas.py to whitelist the C.2 aggregator fields (r1_outward: dict, r2b_itc: dict, books_per_month: dict, table_3_1: dict, table_4: dict, integrity_ok: bool, parse_error: Optional[str], books_from/books_to: Optional[str]) — or set model_config = {'extra': 'allow'} on FileBucketItem and RunOut.",
+    "Add 'summary: Optional[Dict[str, Any]] = None' to RunOut so a refreshed run page can rehydrate the 12-month table without re-running compute_summary."
+  ],
+  "critical_code_review_comments": [
+    "controller.py L48-49: doc.pop('_id', None) is good; consistent with rest of codebase.",
+    "controller.py L184-202 (compute_summary): reads doc directly from Mongo (not via RunOut), so build_summary correctly sees all C.2 fields — the schema hole only affects the GET endpoint, not the summary builder. Math is correct.",
+    "service.py build_summary: variance = left - right convention is consistent across all four columns (var_r1_vs_r3b, var_r2b_vs_r3b, var_books_vs_r1, var_books_vs_r2b). Annual totals are simple column sums; for variance columns this equals (left_total - right_total) by linearity — matches expectation.",
+    "aggregators.py aggregate_books: party-ledger exclusion logic relies on keyword whitelist (INCOME_LEDGER_KW/EXPENSE_LEDGER_KW). Real Tally ledger names like 'Local Sales @ 18%' or 'GST Purchase 5%' will pass; chart-of-accounts using 'Trade Receivables' / 'Sundry Creditors' will be correctly skipped. Edge case: if a sales ledger is named only 'Trading Account' it would be missed — non-blocking, keyword list is extensible.",
+    "validation.py inspect_file: PDF integrity_ok is set True on %PDF header but then overridden to bool(table_3_1 or table_4) only if parse errors present; if pdfplumber returns no errors AND no tables (truly empty PDF), integrity_ok stays True. Acceptable — gate-2 will flag downstream if needed.",
+    "schemas.py FileBucketItem missing the C.2 fields is the only material issue (see backend_issues.minor)."
+  ],
+  "updated_files": ["/app/backend/tests/test_gst_recon_phase_c_e2e.py"],
+  "success_rate": {"backend": "100% (48/48 passing — 14 new e2e + 12 C.3 unit + 22 prior regression)", "frontend": "not tested (as requested)"},
+  "test_credentials": "session_token=qa_test_session_token_20260427_stable (admin, user_qa_bot_fixed_01) — verified working.",
+  "seed_data_creation": "Test creates two GST Recon runs prefixed 'TEST_phase_c_e2e' / 'TEST_empty_summary' under client cli_bdf1e22faa7c; both are deleted in fixture teardown / try-finally. No persistent test data left behind.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use /app/backend/tests/test_gst_recon_phase_c_e2e.py as the regression suite for GST Recon Phase C. The test file auto-loads REACT_APP_BACKEND_URL from /app/frontend/.env and MONGO_URL/DB_NAME from /app/backend/.env, so no env exports needed. Phase C.2 persistence verification reads Mongo directly via pymongo because RunOut Pydantic schema strips the new aggregator fields — if main agent extends FileBucketItem schema (recommended action_item), tests will continue to work but may add an additional check that GET /runs/{rid} now also exposes r1_outward etc. The seeded client cli_bdf1e22faa7c (gstin 33AAEFA5684J1ZC) is the only client with a GSTIN required for the validate endpoint to potentially pass gate-1. test_credentials.md session token expires 2026-05-28."
+}

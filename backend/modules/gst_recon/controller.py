@@ -9,7 +9,8 @@ from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Upl
 from core.db import db
 from modules.auth.controller import get_current_user
 from modules.gst_recon.schemas import RunCreate, RunOut
-from modules.gst_recon.service import build_month_grid, categorize_file
+from modules.gst_recon.aggregators import aggregate_books, aggregate_gstr1, aggregate_gstr2b
+from modules.gst_recon.service import build_month_grid, build_summary, categorize_file
 from modules.gst_recon.validation import inspect_file, validate_run
 
 router = APIRouter(prefix="/gst-recon")
@@ -118,9 +119,15 @@ async def upload_batch(
         if entry["bucket"] == "books":
             entry["books_from"] = meta.get("books_from")
             entry["books_to"] = meta.get("books_to")
+            if meta.get("integrity_ok"):
+                entry["books_per_month"] = aggregate_books(content)
         if entry["bucket"] == "gstr3b":
             entry["table_3_1"] = meta.get("table_3_1") or {}
             entry["table_4"] = meta.get("table_4") or {}
+        if entry["bucket"] == "gstr1" and meta.get("integrity_ok"):
+            entry["r1_outward"] = aggregate_gstr1(content)
+        if entry["bucket"] == "gstr2b" and meta.get("integrity_ok"):
+            entry["r2b_itc"] = aggregate_gstr2b(content)
         new_entries.append(entry)
 
     merged = {(x["filename"]): x for x in doc.get("files", [])}
@@ -172,9 +179,24 @@ async def validate(
     verdict = validate_run(doc)
     await COLL.update_one({"id": rid}, {"$set": {"validation": verdict}})
     return verdict
-04, "Run not found")
-    client = await db.clients.find_one({"client_id": doc["client_id"]}, {"_id": 0})
-    doc["client_gstin"] = (client or {}).get("gstin", "") or ""
-    verdict = validate_run(doc)
-    await COLL.update_one({"id": rid}, {"$set": {"validation": verdict}})
-    return verdict
+
+
+@router.post("/runs/{rid}/summary")
+async def compute_summary(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase C.3: build the 12-month Turnover & ITC reconciliation summary
+    from the per-file aggregates already stored on the run."""
+    await _auth(request, session_token, authorization)
+    doc = await COLL.find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+    summary = build_summary(doc)
+    await COLL.update_one(
+        {"id": rid},
+        {"$set": {"summary": summary, "status": "summarized"}},
+    )
+    return summary
