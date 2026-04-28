@@ -111,8 +111,15 @@ lib/
       • Frontend: new "Run Pre-flight Check" button (enabled once coverage is full); "Run Reconciliation" button is now hard-gated on `validation.ok === true`
       • Validation panel lists all blockers in red + warnings in amber, plus a mono-font summary line
       • Smoke-tested end-to-end with user's real sample files: client `33AAEFA5684J1ZC`, 5 files uploaded (GSTR-1, GSTR-2B, GSTR-3B, Books, Mapping) → 0 integrity failures, 0 GSTIN mismatches, only the expected coverage-gap error
-- [ ] GST Recon Phase C — GSTR-3B PDF parser (Table 3.1 turnover + Table 4 ITC) in `helpers/parsers.py`, Pandas 12-month aggregation, Summary UI
-- [ ] GST Recon Phase D — Voucher-level rapidfuzz matching + drill-down UI with amber/red highlighting
+- [x] GST Recon Phase C — GSTR-3B PDF parser complete (2026-04-28)
+      • Installed `pdfplumber` and froze to `requirements.txt`
+      • New function `helpers/parsers.py::parse_gstr3b_pdf(bytes)` → `{period, gstin, table_3_1:{a..e:{taxable_value,igst,cgst,sgst,cess}}, table_4:{a_itc_available, b_itc_reversed, c_net_itc}, errors}`
+      • Extracts GSTIN + period from header text; Table 3.1 by header-match then row-prefix `(a)..(e)`; Table 4 by walking rows across the page split, flagging "ITC Available" vs "ITC Reversed" sections and capturing `Net ITC Available` directly
+      • Handles stray watermark letters (D/E/F/I) in numeric cells and `-` placeholders
+      • Verified against user's real sample (GSTR3B_33AAEFA5684J1ZC_012025.pdf): Outward ₹8.69L + IGST ₹43,454.65, RCM ₹13k + CGST/SGST ₹1,170 each, Net ITC CGST/SGST ₹21,204.58 each — all match the PDF exactly
+- [ ] GST Recon Phase C.2 — wire the parser into upload pipeline (persist parsed Table 3.1 + Table 4 per-month in Mongo)
+- [ ] GST Recon Phase C.3 — Pandas aggregation (12-month turnover: Books vs R1 vs R3B; ITC: Books vs R2B vs R3B) + Summary UI tables
+- [ ] GST Recon Phase D — rapidfuzz voucher-level matching + drill-down UI
 - [ ] GST Recon Phase E — Testing sub-agent
 - [ ] Migrate 43B(h) pages from shadcn → MUI + react-toastify (preserve current look)
 - [ ] Migrate Clause 44 pages from shadcn → MUI
