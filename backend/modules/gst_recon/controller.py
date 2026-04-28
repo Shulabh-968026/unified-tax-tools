@@ -9,12 +9,20 @@ from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Upl
 from core.db import db
 from modules.auth.controller import get_current_user
 from modules.gst_recon.schemas import RunCreate, RunOut
-from modules.gst_recon.aggregators import aggregate_books, aggregate_gstr1, aggregate_gstr2b
-from modules.gst_recon.service import build_month_grid, build_summary, categorize_file
+from modules.gst_recon.aggregators import (
+    aggregate_books,
+    aggregate_gstr1,
+    aggregate_gstr2b,
+    extract_books_invoices,
+    extract_gstr1_invoices,
+    extract_gstr2b_invoices,
+)
+from modules.gst_recon.service import build_month_grid, build_summary, categorize_file, match_invoices
 from modules.gst_recon.validation import inspect_file, validate_run
 
 router = APIRouter(prefix="/gst-recon")
 COLL = db.gst_recon_runs
+INV = db.gst_recon_invoices  # Phase D — voucher-level invoice records
 
 
 async def _auth(request, tok, auth):
@@ -86,6 +94,8 @@ async def delete_run(
     res = await COLL.delete_one({"id": rid})
     if res.deleted_count == 0:
         raise HTTPException(404, "Run not found")
+    # Cascade — Phase D invoices are tied to the run
+    await INV.delete_many({"run_id": rid})
     return {"deleted": True}
 
 
@@ -121,13 +131,26 @@ async def upload_batch(
             entry["books_to"] = meta.get("books_to")
             if meta.get("integrity_ok"):
                 entry["books_per_month"] = aggregate_books(content)
+                # Phase D — drop & re-insert per-voucher records (idempotent on re-upload)
+                await INV.delete_many({"run_id": rid, "source": "books"})
+                inv_records = extract_books_invoices(content)
+                if inv_records:
+                    await INV.insert_many([{"run_id": rid, "source": "books", **r} for r in inv_records])
         if entry["bucket"] == "gstr3b":
             entry["table_3_1"] = meta.get("table_3_1") or {}
             entry["table_4"] = meta.get("table_4") or {}
         if entry["bucket"] == "gstr1" and meta.get("integrity_ok"):
             entry["r1_outward"] = aggregate_gstr1(content)
+            await INV.delete_many({"run_id": rid, "source": "gstr1", "period": entry.get("period") or ""})
+            inv_records = extract_gstr1_invoices(content, entry.get("period") or "")
+            if inv_records:
+                await INV.insert_many([{"run_id": rid, "source": "gstr1", **r} for r in inv_records])
         if entry["bucket"] == "gstr2b" and meta.get("integrity_ok"):
             entry["r2b_itc"] = aggregate_gstr2b(content)
+            await INV.delete_many({"run_id": rid, "source": "gstr2b", "period": entry.get("period") or ""})
+            inv_records = extract_gstr2b_invoices(content, entry.get("period") or "")
+            if inv_records:
+                await INV.insert_many([{"run_id": rid, "source": "gstr2b", **r} for r in inv_records])
         new_entries.append(entry)
 
     merged = {(x["filename"]): x for x in doc.get("files", [])}
@@ -200,3 +223,41 @@ async def compute_summary(
         {"$set": {"summary": summary, "status": "summarized"}},
     )
     return summary
+
+
+@router.post("/runs/{rid}/match")
+async def compute_match(
+    rid: str,
+    request: Request,
+    period: str,
+    direction: str = "outward",
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase D: voucher-level matching for one (period, direction) pair.
+
+    direction='outward' → Books-Sales ↔ GSTR-1
+    direction='inward'  → Books-Purchase ↔ GSTR-2B
+
+    Returns: { matched, value_mismatch, date_mismatch, missing_in_books,
+               missing_in_portal, counts }
+    """
+    await _auth(request, session_token, authorization)
+    if direction not in ("outward", "inward"):
+        raise HTTPException(400, "direction must be 'outward' or 'inward'")
+    if not period or len(period) != 6:
+        raise HTTPException(400, "period must be MMYYYY (6 digits)")
+    doc = await COLL.find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+
+    portal_src = "gstr1" if direction == "outward" else "gstr2b"
+    books = await INV.find(
+        {"run_id": rid, "source": "books", "period": period, "direction": direction},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(20000)
+    portal = await INV.find(
+        {"run_id": rid, "source": portal_src, "period": period},
+        {"_id": 0, "run_id": 0, "source": 0},
+    ).to_list(20000)
+    return match_invoices(books, portal)

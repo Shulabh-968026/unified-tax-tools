@@ -1,0 +1,212 @@
+"""Phase D unit tests — invoice-level extractors + rapidfuzz matching engine.
+
+Pure-function tests — no DB, no HTTP. Run with:
+  cd /app/backend && python -m pytest tests/test_gst_recon_phase_d.py -v
+"""
+from __future__ import annotations
+import json
+
+from modules.gst_recon.aggregators import (
+    extract_books_invoices,
+    extract_gstr1_invoices,
+    extract_gstr2b_invoices,
+)
+from modules.gst_recon.service import _norm_inv_no, _to_iso_date, match_invoices
+
+
+def _bytes(obj) -> bytes:
+    return json.dumps(obj).encode("utf-8")
+
+
+# ---------------- normalisers ----------------
+def test_norm_inv_no_strips_non_alnum_and_uppercases():
+    assert _norm_inv_no("INV/2024-25/0001") == "INV2024250001"
+    assert _norm_inv_no("inv 0001") == "INV0001"
+    assert _norm_inv_no(None) == ""
+    assert _norm_inv_no("") == ""
+
+
+def test_to_iso_date_handles_dd_mm_yyyy_and_iso():
+    assert _to_iso_date("15-04-2024") == "2024-04-15"
+    assert _to_iso_date("2024-04-15") == "2024-04-15"
+    assert _to_iso_date("15/04/2024") == "2024-04-15"
+    assert _to_iso_date(None) is None
+    assert _to_iso_date("garbage") is None
+
+
+# ---------------- extract_books_invoices ----------------
+def test_books_extractor_only_emits_party_gstin_b2b():
+    j = {"vouchers": [
+        {"date": "2024-04-15", "voucherTypeName": "Sales", "voucherNumber": "S-1",
+         "partyGSTIN": "33ABCDE1234F1Z5", "partyName": "Acme Ltd",
+         "ledgerEntries": [
+             {"ledgerName": "Sales Account",     "amount": 1000},
+             {"ledgerName": "Output CGST @ 9%",  "amount": 90},
+             {"ledgerName": "Output SGST @ 9%",  "amount": 90},
+             {"ledgerName": "Acme Ltd",          "amount": -1180},
+         ]},
+        {"date": "2024-04-16", "voucherTypeName": "Sales", "voucherNumber": "S-2",
+         "partyGSTIN": "",  # B2C — must be skipped
+         "ledgerEntries": [{"ledgerName": "Sales", "amount": 100}]},
+    ]}
+    out = extract_books_invoices(_bytes(j))
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["period"] == "042024"
+    assert rec["direction"] == "outward"
+    assert rec["party_gstin"] == "33ABCDE1234F1Z5"
+    assert rec["voucher_no"] == "S-1"
+    assert rec["taxable"] == 1000.0
+    assert rec["cgst"] == 90.0
+    assert rec["sgst"] == 90.0
+    assert rec["total"] == 1180.0
+    assert rec["date"] == "2024-04-15"
+
+
+def test_books_extractor_purchase_inward():
+    j = {"vouchers": [{
+        "date": "2024-05-10", "voucherTypeName": "Purchase", "voucherNumber": "P-1",
+        "partyGSTIN": "33SUPPL1234F1Z5",
+        "ledgerEntries": [
+            {"ledgerName": "Purchase Account",   "amount": -500},
+            {"ledgerName": "Input CGST @ 9%",    "amount": -45},
+            {"ledgerName": "Input SGST @ 9%",    "amount": -45},
+            {"ledgerName": "Suppl Vendor",       "amount": 590},
+        ],
+    }]}
+    out = extract_books_invoices(_bytes(j))
+    assert len(out) == 1
+    assert out[0]["direction"] == "inward"
+    assert out[0]["taxable"] == 500.0
+    assert out[0]["cgst"] == 45.0
+
+
+# ---------------- extract_gstr1_invoices ----------------
+def test_gstr1_extractor_walks_b2b_invoices():
+    j = {"gstin": "33SELL1234F1Z5", "fp": "042024", "b2b": [
+        {"ctin": "33ABCDE1234F1Z5", "trdnm": "Acme Ltd", "inv": [
+            {"inum": "S-1", "idt": "15-04-2024", "val": 1180,
+             "itms": [{"itm_det": {"txval": 1000, "iamt": 0, "camt": 90, "samt": 90, "csamt": 0}}]},
+            {"inum": "S-2", "idt": "20-04-2024", "val": 590,
+             "itms": [{"itm_det": {"txval": 500, "iamt": 90, "camt": 0, "samt": 0, "csamt": 0}}]},
+        ]},
+    ]}
+    out = extract_gstr1_invoices(_bytes(j), default_period="042024")
+    assert len(out) == 2
+    assert out[0]["party_gstin"] == "33ABCDE1234F1Z5"
+    assert out[0]["invoice_no"] == "S-1"
+    assert out[0]["total"] == 1180.0
+    assert out[0]["direction"] == "outward"
+    assert out[1]["igst"] == 90.0
+
+
+# ---------------- extract_gstr2b_invoices ----------------
+def test_gstr2b_extractor_walks_docdata_b2b():
+    j = {"data": {"gstin": "33BUY1234F1Z5", "rtnprd": "042024", "docdata": {"b2b": [
+        {"ctin": "33SUPPL1234F1Z5", "trdnm": "Suppl Vendor", "inv": [
+            {"inum": "P-1", "dt": "10-05-2024", "val": 590, "txval": 500,
+             "cgst": 45, "sgst": 45, "igst": 0, "cess": 0},
+        ]},
+    ]}}}
+    out = extract_gstr2b_invoices(_bytes(j), default_period="052024")
+    assert len(out) == 1
+    rec = out[0]
+    assert rec["party_gstin"] == "33SUPPL1234F1Z5"
+    assert rec["direction"] == "inward"
+    assert rec["taxable"] == 500.0
+    assert rec["total"] == 590.0
+
+
+# ---------------- match_invoices ----------------
+def _book(no, gstin="33A", total=1180, taxable=1000, date="2024-04-15"):
+    return {"voucher_no": no, "party_gstin": gstin, "total": total, "taxable": taxable,
+            "date": date, "period": "042024", "direction": "outward",
+            "igst": 0, "cgst": 90, "sgst": 90, "cess": 0}
+
+
+def _portal(no, gstin="33A", total=1180, taxable=1000, date="15-04-2024"):
+    return {"invoice_no": no, "party_gstin": gstin, "total": total, "taxable": taxable,
+            "date": date, "period": "042024", "direction": "outward",
+            "igst": 0, "cgst": 90, "sgst": 90, "cess": 0}
+
+
+def test_match_exact():
+    out = match_invoices([_book("S-1")], [_portal("S-1")])
+    assert out["counts"]["matched"] == 1
+    assert out["counts"]["missing_in_books"] == 0
+    assert out["counts"]["missing_in_portal"] == 0
+
+
+def test_match_value_mismatch():
+    out = match_invoices([_book("S-1", total=1180)], [_portal("S-1", total=1500)])
+    assert out["counts"]["value_mismatch"] == 1
+    assert out["counts"]["matched"] == 0
+    assert out["value_mismatch"][0]["value_diff"] == -320.0
+
+
+def test_match_date_mismatch():
+    out = match_invoices(
+        [_book("S-1", date="2024-04-15")],
+        [_portal("S-1", date="20-04-2024")],
+    )
+    assert out["counts"]["date_mismatch"] == 1
+
+
+def test_match_missing_in_portal_when_books_only():
+    out = match_invoices([_book("S-1")], [])
+    assert out["counts"]["missing_in_portal"] == 1
+    assert out["missing_in_portal"][0]["voucher_no"] == "S-1"
+
+
+def test_match_missing_in_books_when_portal_only():
+    out = match_invoices([], [_portal("S-1")])
+    assert out["counts"]["missing_in_books"] == 1
+
+
+def test_match_fuzzy_close_invoice_numbers():
+    # Books "INV/0001" vs portal "INV0001" — non-alnum stripped → identical
+    out = match_invoices(
+        [_book("INV/0001")],
+        [_portal("INV0001")],
+    )
+    assert out["counts"]["matched"] == 1
+
+
+def test_match_fuzzy_typo_one_char():
+    # Pass 1 fails (norm differs), Pass 2 fuzzy ratio ≥85 should match
+    # 'INV2024S001' vs 'INV2024S00I'  — 1-char typo
+    out = match_invoices(
+        [_book("INV2024S001")],
+        [_portal("INV2024S00I")],
+    )
+    assert out["counts"]["matched"] == 1
+    pair = out["matched"][0]
+    assert "fuzzy_score" in pair
+    assert pair["fuzzy_score"] >= 85
+
+
+def test_match_does_not_cross_gstin_boundary():
+    """Same invoice number but different GSTINs must not match."""
+    out = match_invoices(
+        [_book("S-1", gstin="33A")],
+        [_portal("S-1", gstin="33B")],
+    )
+    assert out["counts"]["matched"] == 0
+    assert out["counts"]["missing_in_books"] == 1
+    assert out["counts"]["missing_in_portal"] == 1
+
+
+def test_match_value_tolerance_under_1_rupee_passes():
+    out = match_invoices(
+        [_book("S-1", total=1180.00)],
+        [_portal("S-1", total=1180.50)],  # 50 paise diff < ₹1 tol
+    )
+    assert out["counts"]["matched"] == 1
+
+
+def test_match_returns_no_internal_norm_keys():
+    """_norm scratch field must be stripped from response."""
+    out = match_invoices([_book("S-1")], [_portal("S-1")])
+    pair = out["matched"][0]
+    assert "_norm" not in pair["books"]
+    assert "_norm" not in pair["portal"]

@@ -217,3 +217,143 @@ def build_summary(run_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     totals = {k: round(sum(r[k] for r in rows), 2) for k in _SUM_KEYS}
     return {"fy": fy, "rows": rows, "totals": totals}
+
+
+# ============================ Phase D: voucher-level matching =================
+import re as _re
+
+_INV_NORM_RE = _re.compile(r"[^A-Z0-9]")
+
+
+def _norm_inv_no(s: Optional[str]) -> str:
+    """Normalise an invoice / voucher number for matching: uppercase, strip non-alnum."""
+    if not s:
+        return ""
+    return _INV_NORM_RE.sub("", str(s).upper())
+
+
+def _to_iso_date(d: Optional[str]) -> Optional[str]:
+    """Tolerate '2024-04-01' (ISO) or '01-04-2024' (DD-MM-YYYY) → YYYY-MM-DD; else None."""
+    if not d:
+        return None
+    s = str(d).strip()[:10]
+    if _re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    if _re.match(r"^\d{2}-\d{2}-\d{4}$", s):
+        return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
+    if _re.match(r"^\d{2}/\d{2}/\d{4}$", s):
+        return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
+    return None
+
+
+def _classify_pair(b: Dict[str, Any], p: Dict[str, Any], fuzzy_score: Optional[int] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide whether a books↔portal pair is matched, value_mismatch, or date_mismatch.
+
+    Tolerances:
+      • Value: max(₹1, 0.5%) of the larger side
+      • Date: must be the exact same calendar day (after ISO normalisation); only flagged
+        when both sides have parseable dates
+    """
+    b_total = float(b.get("total", 0) or 0)
+    p_total = float(p.get("total", 0) or 0)
+    diff = round(b_total - p_total, 2)
+    tol = max(1.0, 0.005 * max(abs(b_total), abs(p_total)))
+    b_date = _to_iso_date(b.get("date"))
+    p_date = _to_iso_date(p.get("date"))
+    pair: Dict[str, Any] = {
+        "books": {k: v for k, v in b.items() if not k.startswith("_")},
+        "portal": {k: v for k, v in p.items() if not k.startswith("_")},
+        "value_diff": diff,
+        "books_date": b_date,
+        "portal_date": p_date,
+    }
+    if fuzzy_score is not None:
+        pair["fuzzy_score"] = fuzzy_score
+    if abs(diff) > tol:
+        return "value_mismatch", pair
+    if b_date and p_date and b_date != p_date:
+        return "date_mismatch", pair
+    return "matched", pair
+
+
+def match_invoices(books: List[Dict[str, Any]], portal: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Two-pass matching: (1) exact party_gstin + normalised invoice no, (2) rapidfuzz ≥85.
+
+    Returns dict with `matched`, `value_mismatch`, `date_mismatch`,
+    `missing_in_books` (portal-only), `missing_in_portal` (books-only), and `counts`.
+    """
+    from rapidfuzz import fuzz, process
+
+    # Normalise once
+    for b in books:
+        b["_norm"] = _norm_inv_no(b.get("voucher_no") or b.get("invoice_no"))
+    for p in portal:
+        p["_norm"] = _norm_inv_no(p.get("invoice_no") or p.get("voucher_no"))
+
+    n_b, n_p = len(books), len(portal)
+    used_b = [False] * n_b
+    used_p = [False] * n_p
+    matched: List[Dict[str, Any]] = []
+    value_mm: List[Dict[str, Any]] = []
+    date_mm: List[Dict[str, Any]] = []
+
+    # Pass 1: exact match on (gstin, normalised inv no)
+    p_idx: Dict[Tuple[str, str], List[int]] = {}
+    for j, p in enumerate(portal):
+        p_idx.setdefault((p.get("party_gstin", ""), p["_norm"]), []).append(j)
+
+    for i, b in enumerate(books):
+        key = (b.get("party_gstin", ""), b["_norm"])
+        for j in p_idx.get(key, []):
+            if not used_p[j]:
+                used_b[i] = True
+                used_p[j] = True
+                cat, pair = _classify_pair(b, portal[j])
+                {"matched": matched, "value_mismatch": value_mm, "date_mismatch": date_mm}[cat].append(pair)
+                break
+
+    # Pass 2: fuzzy on inv-no within same gstin (only unmatched on both sides)
+    by_gstin: Dict[str, List[int]] = {}
+    for j, p in enumerate(portal):
+        if used_p[j]:
+            continue
+        by_gstin.setdefault(p.get("party_gstin", ""), []).append(j)
+
+    for i, b in enumerate(books):
+        if used_b[i]:
+            continue
+        gstin = b.get("party_gstin", "")
+        cand_idxs = [j for j in by_gstin.get(gstin, []) if not used_p[j]]
+        if not cand_idxs or not b["_norm"]:
+            continue
+        choices = {j: portal[j]["_norm"] for j in cand_idxs if portal[j]["_norm"]}
+        if not choices:
+            continue
+        best = process.extractOne(b["_norm"], choices, scorer=fuzz.ratio, score_cutoff=85)
+        if best:
+            _, score, j = best
+            used_b[i] = True
+            used_p[j] = True
+            cat, pair = _classify_pair(b, portal[j], fuzzy_score=int(score))
+            {"matched": matched, "value_mismatch": value_mm, "date_mismatch": date_mm}[cat].append(pair)
+
+    # Sweep remainders
+    missing_in_portal = [{k: v for k, v in b.items() if not k.startswith("_")}
+                         for i, b in enumerate(books) if not used_b[i]]
+    missing_in_books = [{k: v for k, v in p.items() if not k.startswith("_")}
+                        for j, p in enumerate(portal) if not used_p[j]]
+
+    return {
+        "matched": matched,
+        "value_mismatch": value_mm,
+        "date_mismatch": date_mm,
+        "missing_in_books": missing_in_books,
+        "missing_in_portal": missing_in_portal,
+        "counts": {
+            "matched": len(matched),
+            "value_mismatch": len(value_mm),
+            "date_mismatch": len(date_mm),
+            "missing_in_books": len(missing_in_books),
+            "missing_in_portal": len(missing_in_portal),
+        },
+    }

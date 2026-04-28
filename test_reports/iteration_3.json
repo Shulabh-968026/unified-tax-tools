@@ -1,0 +1,38 @@
+{
+  "summary": "Backend + frontend-smoke testing for GST Recon Phase D (voucher-level matching with rapidfuzz). Wrote /app/backend/tests/test_gst_recon_phase_d_e2e.py — 14 new e2e tests covering POST /runs/{rid}/match (auth gate, 400 bad direction/period, 404 unknown run), invoice persistence in gst_recon_invoices collection (B2C skip, GSTR-1 re-upload idempotency, run-delete cascade), and all 5 match scenarios (matched / value_mismatch / date_mismatch / missing_in_books / missing_in_portal / fuzzy 1-char typo / cross-GSTIN safety / inward direction with GSTR-2B). Also re-ran 16 Phase D unit tests, 12 Phase C.3 unit tests, 14 Phase C e2e tests, and 22 prior merged-backend regression tests. 78/78 PASS overall. Frontend smoke: navigated as seeded admin → Workspace → GSTIN Test client (cli_e3d8ebd017f1) → Open GST Turnover Recon — page renders without console/page errors, 'Phase D · Voucher-level reconciliation with rapidfuzz matching' footer is shown, all base data-testids present (gst-recon-back, gst-recon-fy-select, gst-recon-dropzone, bucket-*, validate-btn). The drill-outward-/drill-inward-/match-drawer testids only mount once the Summary panel is loaded (which requires a full upload+validate+summary chain) — verified that the conditional render contract matches the code at Landing.jsx L387-497. Backend match endpoint is solid; frontend wiring of the drawer is sound.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_gst_recon_phase_d_e2e.py",
+    "/app/backend/tests/test_gst_recon_phase_d.py",
+    "/app/backend/tests/test_gst_recon_phase_c_e2e.py",
+    "/app/backend/tests/test_gst_recon_phase_c3.py",
+    "/app/test_reports/pytest/iteration_3.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "controller.py L228-263 (compute_match): clean validation order — direction → period → run lookup → portal-source resolution → mongo find with projection that excludes _id, run_id, source. Good defensive shape; query uses run_id + source + period, which matches the indexes added in core/db.py (gst_recon_invoices). Books query also filters direction, portal does not — correct because portal records are inherently single-direction by source.",
+    "controller.py L134-153 (upload_batch): per-bucket idempotency — books is keyed by run_id+source only (drop-all-books on every books re-upload), gstr1/gstr2b is keyed by (run_id, source, period) so other-period invoices survive. This is the right contract for monthly portal files but means a books re-upload covering only Apr-2024 will WIPE prior May-2024 voucher records under the same run; works in practice because Books JSON is always whole-FY, but worth documenting.",
+    "service.match_invoices: confirmed (via tests) that internal '_norm' scratch field is stripped from the response — no schema leakage to the frontend.",
+    "Match endpoint correctly cascades: DELETE /runs/{rid} deletes both gst_recon_runs AND gst_recon_invoices (controller.py L97-99). Verified via pymongo count → 0.",
+    "RunOut.summary now round-trips on GET /runs/{rid} (verified in test_runout_summary_field_round_trips) — addresses prior iteration_2.json action item.",
+    "Landing.jsx — match-drawer is conditionally rendered only when summary state is populated; this is intentional and matches PRD. Drill-cell testids drill-outward-{period}/drill-inward-{period} are likewise only present in the Summary table component, not on the empty landing screen. Frontend handoff smoke is the most that can be done without a full upload-validate-summary chain in playwright (per agent_to_agent_context_note).",
+    "Aggregators.extract_books_invoices L228-229: B2C voucher skip via `if not party_gstin: continue` is correctly placed after the consigneeGSTIN fallback, so a sales-export voucher with consigneeGSTIN but blank partyGSTIN still emits — good edge-case coverage."
+  ],
+  "updated_files": ["/app/backend/tests/test_gst_recon_phase_d_e2e.py"],
+  "success_rate": {
+    "backend": "100% (78/78 — 16 phase-D unit + 14 phase-D e2e + 12 phase-C3 unit + 14 phase-C e2e + 22 merged regression)",
+    "frontend": "smoke pass — page loads, Phase D footer visible, no console errors, base testids present; drawer/drill testids verified not-mounted until summary loaded (matches conditional-render contract)"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260427_stable (admin user_qa_bot_fixed_01) — verified working for both API + browser cookie injection.",
+  "seed_data_creation": "Each test creates a TEST_phase_d_* prefixed run under client cli_bdf1e22faa7c, uploads synthetic GSTR-1/GSTR-2B/Books JSON, then deletes the run in finally — gst_recon_invoices cascade-deletes verified leaves zero residue. No persistent test data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use /app/backend/tests/test_gst_recon_phase_d_e2e.py as Phase D regression suite; auto-loads env from /app/frontend/.env + /app/backend/.env. test_gst_recon_phase_d.py covers the pure-function unit layer (extractors + match_invoices). For full UI clickable-drill flow, you'll need to extend the playwright script to: (1) create a run, (2) upload synthetic GSTR-1+Books via the dropzone or by POSTing files into the same browser context, (3) click Run Pre-flight Check + Run Reconciliation, (4) wait for the Summary table to render, (5) then click [data-testid='drill-outward-042024'] to open the MatchDrawer. Easier path is to inject summary state via JS console (per main-agent note). Prior iteration_2.json action items (RunOut.summary + FileBucketItem extra-fields) have been resolved — confirmed by test_runout_summary_field_round_trips.",
+  "rca of the issue": "N/A — no defects found. All 5 match categories, fuzzy-match (rapidfuzz ratio≥85), value/date tolerances, cross-GSTIN guard, B2C skip, re-upload idempotency, and run-delete cascade behave per spec."
+}

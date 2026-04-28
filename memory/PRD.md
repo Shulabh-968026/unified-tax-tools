@@ -129,7 +129,22 @@ lib/
       • Frontend: Summary panel in `pages/gst_recon/Landing.jsx` — two reconciliation tables (Outward + ITC) with sticky header, alternating rows, amber variance highlighting (green when |variance| < 1, amber otherwise), annual totals row
       • Fixed latent bug: missing `useState` for `validation` / `setValidation` in Landing.jsx (would have crashed on upload)
       • Tests: 12 unit tests in `tests/test_gst_recon_phase_c3.py` + 14 e2e tests in `tests/test_gst_recon_phase_c_e2e.py` — 48/48 passing including 22 prior regression
-- [ ] GST Recon Phase D — rapidfuzz voucher-level matching + drill-down UI
+- [x] GST Recon Phase D — voucher-level matching with rapidfuzz (2026-04-28)
+      • New collection `gst_recon_invoices` (indexed on run_id+source+period) — invoice records persisted on upload, dropped on run delete
+      • New extractors in `aggregators.py`: `extract_books_invoices`, `extract_gstr1_invoices`, `extract_gstr2b_invoices` — emit flat per-invoice records {period, direction, party_gstin, invoice_no, date, taxable, igst, cgst, sgst, cess, total}
+      • Books extractor only emits B2B vouchers (party GSTIN required) — B2C skipped since portal won't have them under b2b
+      • New `service.py::match_invoices(books, portal)` — two-pass matching: (1) exact on (party_gstin, normalised invoice no); (2) rapidfuzz fuzz.ratio ≥85 on inv-no within same gstin. Tolerances: value=max(₹1, 0.5%); date=same calendar day after ISO normalisation
+      • Returns 5 categories: matched / value_mismatch / date_mismatch / missing_in_books / missing_in_portal + counts
+      • New endpoint `POST /api/gst-recon/runs/{rid}/match?period=MMYYYY&direction=outward|inward`
+      • Cascade delete of invoices on run delete
+      • 16 unit tests in `tests/test_gst_recon_phase_d.py` — all passing
+- [x] GST Recon Phase E (partial) — drill-down UI from Summary cells (2026-04-28)
+      • GSTR-1 column in Outward summary table and GSTR-2B column in ITC summary table now clickable
+      • New `MatchDrawer` slides in from right with 5 colour-coded tabs (matched/value-mismatch/date-mismatch/missing-in-books/missing-in-portal) + count badges
+      • Pair-tabs show: Party GSTIN, Books #, Portal #, Books Total, Portal Total, Δ, Books Date, Portal Date, Fuzzy Score (when fuzzy-matched)
+      • Missing-tabs show: Party GSTIN, Party Name, Inv #, Date, Taxable, IGST, CGST, SGST, Total
+      • Backdrop + close button + ESC support
+- [ ] GST Recon Phase E completion — full testing-agent run + Excel export of voucher-level reconciliation as a working-paper
 - [ ] GST Recon Phase E — Testing sub-agent
 - [ ] Migrate 43B(h) pages from shadcn → MUI + react-toastify (preserve current look)
 - [ ] Migrate Clause 44 pages from shadcn → MUI

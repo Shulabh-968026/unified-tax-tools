@@ -31,6 +31,9 @@ async def ensure_indexes():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.users.create_index("email", unique=True)
     await db.invitations.create_index("email", unique=True)
+    # GST Recon Phase D — invoice-level voucher matching
+    await db.gst_recon_invoices.create_index([("run_id", 1), ("source", 1), ("period", 1)])
+    await db.gst_recon_invoices.create_index([("run_id", 1), ("direction", 1), ("period", 1)])
 
 
 async def ensure_super_admin():

@@ -141,13 +141,8 @@ def aggregate_books(content: bytes) -> Dict[str, Dict[str, float]]:
     except Exception:
         return {}
     out: Dict[str, Dict[str, float]] = {}
-    OUT_NAMES = ("sales", "service", "export", "credit note (sales)", "debit note (sales)")
-    IN_NAMES  = ("purchase", "expense", "credit note (purchase)", "debit note (purchase)")
-    # Income/expense ledger keywords — used to distinguish taxable-value ledgers
-    # from the counterparty (debtor/creditor) ledger inside a voucher.
-    INCOME_LEDGER_KW = ("sales", "service", "income", "revenue", "export", "freight outward")
-    EXPENSE_LEDGER_KW = ("purchase", "expense", "freight inward", "rent", "consum", "raw", "cogs", "salar")
-    TAX_KW = ("igst", "cgst", "sgst", "cess")
+    OUT_NAMES = _OUT_VTYPES
+    IN_NAMES  = _IN_VTYPES
 
     def _empty():
         return {
@@ -188,3 +183,146 @@ def aggregate_books(content: bytes) -> Dict[str, Dict[str, float]]:
                 # only true income/expense ledgers count as taxable value
                 bucket[f"{prefix}_taxable"] += amt
     return {p: _round_dict(b) for p, b in out.items()}
+
+
+# ============================ Phase D: invoice-level extractors ==============
+# Books: every B2B sales/purchase voucher (must have partyGSTIN).
+# GSTR-1: each b2b invoice (one per party-invoice pair).
+# GSTR-2B: each docdata.b2b invoice.
+# Each record carries {period, direction, party_gstin, invoice_no, date, taxable, igst, cgst, sgst, cess, total}.
+
+INCOME_LEDGER_KW = ("sales", "service", "income", "revenue", "export", "freight outward")
+EXPENSE_LEDGER_KW = ("purchase", "expense", "freight inward", "rent", "consum", "raw", "cogs", "salar")
+TAX_KW = ("igst", "cgst", "sgst", "cess")
+_OUT_VTYPES = ("sales", "service", "export", "credit note (sales)", "debit note (sales)")
+_IN_VTYPES  = ("purchase", "expense", "credit note (purchase)", "debit note (purchase)")
+
+
+def extract_books_invoices(content: bytes) -> list:
+    """Return every B2B (party-GSTIN-bearing) sales or purchase voucher as a flat record."""
+    try:
+        j = json.loads(content.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    out: list = []
+    for v in (j.get("vouchers") or []):
+        d = (v.get("date") or "")[:10]
+        try:
+            dt = datetime.fromisoformat(d).date() if d else None
+        except Exception:
+            dt = None
+        if not dt:
+            continue
+        period = f"{dt.month:02d}{dt.year}"
+        vtn = (v.get("voucherTypeName") or "").lower()
+        if any(n in vtn for n in _OUT_VTYPES):
+            direction = "outward"
+            income_kw = INCOME_LEDGER_KW
+        elif any(n in vtn for n in _IN_VTYPES):
+            direction = "inward"
+            income_kw = EXPENSE_LEDGER_KW
+        else:
+            continue
+        # partyGSTIN preferred; fall back to consigneeGSTIN
+        party_gstin = ((v.get("partyGSTIN") or v.get("consigneeGSTIN") or "")).upper().strip()
+        if not party_gstin:
+            continue  # B2C — skip; portal won't have it under b2b
+        taxable = igst = cgst = sgst = cess = 0.0
+        for le in (v.get("ledgerEntries") or []):
+            ln = (le.get("ledgerName") or "").lower()
+            amt = abs(_f(le.get("amount")))
+            if "igst" in ln and ("output" in ln or "input" in ln):
+                igst += amt
+            elif "cgst" in ln and ("output" in ln or "input" in ln):
+                cgst += amt
+            elif "sgst" in ln and ("output" in ln or "input" in ln):
+                sgst += amt
+            elif "cess" in ln and ("output" in ln or "input" in ln):
+                cess += amt
+            elif any(k in ln for k in income_kw) and not any(t in ln for t in TAX_KW):
+                taxable += amt
+        total = round(taxable + igst + cgst + sgst + cess, 2)
+        out.append({
+            "period": period,
+            "direction": direction,
+            "party_gstin": party_gstin,
+            "party_name": v.get("partyName") or v.get("consigneeName") or "",
+            "voucher_no": (v.get("voucherNumber") or "").strip(),
+            "voucher_type": v.get("voucherTypeName") or "",
+            "date": dt.isoformat(),
+            "taxable": round(taxable, 2),
+            "igst": round(igst, 2),
+            "cgst": round(cgst, 2),
+            "sgst": round(sgst, 2),
+            "cess": round(cess, 2),
+            "total": total,
+        })
+    return out
+
+
+def extract_gstr1_invoices(content: bytes, default_period: str = "") -> list:
+    """Walk GSTR-1 b2b → each invoice as a flat record."""
+    try:
+        j = json.loads(content.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    fp = j.get("fp") or default_period or ""
+    out: list = []
+    for sup in (j.get("b2b") or []):
+        ctin = (sup.get("ctin") or "").upper().strip()
+        trdnm = sup.get("trdnm") or ""
+        for inv in (sup.get("inv") or []):
+            taxable = igst = cgst = sgst = cess = 0.0
+            for x in (inv.get("itms") or []):
+                d = x.get("itm_det") or {}
+                taxable += _f(d.get("txval"))
+                igst    += _f(d.get("iamt"))
+                cgst    += _f(d.get("camt"))
+                sgst    += _f(d.get("samt"))
+                cess    += _f(d.get("csamt"))
+            total = round(_f(inv.get("val")) or (taxable + igst + cgst + sgst + cess), 2)
+            out.append({
+                "period": fp,
+                "direction": "outward",
+                "party_gstin": ctin,
+                "party_name": trdnm,
+                "invoice_no": (inv.get("inum") or "").strip(),
+                "date": inv.get("idt") or "",  # DD-MM-YYYY format
+                "taxable": round(taxable, 2),
+                "igst": round(igst, 2),
+                "cgst": round(cgst, 2),
+                "sgst": round(sgst, 2),
+                "cess": round(cess, 2),
+                "total": total,
+            })
+    return out
+
+
+def extract_gstr2b_invoices(content: bytes, default_period: str = "") -> list:
+    """Walk GSTR-2B docdata.b2b → each invoice as a flat record."""
+    try:
+        j = json.loads(content.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    data = j.get("data") or j
+    fp = data.get("rtnprd") or default_period or ""
+    out: list = []
+    for sup in ((data.get("docdata") or {}).get("b2b") or []):
+        ctin = (sup.get("ctin") or "").upper().strip()
+        trdnm = sup.get("trdnm") or ""
+        for inv in (sup.get("inv") or []):
+            out.append({
+                "period": fp,
+                "direction": "inward",
+                "party_gstin": ctin,
+                "party_name": trdnm,
+                "invoice_no": (inv.get("inum") or "").strip(),
+                "date": inv.get("dt") or "",
+                "taxable": round(_f(inv.get("txval")), 2),
+                "igst": round(_f(inv.get("igst")), 2),
+                "cgst": round(_f(inv.get("cgst")), 2),
+                "sgst": round(_f(inv.get("sgst")), 2),
+                "cess": round(_f(inv.get("cess")), 2),
+                "total": round(_f(inv.get("val")), 2),
+            })
+    return out
