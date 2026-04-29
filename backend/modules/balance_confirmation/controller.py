@@ -1,0 +1,538 @@
+"""Routes for the Balance Confirmation utility (prefix: /balance-confirmation).
+
+Phase 1 — Data ingestion + ledger workbench
+Phase 2 — Template configuration
+
+Phases 3-6 (sending, recipient response loop, recon) will land in subsequent
+iterations. Database schema is already token-ready: every ledger receives a
+UUID `response_token` at ingest time so we don't need a migration later.
+"""
+from __future__ import annotations
+import base64
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
+
+from core.db import db
+from modules.auth.controller import get_current_user
+from modules.balance_confirmation.exports import build_authorization_template_docx
+from modules.balance_confirmation.schemas import (
+    AuthorizationOut,
+    LedgerPatch,
+    RunCreate,
+    RunOut,
+    TemplateUpsert,
+)
+from modules.balance_confirmation.service import (
+    EMAIL_CSV_COLUMNS,
+    build_ledger_records,
+    export_email_csv,
+    fy_end_date,
+    import_email_csv,
+    parse_books_json,
+    summarise_ledgers,
+)
+from modules.balance_confirmation.templates import all_defaults
+
+router = APIRouter(prefix="/balance-confirmation")
+log = logging.getLogger("balance_confirmation")
+
+RUNS = db.bc_runs
+LEDGERS = db.bc_ledgers
+TEMPLATES = db.bc_templates
+AUTH = db.bc_authorizations
+BOOKS_RAW = db.bc_books_raw  # gzipped JSON (kept for re-classification later)
+
+
+async def _auth(request: Request, tok: Optional[str], hdr: Optional[str]):
+    return await get_current_user(request, tok, hdr)
+
+
+# ============================ Runs ============================================
+@router.post("/runs", response_model=RunOut)
+async def create_run(
+    payload: RunCreate,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    user = await _auth(request, session_token, authorization)
+    if not payload.client_id:
+        raise HTTPException(400, "client_id is required")
+    if not payload.fy:
+        raise HTTPException(400, "fy is required (e.g. '2024-25')")
+
+    # Best-effort default for as_at_date
+    as_at = (payload.as_at_date or "").strip() or fy_end_date(payload.fy)
+
+    rid = str(uuid.uuid4())
+    doc = {
+        "id": rid,
+        "client_id": payload.client_id,
+        "fy": payload.fy,
+        "name": (payload.name or f"Balance Confirmation {payload.fy}").strip(),
+        "as_at_date": as_at,
+        "source_filename": "",
+        "status": "draft",
+        "summary": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by_user_id": user["user_id"],
+        "created_by_name": user.get("name") or "",
+        "created_by_email": user.get("email") or "",
+    }
+    await RUNS.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@router.get("/runs", response_model=List[RunOut])
+async def list_runs(
+    request: Request,
+    client_id: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    q: Dict[str, Any] = {}
+    if client_id:
+        q["client_id"] = client_id
+    docs = await RUNS.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@router.get("/runs/{rid}")
+async def get_run(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    doc = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+    return doc
+
+
+@router.delete("/runs/{rid}")
+async def delete_run(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    res = await RUNS.delete_one({"id": rid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Run not found")
+    # Cascade
+    await LEDGERS.delete_many({"run_id": rid})
+    await BOOKS_RAW.delete_many({"run_id": rid})
+    return {"deleted": True}
+
+
+# ============================ Books JSON ingest ===============================
+@router.post("/runs/{rid}/upload-books")
+async def upload_books(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    content = await file.read()
+    try:
+        company, groups, ledgers = parse_books_json(content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # Persist gzipped raw for any later re-classification + audit trail
+    import gzip
+    await BOOKS_RAW.delete_many({"run_id": rid})
+    await BOOKS_RAW.insert_one({
+        "run_id": rid,
+        "filename": file.filename or "",
+        "content_b64": base64.b64encode(gzip.compress(content)).decode("ascii"),
+        "size": len(content),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    # Build ledger records — replace any prior ledgers from earlier upload, but
+    # preserve manual email mappings if the same name reappears.
+    existing = {
+        L["name"]: L for L in await LEDGERS.find(
+            {"run_id": rid}, {"_id": 0}
+        ).to_list(20000)
+    }
+    new_records = build_ledger_records(rid, groups, ledgers)
+    for rec in new_records:
+        prev = existing.get(rec["name"])
+        if prev:
+            # carry forward user-edited fields
+            for k in ("email", "cc_emails", "contact_name", "phone",
+                      "address", "gstin", "pan", "category"):
+                if prev.get(k):
+                    rec[k] = prev[k]
+            # keep the prior token + status so any sent/awaiting links don't break
+            rec["response_token"] = prev.get("response_token") or rec["response_token"]
+            rec["confirmation_status"] = prev.get("confirmation_status") or rec["confirmation_status"]
+
+    await LEDGERS.delete_many({"run_id": rid})
+    if new_records:
+        await LEDGERS.insert_many(new_records)
+
+    summary = summarise_ledgers(new_records)
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {
+            "source_filename": file.filename or "",
+            "company": company,
+            "summary": summary,
+            "status": "ingested",
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {
+        "ledger_count": len(new_records),
+        "summary": summary,
+        "company": company,
+    }
+
+
+# ============================ Ledgers (workbench) =============================
+@router.get("/runs/{rid}/ledgers")
+async def list_ledgers(
+    rid: str,
+    request: Request,
+    category: Optional[str] = None,
+    missing_email: Optional[bool] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    q: Dict[str, Any] = {"run_id": rid}
+    if category:
+        q["category"] = category
+    if missing_email:
+        q["email"] = ""
+    rows = await LEDGERS.find(q, {"_id": 0}).sort("name", 1).to_list(20000)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.patch("/runs/{rid}/ledgers/{ledger_id}")
+async def patch_ledger(
+    rid: str,
+    ledger_id: str,
+    payload: LedgerPatch,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    doc = await LEDGERS.find_one({"run_id": rid, "ledger_id": ledger_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Ledger not found")
+    update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "category" in update and update["category"] not in ("trade_receivable", "trade_payable", "bank", "other"):
+        raise HTTPException(400, "Invalid category")
+    if update:
+        update["last_modified"] = datetime.now(timezone.utc).isoformat()
+        await LEDGERS.update_one({"run_id": rid, "ledger_id": ledger_id}, {"$set": update})
+        # Recompute run summary so the dashboard counts stay fresh
+        rows = await LEDGERS.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+        await RUNS.update_one({"id": rid}, {"$set": {"summary": summarise_ledgers(rows)}})
+    return await LEDGERS.find_one({"run_id": rid, "ledger_id": ledger_id}, {"_id": 0})
+
+
+@router.get("/runs/{rid}/ledgers/export.csv")
+async def export_ledgers_csv(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    rows = await LEDGERS.find({"run_id": rid}, {"_id": 0}).sort("name", 1).to_list(20000)
+    csv_bytes = export_email_csv(rows)
+    fname = f"BalanceConfirmation_EmailMaster_{rid[:8]}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/runs/{rid}/ledgers/import.csv")
+async def import_ledgers_csv(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    content = await file.read()
+    try:
+        updates = import_email_csv(content)
+    except Exception as e:
+        log.exception("CSV import failed")
+        raise HTTPException(400, f"CSV parse failed: {e}")
+
+    matched = 0
+    not_found: List[str] = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for u in updates:
+        q: Dict[str, Any] = {"run_id": rid}
+        if u.get("ledger_id"):
+            q["ledger_id"] = u["ledger_id"]
+        elif u.get("name"):
+            q["name"] = u["name"]
+        else:
+            continue
+        update = {
+            k: v for k, v in u.items()
+            if k not in ("ledger_id", "name") and v is not None
+        }
+        if not update:
+            continue
+        update["last_modified"] = now_iso
+        res = await LEDGERS.update_one(q, {"$set": update})
+        if res.matched_count:
+            matched += 1
+        else:
+            not_found.append(u.get("name") or u.get("ledger_id") or "?")
+
+    rows = await LEDGERS.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+    summary = summarise_ledgers(rows)
+    await RUNS.update_one({"id": rid}, {"$set": {"summary": summary}})
+    return {
+        "rows_in_csv": len(updates),
+        "matched": matched,
+        "not_found": not_found[:50],
+        "summary": summary,
+    }
+
+
+# ============================ Authorization Letter ===========================
+@router.post("/clients/{cid}/authorization", response_model=AuthorizationOut)
+async def upload_authorization(
+    cid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    user = await _auth(request, session_token, authorization)
+    if not await db.clients.find_one({"client_id": cid}, {"_id": 0, "client_id": 1}):
+        raise HTTPException(404, "Client not found")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+    if not (file.content_type or "").lower().startswith(("application/pdf",)) and not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(400, "Authorization letter must be a PDF")
+    doc = {
+        "client_id": cid,
+        "filename": file.filename or "authorization.pdf",
+        "content_b64": base64.b64encode(content).decode("ascii"),
+        "size": len(content),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_by_name": user.get("name") or "",
+    }
+    await AUTH.replace_one({"client_id": cid}, doc, upsert=True)
+    return {
+        "client_id": cid,
+        "filename": doc["filename"],
+        "size": doc["size"],
+        "uploaded_at": doc["uploaded_at"],
+        "uploaded_by_name": doc["uploaded_by_name"],
+    }
+
+
+@router.get("/clients/{cid}/authorization", response_model=Optional[AuthorizationOut])
+async def get_authorization_meta(
+    cid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    doc = await AUTH.find_one({"client_id": cid}, {"_id": 0, "content_b64": 0})
+    return doc
+
+
+@router.get("/clients/{cid}/authorization/file")
+async def download_authorization(
+    cid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    doc = await AUTH.find_one({"client_id": cid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "No authorization letter on file")
+    pdf_bytes = base64.b64decode(doc["content_b64"])
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
+    )
+
+
+@router.delete("/clients/{cid}/authorization")
+async def delete_authorization(
+    cid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    res = await AUTH.delete_one({"client_id": cid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "No authorization letter on file")
+    return {"deleted": True}
+
+
+@router.get("/clients/{cid}/authorization/template.docx")
+async def download_authorization_template(
+    cid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Editable Word letter the client can sign and re-upload as the auth PDF."""
+    await _auth(request, session_token, authorization)
+    client = await db.clients.find_one({"client_id": cid}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    docx_bytes = build_authorization_template_docx(client)
+    return StreamingResponse(
+        iter([docx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": (
+            f'attachment; filename="Authorization_Template_{(client.get("name") or "Client").replace(" ", "_")}.docx"'
+        )},
+    )
+
+
+# ============================ Templates =======================================
+async def _ensure_default_templates() -> None:
+    """Idempotent: insert one row per default kind if no global default exists."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for d in all_defaults():
+        existing = await TEMPLATES.find_one({"kind": d["kind"], "is_default": True})
+        if existing:
+            continue
+        await TEMPLATES.insert_one({
+            "template_id": str(uuid.uuid4()),
+            "kind": d["kind"],
+            "name": d["name"],
+            "subject": d["subject"],
+            "html_body": d["html_body"],
+            "is_default": True,
+            "scope": "global",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+
+
+@router.get("/templates")
+async def list_templates(
+    request: Request,
+    kind: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    await _ensure_default_templates()  # cheap; runs only on first call
+    q: Dict[str, Any] = {}
+    if kind:
+        q["kind"] = kind
+    rows = await TEMPLATES.find(q, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return {"rows": rows}
+
+
+@router.post("/templates")
+async def create_template(
+    payload: TemplateUpsert,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    user = await _auth(request, session_token, authorization)
+    if payload.kind not in ("customer", "vendor", "bank"):
+        raise HTTPException(400, "kind must be customer | vendor | bank")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "template_id": str(uuid.uuid4()),
+        "kind": payload.kind,
+        "name": payload.name.strip() or f"Custom {payload.kind} template",
+        "subject": payload.subject.strip(),
+        "html_body": payload.html_body,
+        "is_default": False,
+        "scope": "global",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "created_by_email": user.get("email") or "",
+    }
+    await TEMPLATES.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@router.patch("/templates/{tid}")
+async def update_template(
+    tid: str,
+    payload: TemplateUpsert,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if payload.kind not in ("customer", "vendor", "bank"):
+        raise HTTPException(400, "kind must be customer | vendor | bank")
+    res = await TEMPLATES.update_one(
+        {"template_id": tid},
+        {"$set": {
+            "kind": payload.kind,
+            "name": payload.name.strip(),
+            "subject": payload.subject.strip(),
+            "html_body": payload.html_body,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Template not found")
+    return await TEMPLATES.find_one({"template_id": tid}, {"_id": 0})
+
+
+@router.delete("/templates/{tid}")
+async def delete_template(
+    tid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    doc = await TEMPLATES.find_one({"template_id": tid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Template not found")
+    if doc.get("is_default"):
+        raise HTTPException(400, "Default templates cannot be deleted; edit instead")
+    await TEMPLATES.delete_one({"template_id": tid})
+    return {"deleted": True}

@@ -15,6 +15,7 @@ import AdminUsers from "@/pages/AdminUsers";
 import Msme43bhLanding from "@/pages/msme43bh/Landing";
 import Msme43bhSessionDashboard from "@/pages/msme43bh/SessionDashboard";
 import GstReconLanding from "@/pages/gst_recon/Landing";
+import BcLanding from "@/pages/balance_confirmation/Landing";
 
 function AppRouter() {
   const location = useLocation();
@@ -34,6 +35,8 @@ function AppRouter() {
       <Route path="/dashboard/clients/:clientId/utilities/msme-43bh" element={<ProtectedRoute><Msme43bhLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/msme-43bh/sessions/:sid" element={<ProtectedRoute><Msme43bhSessionDashboard/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/gst-recon" element={<ProtectedRoute><GstReconLanding/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/balance-confirmation" element={<ProtectedRoute><BcLanding/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/balance-confirmation/runs/:rid" element={<ProtectedRoute><BcLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><MappingDashboard/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><ReportDashboard/></ProtectedRoute>}/>
       <Route path="*" element={<Navigate to="/dashboard" replace/>}/>

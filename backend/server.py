@@ -11,6 +11,7 @@ from starlette.middleware.cors import CORSMiddleware
 from core.db import ensure_indexes, ensure_super_admin, mongo_client
 from modules.admin.controller import router as admin_router
 from modules.auth.controller import router as auth_router
+from modules.balance_confirmation.controller import router as bc_router
 from modules.clause44.controller import router as clause44_router
 from modules.clients.controller import router as clients_router
 from modules.msme43bh.controller import router as msme_router
@@ -27,6 +28,7 @@ api.include_router(clause44_router)
 api.include_router(admin_router)
 api.include_router(msme_router)
 api.include_router(gst_recon_router)
+api.include_router(bc_router)
 
 
 @api.get("/")

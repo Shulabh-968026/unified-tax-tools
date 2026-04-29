@@ -10,7 +10,7 @@ export const UTILITIES = [
   { id: "clause-34",          title: "TDS Clause 34 — 3CD", description: "Tax deducted/collected at source disclosure with section-wise summary.", icon: Receipt, status: "soon", accent: "sky" },
   { id: "ais-tis-26as",       title: "AIS / TIS / 26AS Recon", description: "Cross-walk income reported to books across AIS, TIS and Form 26AS.", icon: FileMagnifyingGlass, status: "soon", accent: "violet" },
   { id: "fixed-assets",       title: "Fixed Assets", description: "FAR continuity, additions, deletions and depreciation schedule.", icon: Wrench, status: "soon", accent: "slate" },
-  { id: "balance-confirmation", title: "Balance Confirmation", description: "Generate and track third-party balance confirmation requests.", icon: Handshake, status: "in_progress", accent: "rose" },
+  { id: "balance-confirmation", title: "Balance Confirmation", description: "Generate and track third-party balance confirmation requests.", icon: Handshake, status: "active", accent: "rose" },
   { id: "gst-refund-31",      title: "GST Refund — 3CD Clause 31", description: "Disclosure of refunds claimed and received under GST.", icon: CurrencyCircleDollar, status: "soon", accent: "fuchsia" },
 ];
 

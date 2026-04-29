@@ -1,0 +1,46 @@
+{
+  "summary": "Balance Confirmation Phase 1+2 full regression — backend + frontend both GREEN. Backend: 28/28 pytest tests pass in /app/backend/tests/test_balance_confirmation.py covering Run CRUD (auth gate, 400/422 on missing client_id/fy/empty client_id, 404 on unknown), Books JSON ingest (195 ledgers split exactly 58 receivable / 46 payable / 2 bank / 89 other, response_token UUID + uniqueness across all 195, dr_cr indicator, status flips draft→ingested), Ledgers workbench (category filter, missing_email filter, PATCH email/cc/contact + summary recompute, invalid category 400, ledger 404), CSV export (BOM + UTF-8 + ledger_id/closing_balance/email columns) and import (ledger_id-match + name-fallback + not_found list), Templates (3 defaults auto-seed, idempotent across calls, AssureAI green #047857 in customer html_body, custom create+patch+delete cycle, default-protect rejects 400, invalid kind 400), Authorization (PDF-only validation rejects .txt, full upload→meta→stream→delete cycle round-trips bytes 1:1, .docx Word template returns valid 27KB document with python-docx parseable paragraphs), Cascade delete (run delete removes 195 ledgers + books_raw, post-delete ledger query 404). Frontend: page mounts cleanly at /dashboard/clients/cli_7f0b86b1ab0b/utilities/balance-confirmation — empty state with bc-empty + Past Runs sidebar + New Run button, Email Templates drawer opens via bc-open-templates with all 3 kind tabs (customer/vendor/bank) + save button, Authorisation drawer opens via bc-open-auth with download-template button + upload field. After API-uploading books to a UI test run, the workbench renders correctly: 4 summary cards show RECEIVABLES 58 / 37,04,801.00 · 0/58 email | PAYABLES 46 / 49,66,274.00 · 0/46 email | BANKS 2 / 7,20,177.47 · 0/2 email | OTHER 89 / 3,71,92,257.43 · 0/89 email — bytes-perfect match with backend summary. Tab switcher, search, missing-email checkbox, CSV export/import buttons, inline email/cc/contact inputs, per-row category dropdown all visible and clickable. No console errors, no React error boundaries.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/balance-confirmation/runs", "issue": "Missing client_id in body returns 422 (FastAPI Pydantic) instead of the controller's hand-rolled 400. Both are valid 4xx; the controller's `if not payload.client_id: raise HTTPException(400)` only fires when client_id is the empty string. Cosmetic — test accepts both."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_confirmation.py",
+    "/app/test_reports/pytest/iteration_6.xml"
+  ],
+  "action_items": [
+    "Phase 1+2 of Balance Confirmation is production-ready end-to-end. No mandatory fixes. Safe to proceed with Phase 3 (sending engine + recipient response loop)."
+  ],
+  "critical_code_review_comments": [
+    "controller.py: every route lazily injects auth via _auth() helper — clean DRY. Every list endpoint applies {_id:0} projection so MongoDB ObjectId never leaks. Good.",
+    "service.py:summarise_ledgers — uses abs() of closing balance for category totals; reasonable for headline display because Tally sign convention can give DR receivables negative. UI shows DR/CR chip per row so absolute total is correct.",
+    "classifier.py: walks parent-group chain up to depth 12 with cycle guard. Reserved-group set + keyword fallback covers Tally master + custom CoAs. Verified correctness: 195 ledgers split exactly 58/46/2/89 matching the spec.",
+    "templates.py: AssureAI green #047857 hard-coded in inline CSS for all 3 default templates — correct per Q4 spec. Default seed is idempotent (find_one before insert) — confirmed via test_default_templates_idempotent.",
+    "exports.py:build_authorization_template_docx — generates >10KB valid python-docx document with multiple paragraphs.",
+    "schemas.py:LedgerPatch — every field Optional with model_dump(exclude_unset=True) — correct partial-update semantics. Category whitelist enforced server-side in controller.",
+    "DELETE /runs/{rid} cascades correctly to bc_ledgers + bc_books_raw. No orphans confirmed via post-delete 404.",
+    "Landing.jsx: 559 lines is approaching the 700-line split threshold from code review guidelines. Consider extracting LedgerWorkbench, TemplatesDrawer, AuthorisationDrawer into their own files in Phase 3 when sending UI lands.",
+    "Inline email edit uses input blur to debounce-save (not visible in DOM until interacted with) — works but no explicit data-testid on per-row inputs would help future regression. Suggest adding data-testid='bc-row-{ledger_id}-email' / -cc / -contact for Phase 3 testability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_balance_confirmation.py"
+  ],
+  "success_rate": {
+    "backend": "100% (28/28 pytest tests pass — Run CRUD, Books ingest, Ledgers workbench, CSV roundtrip, Templates, Authorization PDF + Word, Cascade delete)",
+    "frontend": "100% on Phase 1+2 scope (page mounts, both drawers open with correct content, workbench renders 4 summary cards with exact backend numbers, tabs/search/csv buttons/inline inputs/category dropdown all present)"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260429_dev (admin user_qa_bot_fixed_01) — verified working for both backend curls and Playwright browser cookie injection. Note: /app/memory/test_credentials.md still references the older _stable suffix; the _dev token is the one currently seeded in user_sessions.",
+  "seed_data_creation": "Pytest fixtures auto-create + auto-cleanup TEST-prefixed runs against SEED_CLIENT cli_7f0b86b1ab0b. UI smoke test created run e2b5a718-f8d9-45bd-9f4f-f9857c682722 (now deleted). Default templates were auto-seeded (3 rows) on first /templates GET — these will persist across runs (correct, by design).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reuse SEED_CLIENT=cli_7f0b86b1ab0b for all future Phase 3+ regressions. The Tally JSON test corpus lives in db.gst_recon_books_raw (any doc — keyed by gst_recon run_id, NOT client_id directly; resolve via gst_recon_runs first). Backend test file structure is class-based pytest at /app/backend/tests/test_balance_confirmation.py — extend with new TestSendingEngine / TestRecipientLoop classes for Phase 3 rather than spawning new files. The qa_test_session_token_20260429_dev cookie is the active bypass; if it's revoked, re-seed via the snippet in /app/memory/test_credentials.md but bump suffix.",
+  "rca of the issue": "No issues to RCA. Phase 1+2 backend + frontend are both production-ready."
+}
