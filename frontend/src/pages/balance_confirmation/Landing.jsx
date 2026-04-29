@@ -149,6 +149,25 @@ export default function BalanceConfirmationLanding() {
     } finally { setBusy(false); }
   };
 
+  /* ---------- Phase 5 — Summary report exports ---------- */
+  const downloadSummary = async (kind /* "xlsx" | "pdf" */) => {
+    if (!rid) return;
+    setBusy(true);
+    try {
+      const res = await http.get(`/balance-confirmation/runs/${rid}/summary.${kind}`, { responseType: "blob" });
+      const cd = res.headers["content-disposition"] || "";
+      const m = cd.match(/filename="(.+?)"/);
+      const filename = m ? m[1] : `BalanceConfirmation_Summary.${kind}`;
+      const a = document.createElement("a");
+      a.href = window.URL.createObjectURL(new Blob([res.data]));
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      toast.success(`${kind.toUpperCase()} downloaded`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Download failed");
+    } finally { setBusy(false); }
+  };
+
   /* ---------- Patch ledger field inline ---------- */
   const patchLedger = async (ledger_id, patch) => {
     try {
@@ -282,6 +301,20 @@ export default function BalanceConfirmationLanding() {
                       <h2 className="font-heading text-xl">{run.name}</h2>
                       <div className="text-[11px] font-mono text-gray-500 mt-1">FY {run.fy} · As at {run.as_at_date || "—"} · Source: {run.source_filename || "(not uploaded)"}</div>
                     </div>
+                    {summary && (summary.total || 0) > 0 && (
+                      <div className="flex gap-2">
+                        <button onClick={() => downloadSummary("xlsx")} disabled={busy}
+                          className="text-xs px-3 h-8 rounded-sm border border-emerald-700 bg-white text-emerald-800 hover:bg-emerald-50 inline-flex items-center gap-1.5 disabled:opacity-40"
+                          data-testid="bc-summary-xlsx">
+                          <Download size={12}/> Summary XLSX
+                        </button>
+                        <button onClick={() => downloadSummary("pdf")} disabled={busy}
+                          className="text-xs px-3 h-8 rounded-sm border border-rose-700 bg-white text-rose-800 hover:bg-rose-50 inline-flex items-center gap-1.5 disabled:opacity-40"
+                          data-testid="bc-summary-pdf">
+                          <Download size={12}/> Summary PDF
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Summary cards */}
@@ -726,6 +759,7 @@ function ResponsesDrawer({ rid, onClose }) {
   const [rows, setRows] = useState([]);
   const [filter, setFilter] = useState("all"); // all | confirmed | disputed
   const [loading, setLoading] = useState(true);
+  const [reconResp, setReconResp] = useState(null); // open recon modal for this response
 
   const refresh = () => {
     setLoading(true);
@@ -815,11 +849,20 @@ function ResponsesDrawer({ rid, onClose }) {
                         )}
                       </div>
                       {r.uploaded_filename && (
-                        <button onClick={() => downloadAttachment(r.response_id, r.uploaded_filename)}
-                          className="text-xs px-2.5 py-1.5 border border-emerald-300 text-emerald-800 rounded-sm hover:bg-emerald-50 inline-flex items-center gap-1.5 whitespace-nowrap"
-                          data-testid={`bc-response-${r.response_id}-attachment`}>
-                          <Download size={11}/> {r.uploaded_filename}
-                        </button>
+                        <div className="flex flex-col gap-1.5 items-end">
+                          <button onClick={() => downloadAttachment(r.response_id, r.uploaded_filename)}
+                            className="text-xs px-2.5 py-1.5 border border-emerald-300 text-emerald-800 rounded-sm hover:bg-emerald-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+                            data-testid={`bc-response-${r.response_id}-attachment`}>
+                            <Download size={11}/> {r.uploaded_filename}
+                          </button>
+                          {r.decision === "disputed" && /\.(xlsx|csv)$/i.test(r.uploaded_filename) && (
+                            <button onClick={() => setReconResp(r)}
+                              className="text-xs px-2.5 py-1.5 border border-rose-300 text-rose-800 rounded-sm hover:bg-rose-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+                              data-testid={`bc-response-${r.response_id}-reconcile`}>
+                              ⇆ Reconcile
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -828,7 +871,175 @@ function ResponsesDrawer({ rid, onClose }) {
             )}
         </div>
       </div>
+      {reconResp && <ReconModal rid={rid} response={reconResp} onClose={() => setReconResp(null)}/>}
     </>
+  );
+}
+
+
+/* ============================================================ */
+function ReconModal({ rid, response, onClose }) {
+  const [data, setData] = useState(null);
+  const [comments, setComments] = useState([]);
+  const [tolerance, setTolerance] = useState(1);
+  const [newComment, setNewComment] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    setLoading(true);
+    http.get(`/balance-confirmation/runs/${rid}/responses/${response.response_id}/recon?tolerance=${tolerance}`)
+      .then(({ data }) => setData(data))
+      .finally(() => setLoading(false));
+    http.get(`/balance-confirmation/runs/${rid}/responses/${response.response_id}/recon/comments`)
+      .then(({ data }) => setComments(data?.rows || []));
+  };
+  useEffect(load, [rid, response.response_id, tolerance]);
+
+  const addComment = async () => {
+    if (!newComment.trim()) return;
+    await http.post(`/balance-confirmation/runs/${rid}/responses/${response.response_id}/recon/comments`, { text: newComment.trim() });
+    setNewComment("");
+    load();
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-[60]" onClick={onClose} data-testid="bc-recon-backdrop"/>
+      <div className="fixed inset-x-4 inset-y-6 sm:inset-x-8 sm:inset-y-12 bg-white shadow-2xl z-[70] flex flex-col rounded-sm max-w-7xl mx-auto" data-testid="bc-recon-modal">
+        <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-rose-700">Side-by-side Reconciliation</div>
+            <h2 className="text-lg font-semibold mt-1">{response.ledger_name}</h2>
+            <div className="text-xs text-gray-500 mt-0.5">
+              Disputed by <strong>{response.responder_name || "—"}</strong> on {(response.submitted_at || "").slice(0, 10)} · attachment: <code>{response.uploaded_filename}</code>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="bc-recon-close">×</button>
+        </div>
+
+        {loading || !data ? (
+          <div className="flex-1 grid place-items-center text-sm text-gray-500">Parsing recipient statement…</div>
+        ) : !data.supported ? (
+          <div className="flex-1 grid place-items-center text-center px-12">
+            <div>
+              <div className="text-4xl mb-3">📄</div>
+              <div className="text-sm font-medium">Auto-parse not supported for <code>.{data.format}</code></div>
+              <div className="text-xs text-gray-500 mt-1 max-w-md">{data.message || "Only XLSX and CSV statements are auto-parsed in v1. Please download the attachment and reconcile manually."}</div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Header strip with balances + counts */}
+            <div className="grid grid-cols-5 gap-px bg-gray-200 border-b border-gray-200">
+              <div className="bg-emerald-50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-700 font-mono">Our Books</div>
+                <div className="text-sm font-semibold text-emerald-900">₹ {Number(data.our_balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })} {(data.our_dr_cr || "").toUpperCase()}</div>
+              </div>
+              <div className="bg-amber-50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-amber-700 font-mono">Their Books</div>
+                <div className="text-sm font-semibold text-amber-900">{data.their_balance != null ? `₹ ${Number(data.their_balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })} ${data.their_dr_cr || ""}` : "—"}</div>
+              </div>
+              <div className="bg-blue-50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-blue-700 font-mono">Auto-Matched</div>
+                <div className="text-sm font-semibold text-blue-900">{data.counts.matched}</div>
+              </div>
+              <div className="bg-rose-50 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-rose-700 font-mono">Ours Only / Theirs Only</div>
+                <div className="text-sm font-semibold text-rose-900">{data.counts.ours_only} / {data.counts.theirs_only}</div>
+              </div>
+              <div className="bg-gray-50 px-3 py-2 flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-gray-700 font-mono">Tolerance ₹</span>
+                <input type="number" min="0" step="0.5" value={tolerance} onChange={e => setTolerance(Number(e.target.value))}
+                  className="text-xs px-2 py-1 border border-gray-300 rounded-sm w-16" data-testid="bc-recon-tolerance"/>
+              </div>
+            </div>
+
+            {/* Two-pane diff */}
+            <div className="flex-1 overflow-auto" data-testid="bc-recon-pairs">
+              <table className="w-full text-[12px]">
+                <thead className="bg-gray-100 text-[10px] uppercase tracking-wider text-gray-700 sticky top-0">
+                  <tr>
+                    <th colSpan="5" className="text-center px-3 py-2 border-b border-gray-300 bg-emerald-100">Our Books (Tally)</th>
+                    <th className="text-center px-3 py-2 border-b border-gray-300 bg-blue-100">Δ</th>
+                    <th colSpan="5" className="text-center px-3 py-2 border-b border-gray-300 bg-amber-100">Their Books (Recipient)</th>
+                  </tr>
+                  <tr>
+                    <th className="text-left px-2 py-1 border-b">Date</th>
+                    <th className="text-left px-2 py-1 border-b">Type</th>
+                    <th className="text-left px-2 py-1 border-b">Vch #</th>
+                    <th className="text-right px-2 py-1 border-b">Dr</th>
+                    <th className="text-right px-2 py-1 border-b">Cr</th>
+                    <th className="text-center px-2 py-1 border-b bg-blue-50"></th>
+                    <th className="text-left px-2 py-1 border-b">Date</th>
+                    <th className="text-left px-2 py-1 border-b">Type</th>
+                    <th className="text-left px-2 py-1 border-b">Vch #</th>
+                    <th className="text-right px-2 py-1 border-b">Dr</th>
+                    <th className="text-right px-2 py-1 border-b">Cr</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.pairs.map((p, i) => {
+                    const cls = p.status === "match"
+                      ? "bg-blue-50/40"
+                      : p.status === "ours_only"
+                      ? "bg-emerald-50/40"
+                      : "bg-amber-50/40";
+                    return (
+                      <tr key={i} className={`${cls} border-b border-gray-100`} data-testid={`bc-recon-pair-${i}`}>
+                        <Cell v={p.our?.date}/>
+                        <Cell v={p.our?.vtype} max={20}/>
+                        <Cell v={p.our?.vno}/>
+                        <Cell v={p.our?.debit ? inr(p.our.debit) : ""} right/>
+                        <Cell v={p.our?.credit ? inr(p.our.credit) : ""} right/>
+                        <td className="text-center text-[10px] px-2 py-1.5 border-r border-gray-200 font-mono">
+                          {p.status === "match" ? `≈ ${(p.diff || 0).toFixed(2)}` : p.status === "ours_only" ? "←" : "→"}
+                        </td>
+                        <Cell v={p.theirs?.date}/>
+                        <Cell v={p.theirs?.vtype} max={20}/>
+                        <Cell v={p.theirs?.vno}/>
+                        <Cell v={p.theirs?.debit ? inr(p.theirs.debit) : ""} right/>
+                        <Cell v={p.theirs?.credit ? inr(p.theirs.credit) : ""} right/>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Comments */}
+            <div className="border-t border-gray-200 px-5 py-3 bg-gray-50 max-h-48 overflow-auto" data-testid="bc-recon-comments-section">
+              <div className="text-[10px] uppercase tracking-widest font-mono text-gray-500 mb-2">Reconciliation notes ({comments.length})</div>
+              {comments.length === 0 && <div className="text-xs text-gray-400 italic">No notes yet.</div>}
+              {comments.map(c => (
+                <div key={c.comment_id} className="text-xs border-l-2 border-emerald-400 pl-2 mb-1.5">
+                  <span className="font-medium">{c.author_name || c.author_email}</span>
+                  <span className="text-gray-400 font-mono ml-2">{(c.ts || "").slice(0, 16).replace("T", " ")}</span>
+                  <div className="text-gray-700">{c.text}</div>
+                </div>
+              ))}
+              <div className="flex gap-2 mt-2">
+                <input value={newComment} onChange={e => setNewComment(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addComment()}
+                  placeholder="Add a working note (e.g. 'Cheque #4521 in transit — to verify with bank')"
+                  className="flex-1 text-xs px-3 py-1.5 border border-gray-300 rounded-sm focus:outline-none focus:border-emerald-600"
+                  data-testid="bc-recon-comment-input"/>
+                <button onClick={addComment} disabled={!newComment.trim()}
+                  className="text-xs px-3 py-1.5 bg-emerald-700 text-white rounded-sm hover:bg-emerald-800 disabled:opacity-40"
+                  data-testid="bc-recon-comment-add">Add Note</button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function Cell({ v, right = false, max = null }) {
+  const text = v == null ? "" : String(v);
+  const display = max && text.length > max ? text.slice(0, max) + "…" : text;
+  return (
+    <td className={`px-2 py-1.5 border-r border-gray-200 font-mono text-[11px] ${right ? "text-right" : ""}`}>{display || <span className="text-gray-300">—</span>}</td>
   );
 }
 

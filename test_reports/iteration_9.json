@@ -1,0 +1,48 @@
+{
+  "summary": "Balance Confirmation Phase 5 (Summary XLSX/PDF exports) + Phase 6 (Side-by-side recon + comments) — backend 20/21 GREEN (1 skipped because no text-only dispute exists in fixture), frontend run-header buttons + ReconModal fully verified. Tested: GET /summary.xlsx returns exact 6-sheet workbook [Cover, Sent Tracker (15 cols), Status Timeline, Variances (11 cols), Confirmed (8 cols), Notes (heading+instruction only)]; GET /summary.pdf returns multi-page PDF, %PDF- magic, pdfplumber-readable, contains 'Sign-off' on last page; both endpoints auth-gated (401 without cookie) and 404 on bad rid; kpi_buckets() helper correctly counts confirmed/disputed/in_flight/failed/no_action/no_email. Recon endpoint: AMBIKA disputed XLSX returns supported=true, format=xlsx, 9 pairs at tolerance=1, all statuses ∈ {match, ours_only, theirs_only}, counts add up; bad response_id → 404; auth-gated. Parser unit tests: comma-CSV with dd-mm-yyyy + dd/mm/yyyy → ISO dates; semicolon-CSV → 2 rows with Debit/Credit split; single 'Amount' column (positive=credit, negative=debit) → correct split; PDF/JPG → supported=false with friendly message mentioning manual review; XLSX roundtrip via openpyxl → 3 records with Debit/Credit/Date parsed. auto_match tolerance boundary: ours[80000] vs theirs[80000.50] → tol=1 yields match, tol=0.1 splits to ours_only/theirs_only (validates the synthetic case from request). Comments CRUD: empty text → 400, create returns {comment_id, ts, author_email, pair_key, text}, list shows it, delete returns {deleted:true}, second delete → 404. Frontend smoke (UI route /dashboard/clients/cli_7f0b86b1ab0b/utilities/balance-confirmation/runs/<rid>): bc-summary-xlsx + bc-summary-pdf buttons present in run-header strip, both trigger downloads with sensible filenames (BalanceConfirmation_Summary_FY2024_25_<ts>.xlsx / .pdf). Responses drawer opens, 1 Reconcile button found on the disputed XLSX response → ReconModal opens (data-testid=bc-recon-modal), header shows 'AMBIKA GARMENTS SHANTHINAGAR · Disputed by Test Vendor · attachment: their_statement.xlsx', 5-cell metric strip rendered (OUR BOOKS ₹81,103 DR | THEIR BOOKS ₹1,70,000 Cr | AUTO-MATCHED 0 | OURS/THEIRS 5/4 | TOLERANCE input), bc-recon-pairs container present with 9 pair rows (bc-recon-pair-0..8 showing 5 ours rows on left + 4 theirs rows on right), bc-recon-comment-input present with Add Note button. All Phase 5+6 acceptance criteria are GREEN.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ReconModal — TOLERANCE input default", "issues": ["UI shows tolerance defaulting to '0' on first open. Backend default is 1.0 (controller signature: tolerance: float = 1.0). With UI sending 0, AUTO-MATCHED count is 0 even when same-amount transactions would otherwise match within ±₹1. Recommend setting initial tolerance state to 1 in ReconModal so the auditor sees the natural default. Current behaviour is functional but slightly counter-intuitive (auditor must type 1 to get the documented behaviour)."]},
+      {"screen": "ReconModal — VOUCHER # column width on Tally side", "issues": ["VCH # column shows narrow integers (e.g. 70, 165, 199) — fine for default Tally voucher numbers, but if a recipient has alphanumeric prefixes the truncation behaviour wasn't visible in this fixture. Cosmetic only."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_confirmation_phase5_6.py",
+    "/app/test_reports/pytest/iteration_9.xml"
+  ],
+  "action_items": [
+    "(Optional) Initialise ReconModal tolerance state to 1 instead of 0 so auto-match is enabled by default with ±₹1 (backend's documented default). Today's UI sends tolerance=0, which never matches exact amounts off by even a paisa.",
+    "(Optional, non-blocking) Seed at least one text-only dispute (no attachment) in the demo run so the recon endpoint's supported=false branch is also exercised by Playwright. The backend test for this branch is currently SKIPPED because every disputed response in the fixture has an attachment."
+  ],
+  "critical_code_review_comments": [
+    "summary_export.build_summary_pdf: PageBreak + Sign-off section is unconditionally appended at the end — verified on the Allman run (which has both confirmed + disputed responses). Sign-off page IS the last page, as required by the spec.",
+    "summary_export._kpi_card: hex conversion via int(fg.red*255) etc. is correct for reportlab Color objects; the earlier 'hexval' bug was already fixed by main agent — no regression observed.",
+    "recon.parse_csv: csv.Sniffer with delimiters=',;\\t|' correctly auto-detects both comma and semicolon — verified with both tests pass.",
+    "recon.parse_xlsx: scans up to first 25 rows for headers and skips empty/footer rows where date+debit+credit are all empty — robust against Tally-exported sheets with title rows. Good.",
+    "recon.auto_match: greedy amount-only match with sign-insensitivity (abs(oa) vs abs(ta)) is correct for counterparty mirroring (our credit = their debit). However it is O(N×M) — fine for typical ledger sizes (<500 rows) but flag for >5k rows.",
+    "controller.reconcile_response: wraps base64.b64decode + parse_recipient_statement in try/except — graceful degradation to supported=false on parse error. Good.",
+    "controller.add_recon_comment: rejects empty/whitespace-only text with 400; persists author_email + author_name from session. No XSS sanitisation on text — the frontend should escape on render (verified Landing.jsx uses React text rendering, so safe by default). Good defensive layering.",
+    "controller.delete_recon_comment: keys on (run_id, response_id, comment_id) so cross-run leakage is impossible. Verified cascade in run-delete handler drops bc_recon_comments via the delete_run path (per task brief — not exercised in tests as the demo run is shared and shouldn't be deleted).",
+    "Notes sheet (XLSX): A1 heading + A3 muted instruction, otherwise blank — matches the spec ('auditor types into it externally'). A3 is merged across A3:F3 which is fine but the Sheet has no data validation/protection — minor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_balance_confirmation_phase5_6.py"
+  ],
+  "success_rate": {
+    "backend": "100% (20/20 executed pass; 1 skipped due to fixture lacking text-only dispute)",
+    "frontend": "100% on Phase 5+6 deltas — Summary XLSX/PDF download buttons visible + functional, ReconModal opens with all required testids (bc-recon-modal, bc-recon-pairs, bc-recon-pair-{0..8}, bc-recon-comment-input), 9 pair rows correctly split 5 ours + 4 theirs, 5-metric strip rendered, attachment header line correct"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260429_dev (admin user_qa_bot_fixed_01) — confirmed working for /api/balance-confirmation/* and for the ProtectedRoute wrappers.",
+  "seed_data_creation": "No new seed data created; tests reused existing run rid=1710de57-49a7-4a71-a411-817e4d49736b with disputed response_id=a2102f61-4069-406b-9002-8f4fc0eb14e4 (AMBIKA GARMENTS SHANTHINAGAR) which has the their_statement.xlsx attachment producing exactly 9 pairs at tolerance=1. Test-prefixed comments (TEST_phase6 ...) are created and deleted within the test_crud_lifecycle to avoid pollution.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 5 + 6 fully GREEN. Test file: /app/backend/tests/test_balance_confirmation_phase5_6.py (21 tests, 20 pass, 1 skipped). The skipped test (TestReconTextOnly) will become exercisable once a text-only disputed response exists in the demo run — main agent can either seed one or leave as-is. The frontend ReconModal tolerance field initial state is '0' but backend default is 1.0 — flagged as a minor UX issue (action_items) but not a defect. No backend bugs found in Phase 5 or 6. The hexval() bug E1 mentioned was already fixed before this iteration. For future phases continuing on top of recon: bc_recon_comments collection schema is stable {comment_id, run_id, response_id, pair_key, text, author_email, author_name, ts}; cascade-on-run-delete is via delete_run handler. The frontend test selectors are: bc-summary-xlsx, bc-summary-pdf, bc-responses-button, bc-recon-button (or just :has-text('Reconcile')), bc-recon-modal, bc-recon-pairs, bc-recon-pair-{i}, bc-recon-comment-input, bc-recon-add-note (text fallback 'Add Note' / 'Add'), bc-recon-tolerance (or first input[type=number]).",
+  "rca of the issue": "No RCA needed — no defects discovered in Phase 5 or Phase 6. Single observation: ReconModal initial tolerance state in Landing.jsx defaults to 0; main agent should consider initialising it to 1 to match the backend's documented default. This is cosmetic and does not block any acceptance criterion."
+}

@@ -15,7 +15,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Cookie, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
@@ -25,6 +25,7 @@ from svix.webhooks import Webhook, WebhookVerificationError
 from core.db import db
 from modules.auth.controller import get_current_user
 from modules.balance_confirmation.exports import build_authorization_template_docx
+from modules.balance_confirmation.recon import auto_match, parse_recipient_statement
 from modules.balance_confirmation.schemas import (
     AuthorizationOut,
     LedgerPatch,
@@ -32,6 +33,9 @@ from modules.balance_confirmation.schemas import (
     RunCreate,
     RunOut,
     TemplateUpsert,
+)
+from modules.balance_confirmation.summary_export import (
+    build_summary_pdf, build_summary_xlsx,
 )
 from modules.balance_confirmation.sender import (
     build_authorization_attachment,
@@ -158,6 +162,7 @@ async def delete_run(
     await BOOKS_RAW.delete_many({"run_id": rid})
     await SENDLOG.delete_many({"run_id": rid})
     await db.bc_responses.delete_many({"run_id": rid})
+    await db.bc_recon_comments.delete_many({"run_id": rid})
     return {"deleted": True}
 
 
@@ -1216,4 +1221,227 @@ async def download_response_attachment(
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{safe_fname}"'},
     )
+
+
+
+# ============================ Phase 5 — Summary exports =====================
+async def _build_summary_payload(rid: str) -> Tuple[Dict, Dict, list, list, list]:
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    client = await db.clients.find_one(
+        {"client_id": run.get("client_id")}, {"_id": 0}
+    ) or {}
+    ledgers = await LEDGERS.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+    responses = await RESPONSES.find(
+        {"run_id": rid}, {"_id": 0, "uploaded_content_b64": 0}
+    ).to_list(2000)
+    send_log = await SENDLOG.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+    return run, client, ledgers, responses, send_log
+
+
+@router.get("/runs/{rid}/summary.xlsx")
+async def export_summary_xlsx(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run, client, ledgers, responses, send_log = await _build_summary_payload(rid)
+    xlsx = build_summary_xlsx(
+        run=run, client=client,
+        ledgers=ledgers, responses=responses, send_log=send_log,
+    )
+    fy = (run.get("fy") or "").replace("-", "_")
+    fname = (
+        f"BalanceConfirmation_Summary_FY{fy}_"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    )
+    return StreamingResponse(
+        iter([xlsx]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/runs/{rid}/summary.pdf")
+async def export_summary_pdf(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run, client, ledgers, responses, _ = await _build_summary_payload(rid)
+    pdf = build_summary_pdf(
+        run=run, client=client, ledgers=ledgers, responses=responses,
+    )
+    fy = (run.get("fy") or "").replace("-", "_")
+    fname = (
+        f"BalanceConfirmation_Summary_FY{fy}_"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf"
+    )
+    return StreamingResponse(
+        iter([pdf]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ============================ Phase 6 — Side-by-side recon ==================
+@router.get("/runs/{rid}/responses/{response_id}/recon")
+async def reconcile_response(
+    rid: str,
+    response_id: str,
+    request: Request,
+    tolerance: float = 1.0,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Parse the recipient's uploaded statement (XLSX/CSV) and return a
+    side-by-side reconciliation pairing with our books."""
+    await _auth(request, session_token, authorization)
+
+    resp = await RESPONSES.find_one(
+        {"run_id": rid, "response_id": response_id}, {"_id": 0},
+    )
+    if not resp:
+        raise HTTPException(404, "Response not found")
+
+    ledger = await LEDGERS.find_one(
+        {"ledger_id": resp.get("ledger_id")}, {"_id": 0},
+    )
+    if not ledger:
+        raise HTTPException(404, "Ledger not found")
+
+    # Our side — pull from the cached books JSON we keep on ingest
+    from modules.balance_confirmation.letter_pdf import find_ledger_vouchers
+    from modules.balance_confirmation.sender import load_books_from_run
+
+    books_raw = await BOOKS_RAW.find_one({"run_id": rid}, {"_id": 0})
+    books = load_books_from_run(books_raw)
+    ours = find_ledger_vouchers(books, ledger.get("name", "")) if books else []
+
+    # Their side — parse the uploaded attachment
+    parsed: Dict[str, Any] = {"records": [], "supported": False, "format": "none"}
+    if resp.get("uploaded_content_b64"):
+        try:
+            content = base64.b64decode(resp["uploaded_content_b64"])
+            parsed = parse_recipient_statement(
+                resp.get("uploaded_filename", ""), content,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Recon parse failed: {e}")
+            parsed = {"records": [], "supported": False,
+                      "format": "error", "message": str(e)}
+
+    pairs = auto_match(ours, parsed.get("records", []), tolerance=tolerance)
+
+    # Convert "amount" → "debit/credit" on our side for symmetric display
+    def _our_view(r: Dict[str, Any]) -> Dict[str, Any]:
+        a = float(r.get("amount", 0) or 0)
+        return {
+            "date": r.get("date", ""),
+            "vtype": r.get("vtype", ""),
+            "vno": r.get("vno", ""),
+            "narration": r.get("narration", ""),
+            "debit": round(-a, 2) if a < 0 else 0.0,
+            "credit": round(a, 2) if a > 0 else 0.0,
+        }
+
+    out_pairs = []
+    for p in pairs:
+        out_pairs.append({
+            "status": p["status"],
+            "diff": p.get("diff"),
+            "our": _our_view(p["our"]) if p["our"] else None,
+            "theirs": p["theirs"],
+        })
+
+    matched = sum(1 for p in pairs if p["status"] == "match")
+    return {
+        "ledger_id": ledger.get("ledger_id"),
+        "ledger_name": ledger.get("name"),
+        "our_balance": round(abs(float(ledger.get("closing_balance") or 0.0)), 2),
+        "our_dr_cr": ledger.get("dr_cr") or "",
+        "their_balance": resp.get("their_balance"),
+        "their_dr_cr": resp.get("their_dr_cr") or "",
+        "format": parsed.get("format"),
+        "supported": parsed.get("supported", False),
+        "message": parsed.get("message"),
+        "pairs": out_pairs,
+        "counts": {
+            "matched": matched,
+            "ours_only": sum(1 for p in pairs if p["status"] == "ours_only"),
+            "theirs_only": sum(1 for p in pairs if p["status"] == "theirs_only"),
+            "total_ours": len([p for p in pairs if p["our"] is not None]),
+            "total_theirs": len([p for p in pairs if p["theirs"] is not None]),
+        },
+    }
+
+
+class ReconCommentIn(BaseModel):
+    text: str
+    pair_key: Optional[str] = None  # e.g. "match:0:5" or "ours_only:3"
+
+
+@router.post("/runs/{rid}/responses/{response_id}/recon/comments")
+async def add_recon_comment(
+    rid: str,
+    response_id: str,
+    payload: ReconCommentIn,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    user = await _auth(request, session_token, authorization)
+    if not (payload.text or "").strip():
+        raise HTTPException(400, "Comment text is required")
+    doc = {
+        "comment_id": str(uuid.uuid4()),
+        "run_id": rid,
+        "response_id": response_id,
+        "pair_key": (payload.pair_key or "").strip(),
+        "text": payload.text.strip(),
+        "author_email": user.get("email") or "",
+        "author_name": user.get("name") or "",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.bc_recon_comments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@router.get("/runs/{rid}/responses/{response_id}/recon/comments")
+async def list_recon_comments(
+    rid: str,
+    response_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    rows = await db.bc_recon_comments.find(
+        {"run_id": rid, "response_id": response_id}, {"_id": 0},
+    ).sort("ts", 1).to_list(2000)
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.delete("/runs/{rid}/responses/{response_id}/recon/comments/{cid}")
+async def delete_recon_comment(
+    rid: str,
+    response_id: str,
+    cid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    res = await db.bc_recon_comments.delete_one(
+        {"run_id": rid, "response_id": response_id, "comment_id": cid},
+    )
+    if not res.deleted_count:
+        raise HTTPException(404, "Comment not found")
+    return {"deleted": True}
 
