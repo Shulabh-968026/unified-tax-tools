@@ -26,6 +26,8 @@ export default function ClientUtilities() {
       navigate(`/dashboard/clients/${clientId}/utilities/msme-43bh`);
     } else if (u.id === "gst-turnover-recon") {
       navigate(`/dashboard/clients/${clientId}/utilities/gst-recon`);
+    } else if (u.id === "balance-confirmation") {
+      navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation`);
     }
   };
 
