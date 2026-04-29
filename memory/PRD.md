@@ -217,7 +217,26 @@ lib/
 - **Ledger Mapping**: XLSX (not CSV as originally spec'd). Exact column names to be confirmed from the sample during Phase B.
 
 ## Phase 3 / future utilities (status="soon" in `utilities.jsx`)
-GST Turnover Recon · TDS Disallowance & Recon · TDS Clause 34 — 3CD · AIS/TIS/26AS Recon · Fixed Assets · Balance Confirmation · GST Refund Clause 31
+TDS Disallowance & Recon · TDS Clause 34 — 3CD · AIS/TIS/26AS Recon · Fixed Assets · GST Refund Clause 31
+
+## Balance Confirmation (Phase 1+2 live · 2026-04-29)
+- [x] Backend module `modules/balance_confirmation/` (controller / service / classifier / templates / exports / schemas)
+- [x] 18 routes under `/api/balance-confirmation/*` — Runs CRUD, Books JSON ingest, Ledger workbench (list/patch/csv export+import), Templates CRUD (default seed = 3 rows: customer / vendor / bank in AssureAI green #047857), Authorisation Letter upload/download/template
+- [x] Mongo collections: `bc_runs`, `bc_ledgers`, `bc_templates`, `bc_authorizations`, `bc_books_raw` (gzipped Tally JSON kept for future re-classification)
+- [x] **UUID `response_token` baked into every ledger at ingest** — Phase 4 recipient response loop will need zero schema migration
+- [x] Tally classifier walks `groups[]` parent chain; reserved groups (Sundry Debtors → Trade Receivable, Sundry Creditors → Trade Payable, Bank Accounts / Bank OD A/c → Bank) + keyword fallback. Verified on Allman: 195 ledgers → 58 receivable / 46 payable / 2 bank / 89 other.
+- [x] Word `.docx` Authorisation Letter template generator (python-docx 1.2) — client signs on letterhead, scans as PDF, re-uploads. PDF auto-attached to confirmations in Phase 3.
+- [x] Frontend `pages/balance_confirmation/Landing.jsx` (~560 lines): Past Runs sidebar, books dropzone, summary cards, ledger workbench (tabs / search / missing-email filter / CSV roundtrip / inline edit), Email Templates drawer, Authorisation drawer
+- [x] Route `/dashboard/clients/:cid/utilities/balance-confirmation` (also `/runs/:rid` deep link) wired in App.js
+- [x] `utilities.jsx` tile flipped `status="active"` (was "soon" → "in_progress" → "active")
+- [x] Tests: 28/28 in `tests/test_balance_confirmation.py` (Run CRUD + Books ingest + Ledgers + CSV + Templates + Authorization + Cascade delete)
+- [x] Dependency added: `python-docx==1.2.0` (for Word template)
+
+## Balance Confirmation — Phase 3+ backlog (next sprints)
+- [ ] **Phase 3** — Sending engine: per-confirmation PDF letter renderer (Jinja2 template + per-party context); Resend integration with reply-to dynamic + cc passthrough; per-confirmation tracking pixel; Bulk Send UI; Reminder framework (X-day timer)
+- [ ] **Phase 4** — Recipient response loop: public `/confirm/:token` route (no auth), tokenised landing page in AssureAI green, "Yes — Confirmed" / "Not Confirmed + reason + ledger upload" actions, telemetry pixel
+- [ ] **Phase 5** — Confirmation Summary Report exports (Excel multi-sheet + PDF)
+- [ ] **Phase 6** — Side-by-side reconciliation when recipient uploads their ledger
 
 ## Deferred
 - MUI rewrite (user confirmed Option A — defer to Phase 2)
