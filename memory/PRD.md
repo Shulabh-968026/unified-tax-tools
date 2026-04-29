@@ -1,5 +1,10 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Balance Confirmation — Phase 4-6 backlog (next sprints)
+- [ ] **Phase 4** — Recipient response loop: public `/confirm/:token` route (no auth), tokenised landing page in AssureAI green, "Yes — Confirmed" / "Not Confirmed + reason + ledger upload" actions, response captured + status flipped, evidence stored in `bc_responses` collection
+- [ ] **Phase 5** — Confirmation Summary Report exports (Excel multi-sheet + PDF working-paper) — Sent Tracker, Status Timeline, Variances, Notes
+- [ ] **Phase 6** — Side-by-side reconciliation when recipient uploads their ledger — variance recon vs Tally Books, party-level dispute resolution UI
+
 ## Problem Statement
 Merge two existing Emergent projects into ONE:
 - **Clause 44 Form 3CD Tool** (master) — already has a 9-utility catalog; Clause 44 is the only live utility.
@@ -232,11 +237,22 @@ TDS Disallowance & Recon · TDS Clause 34 — 3CD · AIS/TIS/26AS Recon · Fixed
 - [x] Tests: 28/28 in `tests/test_balance_confirmation.py` (Run CRUD + Books ingest + Ledgers + CSV + Templates + Authorization + Cascade delete)
 - [x] Dependency added: `python-docx==1.2.0` (for Word template)
 
-## Balance Confirmation — Phase 3+ backlog (next sprints)
-- [ ] **Phase 3** — Sending engine: per-confirmation PDF letter renderer (Jinja2 template + per-party context); Resend integration with reply-to dynamic + cc passthrough; per-confirmation tracking pixel; Bulk Send UI; Reminder framework (X-day timer)
-- [ ] **Phase 4** — Recipient response loop: public `/confirm/:token` route (no auth), tokenised landing page in AssureAI green, "Yes — Confirmed" / "Not Confirmed + reason + ledger upload" actions, telemetry pixel
-- [ ] **Phase 5** — Confirmation Summary Report exports (Excel multi-sheet + PDF)
-- [ ] **Phase 6** — Side-by-side reconciliation when recipient uploads their ledger
+## Balance Confirmation — Phase 3 live (2026-04-29)
+- [x] Backend `modules/balance_confirmation/sender.py` — Resend send engine: `render_template` (placeholder substitution), `build_email_context`, `inject_tracking` (rewrites the response link → click-tracker URL + appends 1×1 transparent pixel), `send_one` wraps the synchronous Resend SDK in `asyncio.to_thread`, `can_transition` (terminal-status guard for confirmed/disputed)
+- [x] Backend `modules/balance_confirmation/letter_pdf.py` — per-party Ledger Extract PDF (reportlab): walks Tally `vouchers[]`, finds every entry touching the party, produces a 7-column statement (Date / Voucher Type / Voucher # / Narration / Debit / Credit / Running Balance) with Opening + Closing rows
+- [x] New routes (auth-gated unless noted):
+      • `POST /api/balance-confirmation/runs/{rid}/send` — bulk-send via Resend with attachments [Ledger Extract + signed Authorization PDF], `reply_to` = current user's email, `cc` = universal payload.cc + per-ledger ledger.cc_emails (deduped). Per-recipient try-loop; isolated failures.
+      • `GET  /api/balance-confirmation/runs/{rid}/reminders?cadence_days=` — eligible list (default 3 → 7 → 14 days; never re-reminds within window)
+      • `GET  /api/balance-confirmation/runs/{rid}/send-log` — full audit trail (newest first) + `?ledger_id=` filter
+      • `DELETE /api/balance-confirmation/runs/{rid}/send-log` — clear log for a run
+      • `GET  /api/balance-confirmation/track/pixel/{token}.gif` — **public**, returns 43-byte transparent gif + flips status to `opened`
+      • `GET  /api/balance-confirmation/track/click/{token}` — **public**, 302 → `/confirm/{token}` + flips status to `clicked`
+      • `POST /api/balance-confirmation/webhook/resend` — **public** but Svix-signature gated. Fail-closed if `RESEND_WEBHOOK_SECRET` unset (503). Maps `email.sent / delivered / opened / clicked / bounced / complained` → ledger.status with terminal-state protection.
+- [x] Mongo collection `bc_send_log` — every send / webhook event / pixel hit / click logged; cascade-deleted on run delete
+- [x] Frontend Phase 3 additions in `Landing.jsx` (~770 lines now): bulk-action bar (selected count, Send Selected, Send Reminder, Send All in View), per-row checkbox + select-all (auto-disabled on rows with no email), Universal Cc input, Status chip column with 10 states, Send Log drawer
+- [x] Env additions: `RESEND_API_KEY` (re_***), `RESEND_SENDER_EMAIL=onboarding@resend.dev`, `RESEND_SENDER_NAME=MSS x Assure Audit Utilities`, `RESEND_WEBHOOK_SECRET` (whsec_***)
+- [x] Live verification: real send to delivered@resend.dev returned a Resend message id, Resend webhook fired (svix-signed), pixel + click flipped status correctly. **42/42 backend tests pass** (28 Phase 1+2 + 14 Phase 3 in `test_balance_confirmation_phase3.py`); frontend smoke confirms all 7 new test-ids present.
+- [x] Dependencies added: `resend==2.29.0`, `svix==1.92.2`
 
 ## Deferred
 - MUI rewrite (user confirmed Option A — defer to Phase 2)

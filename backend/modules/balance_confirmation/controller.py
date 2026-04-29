@@ -791,19 +791,18 @@ async def bulk_send(
     }
 
 
-@router.post("/runs/{rid}/reminders")
-async def send_reminders(
+@router.get("/runs/{rid}/reminders")
+async def list_reminder_eligible(
     rid: str,
     request: Request,
     cadence_days: int = 3,
-    cc: str = "",
-    auditor_firm: Optional[str] = None,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Find every ledger in (sent | delivered | opened) state whose
-    `last_modified` is older than `cadence_days` and whose status is not
-    terminal (confirmed/disputed). Default cadence 3 → 7 → 14 days."""
+    """List ledgers eligible for a reminder (read-only, idempotent).
+    Default cadence 3 → next sweeps at 7 → 14 days. The sending step itself
+    happens via POST /runs/{rid}/send with `is_reminder=true` and the chosen
+    `ledger_ids[]` from this list."""
     await _auth(request, session_token, authorization)
     if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
         raise HTTPException(404, "Run not found")
@@ -916,16 +915,20 @@ async def resend_webhook(request: Request):
     body_bytes = await request.body()
     headers = {k.lower(): v for k, v in request.headers.items()}
 
-    if secret:
-        try:
-            wh = Webhook(secret)
-            wh.verify(body_bytes, {
-                "svix-id":         headers.get("svix-id", ""),
-                "svix-timestamp":  headers.get("svix-timestamp", ""),
-                "svix-signature":  headers.get("svix-signature", ""),
-            })
-        except WebhookVerificationError as e:
-            raise HTTPException(401, f"Invalid webhook signature: {e}")
+    if not secret:
+        # Fail-closed: if no secret is configured we can't trust the payload,
+        # so reject. (Set RESEND_WEBHOOK_SECRET in env to enable.)
+        raise HTTPException(503, "Webhook handler not configured")
+
+    try:
+        wh = Webhook(secret)
+        wh.verify(body_bytes, {
+            "svix-id":         headers.get("svix-id", ""),
+            "svix-timestamp":  headers.get("svix-timestamp", ""),
+            "svix-signature":  headers.get("svix-signature", ""),
+        })
+    except WebhookVerificationError as e:
+        raise HTTPException(401, f"Invalid webhook signature: {e}")
 
     try:
         evt = json.loads(body_bytes.decode("utf-8", errors="replace"))
