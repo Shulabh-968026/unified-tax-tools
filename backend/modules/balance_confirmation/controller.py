@@ -2,20 +2,25 @@
 
 Phase 1 — Data ingestion + ledger workbench
 Phase 2 — Template configuration
+Phase 3 — Sending engine (Resend) + bulk send + reminders + telemetry
 
-Phases 3-6 (sending, recipient response loop, recon) will land in subsequent
-iterations. Database schema is already token-ready: every ledger receives a
-UUID `response_token` at ingest time so we don't need a migration later.
+Phases 4-6 (recipient response loop UI, full reconciliation) will land in
+subsequent iterations. Database schema is already token-ready: every ledger
+receives a UUID `response_token` at ingest time.
 """
 from __future__ import annotations
 import base64
+import json
 import logging
+import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from pydantic import BaseModel
+from svix.webhooks import Webhook, WebhookVerificationError
 
 from core.db import db
 from modules.auth.controller import get_current_user
@@ -26,6 +31,17 @@ from modules.balance_confirmation.schemas import (
     RunCreate,
     RunOut,
     TemplateUpsert,
+)
+from modules.balance_confirmation.sender import (
+    build_authorization_attachment,
+    build_email_context,
+    build_extract_attachment,
+    can_transition,
+    inject_tracking,
+    load_books_from_run,
+    render_template,
+    send_one,
+    _strip_html,
 )
 from modules.balance_confirmation.service import (
     EMAIL_CSV_COLUMNS,
@@ -46,6 +62,13 @@ LEDGERS = db.bc_ledgers
 TEMPLATES = db.bc_templates
 AUTH = db.bc_authorizations
 BOOKS_RAW = db.bc_books_raw  # gzipped JSON (kept for re-classification later)
+SENDLOG = db.bc_send_log     # one row per send attempt (Phase 3)
+
+
+# Transparent 1×1 GIF — 43 bytes, no external request needed.
+_PIXEL_GIF = base64.b64decode(
+    b"R0lGODlhAQABAIAAAP///wAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+)
 
 
 async def _auth(request: Request, tok: Optional[str], hdr: Optional[str]):
@@ -132,6 +155,7 @@ async def delete_run(
     # Cascade
     await LEDGERS.delete_many({"run_id": rid})
     await BOOKS_RAW.delete_many({"run_id": rid})
+    await SENDLOG.delete_many({"run_id": rid})
     return {"deleted": True}
 
 
@@ -536,3 +560,421 @@ async def delete_template(
         raise HTTPException(400, "Default templates cannot be deleted; edit instead")
     await TEMPLATES.delete_one({"template_id": tid})
     return {"deleted": True}
+
+
+# ============================ Phase 3 — Sending engine =======================
+class BulkSendRequest(BaseModel):
+    ledger_ids: List[str]
+    template_id: Optional[str] = None  # if missing, use default per category
+    cc: List[str] = []                 # universal cc applied to every send
+    extra_subject_suffix: Optional[str] = None
+    is_reminder: bool = False
+    auditor_firm: Optional[str] = None
+
+
+def _public_base_url(request: Request) -> str:
+    """Return the base URL the recipient will hit. Falls back to host header.
+    For prod we can pin via PUBLIC_BASE_URL env if needed."""
+    pinned = (os.environ.get("PUBLIC_BASE_URL") or "").strip()
+    if pinned:
+        return pinned.rstrip("/")
+    # Build from request
+    scheme = request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _send_log_doc(*, run_id: str, ledger_id: str, kind: str, status: str,
+                  resend_id: Optional[str] = None, error: Optional[str] = None,
+                  to_email: str = "", subject: str = "", actor_email: str = "") -> Dict[str, Any]:
+    return {
+        "log_id": str(uuid.uuid4()),
+        "run_id": run_id,
+        "ledger_id": ledger_id,
+        "kind": kind,                  # "send" | "reminder" | "webhook" | "telemetry"
+        "status": status,              # "queued" | "sent" | "failed" | "delivered" | "bounced" | ...
+        "resend_id": resend_id or "",
+        "error": error or "",
+        "to_email": to_email,
+        "subject": subject,
+        "actor_email": actor_email,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _resolve_template(template_id: Optional[str], category: str) -> Optional[Dict[str, Any]]:
+    if template_id:
+        t = await TEMPLATES.find_one({"template_id": template_id}, {"_id": 0})
+        if t:
+            return t
+    kind = "customer" if category == "trade_receivable" else \
+           "vendor" if category == "trade_payable" else \
+           "bank"     if category == "bank" else "customer"
+    return await TEMPLATES.find_one({"kind": kind, "is_default": True}, {"_id": 0})
+
+
+@router.post("/runs/{rid}/send")
+async def bulk_send(
+    rid: str,
+    payload: BulkSendRequest,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Bulk-send confirmation emails. Each recipient receives a Resend message
+    with: rendered HTML body (template + tracking pixel) + Ledger Extract PDF +
+    (optional) signed Authorization PDF. reply_to = current user's email; cc =
+    universal cc + per-ledger cc_emails. Failures are isolated per recipient.
+    """
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    if not payload.ledger_ids:
+        raise HTTPException(400, "ledger_ids is required")
+
+    client = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found for this run")
+
+    # Pre-load — books + auth letter ONCE per batch
+    books_raw = await BOOKS_RAW.find_one({"run_id": rid}, {"_id": 0})
+    books = load_books_from_run(books_raw)
+    auth_doc = await AUTH.find_one({"client_id": run["client_id"]}, {"_id": 0})
+    auth_attachment = build_authorization_attachment(auth_doc)
+
+    base_url = _public_base_url(request)
+    auditor_email = (user.get("email") or "").strip()
+    auditor_firm = (payload.auditor_firm or "").strip() or "MSS & Co."
+
+    results: List[Dict[str, Any]] = []
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for ledger_id in payload.ledger_ids:
+        ledger = await LEDGERS.find_one({"run_id": rid, "ledger_id": ledger_id}, {"_id": 0})
+        if not ledger:
+            results.append({"ledger_id": ledger_id, "ok": False, "error": "Ledger not found"})
+            failed_count += 1
+            continue
+        if not ledger.get("email"):
+            results.append({"ledger_id": ledger_id, "name": ledger.get("name"),
+                            "ok": False, "error": "No email on file"})
+            skipped_count += 1
+            continue
+
+        template = await _resolve_template(payload.template_id, ledger.get("category", "other"))
+        if not template:
+            results.append({"ledger_id": ledger_id, "name": ledger.get("name"),
+                            "ok": False, "error": "No template available"})
+            skipped_count += 1
+            continue
+
+        ctx = build_email_context(
+            run=run, client=client, ledger=ledger,
+            auditor={"name": user.get("name") or auditor_email, "firm": auditor_firm},
+            public_base_url=base_url,
+        )
+        subject = render_template(template["subject"], ctx)
+        if payload.is_reminder:
+            subject = f"[Reminder] {subject}"
+        if payload.extra_subject_suffix:
+            subject = f"{subject} {payload.extra_subject_suffix}"
+        body = render_template(template["html_body"], ctx)
+
+        token = ledger["response_token"]
+        pixel_url = f"{base_url}/api/balance-confirmation/track/pixel/{token}.gif"
+        click_url = f"{base_url}/api/balance-confirmation/track/click/{token}"
+        body = inject_tracking(
+            body, pixel_url=pixel_url,
+            response_link=ctx["response_link"], click_url=click_url,
+        )
+        text_body = _strip_html(body)
+
+        # Per-ledger cc = universal + ledger.cc_emails
+        cc_list = list(set([*(payload.cc or []), *(ledger.get("cc_emails") or [])]))
+
+        # Attachments
+        attachments: List[Dict[str, Any]] = []
+        ext = build_extract_attachment(books, ledger, client,
+                                       run.get("as_at_date") or "", auditor_firm)
+        if ext:
+            attachments.append(ext)
+        if auth_attachment:
+            attachments.append(auth_attachment)
+
+        # Mark queued, send, settle
+        kind = "reminder" if payload.is_reminder else "send"
+        await LEDGERS.update_one(
+            {"run_id": rid, "ledger_id": ledger_id},
+            {"$set": {
+                "confirmation_status": "queued",
+                "queued_at": now_iso,
+                "last_modified": now_iso,
+            }},
+        )
+
+        send_res = await send_one(
+            to_email=ledger["email"],
+            subject=subject,
+            html_body=body,
+            text_body=text_body,
+            reply_to=auditor_email or None,
+            cc=cc_list or None,
+            attachments=attachments or None,
+            tags=[
+                {"name": "run_id", "value": rid[:40]},
+                {"name": "kind", "value": kind},
+            ],
+        )
+
+        if send_res.get("ok"):
+            sent_count += 1
+            new_status = "sent"
+            await LEDGERS.update_one(
+                {"run_id": rid, "ledger_id": ledger_id},
+                {"$set": {
+                    "confirmation_status": new_status,
+                    "sent_at": now_iso,
+                    "resend_id": send_res.get("id") or "",
+                    "last_error": "",
+                    "last_subject": subject,
+                    "last_modified": now_iso,
+                }, "$inc": {"send_attempts": 1}},
+            )
+            if payload.is_reminder:
+                await LEDGERS.update_one(
+                    {"run_id": rid, "ledger_id": ledger_id},
+                    {"$set": {"last_reminded_at": now_iso}},
+                )
+            await SENDLOG.insert_one(_send_log_doc(
+                run_id=rid, ledger_id=ledger_id, kind=kind,
+                status=new_status, resend_id=send_res.get("id") or "",
+                to_email=ledger["email"], subject=subject,
+                actor_email=auditor_email,
+            ))
+            results.append({"ledger_id": ledger_id, "name": ledger.get("name"),
+                            "ok": True, "id": send_res.get("id")})
+        else:
+            failed_count += 1
+            await LEDGERS.update_one(
+                {"run_id": rid, "ledger_id": ledger_id},
+                {"$set": {
+                    "confirmation_status": "failed",
+                    "last_error": send_res.get("error") or "Send failed",
+                    "last_error_at": now_iso,
+                    "last_modified": now_iso,
+                }, "$inc": {"send_attempts": 1}},
+            )
+            await SENDLOG.insert_one(_send_log_doc(
+                run_id=rid, ledger_id=ledger_id, kind=kind,
+                status="failed", error=send_res.get("error"),
+                to_email=ledger["email"], subject=subject,
+                actor_email=auditor_email,
+            ))
+            results.append({"ledger_id": ledger_id, "name": ledger.get("name"),
+                            "ok": False, "error": send_res.get("error")})
+
+    # Refresh run summary
+    rows = await LEDGERS.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {"summary": summarise_ledgers(rows), "status": "sending"}},
+    )
+    return {
+        "sent": sent_count,
+        "failed": failed_count,
+        "skipped": skipped_count,
+        "results": results,
+    }
+
+
+@router.post("/runs/{rid}/reminders")
+async def send_reminders(
+    rid: str,
+    request: Request,
+    cadence_days: int = 3,
+    cc: str = "",
+    auditor_firm: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Find every ledger in (sent | delivered | opened) state whose
+    `last_modified` is older than `cadence_days` and whose status is not
+    terminal (confirmed/disputed). Default cadence 3 → 7 → 14 days."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=cadence_days)).isoformat()
+    rows = await LEDGERS.find(
+        {
+            "run_id": rid,
+            "confirmation_status": {"$in": ["sent", "delivered", "opened", "clicked"]},
+            "$or": [
+                {"last_reminded_at": {"$exists": False}},
+                {"last_reminded_at": {"$lt": cutoff}},
+            ],
+            "sent_at": {"$lt": cutoff},
+            "email": {"$ne": ""},
+        },
+        {"_id": 0, "ledger_id": 1, "name": 1},
+    ).to_list(2000)
+    return {"eligible": rows, "count": len(rows), "cadence_days": cadence_days}
+
+
+# ============================ Send log ======================================
+@router.get("/runs/{rid}/send-log")
+async def get_send_log(
+    rid: str,
+    request: Request,
+    ledger_id: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    q: Dict[str, Any] = {"run_id": rid}
+    if ledger_id:
+        q["ledger_id"] = ledger_id
+    rows = await SENDLOG.find(q, {"_id": 0}).sort("ts", -1).to_list(2000)
+    return {"rows": rows, "count": len(rows)}
+
+
+# ============================ Public telemetry ===============================
+async def _record_telemetry(token: str, event: str) -> Optional[Dict[str, Any]]:
+    """Update the ledger's status + timestamp + write a telemetry log row.
+    `event` ∈ {opened, clicked}. Returns the ledger doc or None."""
+    ledger = await LEDGERS.find_one({"response_token": token}, {"_id": 0})
+    if not ledger:
+        return None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    set_ops: Dict[str, Any] = {"last_modified": now_iso}
+    if event == "opened":
+        set_ops["opened_at"] = ledger.get("opened_at") or now_iso
+        if can_transition(ledger.get("confirmation_status", "not_sent"), "opened"):
+            set_ops["confirmation_status"] = "opened"
+    elif event == "clicked":
+        set_ops["clicked_at"] = ledger.get("clicked_at") or now_iso
+        if can_transition(ledger.get("confirmation_status", "not_sent"), "clicked"):
+            set_ops["confirmation_status"] = "clicked"
+    await LEDGERS.update_one({"response_token": token}, {"$set": set_ops})
+    await SENDLOG.insert_one(_send_log_doc(
+        run_id=ledger["run_id"], ledger_id=ledger["ledger_id"],
+        kind="telemetry", status=event,
+        to_email=ledger.get("email", ""),
+    ))
+    return ledger
+
+
+@router.get("/track/pixel/{token}.gif")
+async def track_open_pixel(token: str):
+    """Public endpoint — no auth. Hit by recipient mail clients on open. Always
+    returns the 1×1 gif (even if token is unknown — never leak which tokens
+    are valid)."""
+    await _record_telemetry(token, "opened")
+    return Response(
+        content=_PIXEL_GIF,
+        media_type="image/gif",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@router.get("/track/click/{token}")
+async def track_click(token: str, request: Request):
+    """Public — log + 302 redirect to the recipient confirmation page."""
+    await _record_telemetry(token, "clicked")
+    base = _public_base_url(request)
+    return RedirectResponse(url=f"{base}/confirm/{token}", status_code=302)
+
+
+# ============================ Resend webhook =================================
+_RESEND_EVENT_TO_STATUS = {
+    "email.sent":       "sent",
+    "email.delivered":  "delivered",
+    "email.opened":     "opened",
+    "email.clicked":    "clicked",
+    "email.bounced":    "bounced",
+    "email.complained": "bounced",  # treat complaint same severity as bounce
+    "email.delivery_delayed": None,  # no status flip; just log
+}
+
+
+@router.post("/webhook/resend")
+async def resend_webhook(request: Request):
+    """Verify Svix-signed webhook and update ledger status from Resend events.
+
+    Public endpoint — auth via signature only. Returns 200 even on unknown
+    event to prevent retries.
+    """
+    secret = (os.environ.get("RESEND_WEBHOOK_SECRET") or "").strip()
+    body_bytes = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+
+    if secret:
+        try:
+            wh = Webhook(secret)
+            wh.verify(body_bytes, {
+                "svix-id":         headers.get("svix-id", ""),
+                "svix-timestamp":  headers.get("svix-timestamp", ""),
+                "svix-signature":  headers.get("svix-signature", ""),
+            })
+        except WebhookVerificationError as e:
+            raise HTTPException(401, f"Invalid webhook signature: {e}")
+
+    try:
+        evt = json.loads(body_bytes.decode("utf-8", errors="replace"))
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    event_type = evt.get("type", "")
+    data = evt.get("data") or {}
+    resend_id = data.get("email_id") or data.get("id") or ""
+    if not resend_id:
+        return {"ok": True, "skipped": "no email_id"}
+
+    target_status = _RESEND_EVENT_TO_STATUS.get(event_type)
+    ledger = await LEDGERS.find_one({"resend_id": resend_id}, {"_id": 0})
+    if not ledger:
+        return {"ok": True, "matched": False}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    set_ops: Dict[str, Any] = {"last_modified": now_iso}
+    field_for = {
+        "delivered": "delivered_at",
+        "opened":    "opened_at",
+        "clicked":   "clicked_at",
+        "bounced":   "bounced_at",
+    }
+    if target_status:
+        if target_status in field_for and not ledger.get(field_for[target_status]):
+            set_ops[field_for[target_status]] = now_iso
+        if can_transition(ledger.get("confirmation_status", "not_sent"), target_status):
+            set_ops["confirmation_status"] = target_status
+    await LEDGERS.update_one({"resend_id": resend_id}, {"$set": set_ops})
+    await SENDLOG.insert_one(_send_log_doc(
+        run_id=ledger["run_id"], ledger_id=ledger["ledger_id"],
+        kind="webhook", status=target_status or event_type,
+        resend_id=resend_id, to_email=ledger.get("email", ""),
+    ))
+    return {"ok": True, "matched": True, "event": event_type, "status": target_status}
+
+
+# ============================ Cascade enhancement ============================
+# Re-export delete_run cascade — extend to drop send-log on run delete
+@router.delete("/runs/{rid}/send-log")
+async def clear_send_log(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    res = await SENDLOG.delete_many({"run_id": rid})
+    return {"deleted": res.deleted_count}
+

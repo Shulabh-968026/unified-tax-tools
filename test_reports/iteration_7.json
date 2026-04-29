@@ -1,0 +1,52 @@
+{
+  "summary": "Balance Confirmation Phase 3 (sending engine + reminders + tracking + Resend webhook + send-log + ledger-extract PDF) full regression — 14/14 backend pytest tests pass, frontend smoke confirms bulk-action bar + send-log drawer + status chips + universal-cc input + select-all all wired and working. Live Resend integration verified: a real send to dhananjayan@transformautomations.com (Resend API-key owner, since `delivered@resend.dev` is rejected by current account in testing-mode) returned a real Resend message id, ledger flipped to `sent` with resend_id+sent_at+send_attempts incremented, send-log row written with kind='send' status='sent' actor_email=qa-bot@transformautomations.com to_email=dhananjayan@transformautomations.com. [Reminder] subject prefix verified + last_reminded_at populated. Pixel endpoint returns 43-byte gif (public, no-store cache) for both unknown and valid tokens, valid token flips status to opened. /track/click/{token} returns 302 → /confirm/{token} and flips status to clicked. Webhook with bad svix-signature → 401. Webhook with valid svix-signed body (forged via svix.Webhook(secret).sign()) → 200 + ledger status flip + webhook log row. Terminal status `confirmed` is NOT downgraded by an email.opened webhook (can_transition gate works). Ledger-Extract PDF builds >3KB and pdfplumber parses all 7 expected headers (Date / Voucher Type / Voucher # / Narration / Debit / Credit / Balance). DELETE /runs/{rid} cascades bc_send_log to 0 rows.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/balance-confirmation/runs/{rid}/reminders", "issue": "Spec/PRD documents this as GET, but controller registers it via @router.post (controller.py:794). Both are functionally equivalent and the body is empty (params come via query string), but consider aligning to GET so it's idempotent + cacheable + survives behind GET-only proxies. Tests adapted to POST."},
+      {"endpoint": "POST /api/balance-confirmation/runs/{rid}/send", "issue": "Resend currently rejects sends to anything other than the API-key owner email (`dhananjayan@transformautomations.com`) with: `You can only send testing emails to your own email address. To send to other recipients, please verify a domain at resend.com/domains`. This means `delivered@resend.dev` (suggested in the test brief) does NOT work in the current account state. Either (a) main agent verifies a domain in Resend, or (b) update test docs to use the owner email. Not a code defect — purely a Resend account/config state."},
+      {"endpoint": "POST /api/balance-confirmation/runs/{rid}/send", "issue": "Resend testing-mode also blocks CC to addresses other than the owner email, so the universal-CC dedup path could not be exercised end-to-end via live API. CC dedup logic is correct by code review (controller.py:697 `list(set([*payload.cc, *ledger.cc_emails]))`) but is not covered by an integration test."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Balance Confirmation workbench (Send Log drawer)", "issues": ["Drawer width is 95vw on viewport; on a 1920px desktop it covers ~95% of viewport when opened — consider capping at min(95vw, 720px) for parity with auth drawer rather than 900px, since the Send Log only needs ~3 columns (ts, kind, status)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_confirmation_phase3.py",
+    "/app/test_reports/pytest/iteration_7.xml"
+  ],
+  "action_items": [
+    "Align /reminders route HTTP method to GET (matches PRD/spec; current implementation uses POST).",
+    "Verify a real domain on resend.com so production sends to real client emails (not only API-key owner) work — currently any send to a non-owner address fails with 'You can only send testing emails to your own email address'.",
+    "Optional: split Landing.jsx (now 700+ lines with Phase 3 send-log + bulk bar) into LedgerWorkbench / BulkActionBar / SendLogDrawer files per code-review guideline (carry-over from iteration_6)."
+  ],
+  "critical_code_review_comments": [
+    "controller.py bulk_send: per-recipient try-loop isolates failures correctly — failed_count, sent_count, skipped_count tracked separately and a $set + $inc on bc_ledgers ensures send_attempts is never lost on retry. Good.",
+    "controller.py bulk_send: ledger.cc_emails + payload.cc deduped via `list(set(...))` — correct, but order is non-deterministic. Acceptable for an email cc list.",
+    "controller.py _record_telemetry: opened/clicked timestamps use coalesce-on-first-set (`ledger.get('opened_at') or now_iso`) so first-open time is preserved across multiple pixel hits. Good.",
+    "controller.py resend_webhook: when secret is empty the verify is bypassed — useful for local dev but a deploy-time risk if RESEND_WEBHOOK_SECRET is missing. Consider failing-closed (return 401) when secret unset in production env. Currently env has the secret so this is latent.",
+    "sender.py can_transition: confirmed/disputed are correctly terminal — verified via test_webhook_terminal_status_not_downgraded.",
+    "sender.py send_one wraps resend.Emails.send via asyncio.to_thread — correct, prevents blocking the FastAPI event loop on a sync SDK.",
+    "letter_pdf.py build_ledger_extract_pdf: produces a parseable PDF with all 7 required column headers; for ledgers with no vouchers the output is ~2.6KB which is below the 3KB benchmark in the brief — fine for empty/Capital ledgers but noteworthy.",
+    "Landing.jsx select-all: header checkbox toggles all 58 rows but per-row checkboxes are disabled when `!row.email`, so payload only contains rows that actually have emails — correct semantics. Visual feedback (disabled rows still appear unchecked even after select-all) is good UX.",
+    "controller.py /webhook/resend matches by ledger.resend_id; if Resend ever sends an event for a deleted ledger the handler returns {ok:true, matched:false} (silent) — good idempotency, but consider also writing a log row for `matched:false` for ops debugging."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_balance_confirmation_phase3.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 Phase 3 tests pass — bulk send live + skip empty + reminder prefix + send-log filter/order + reminders eligibility + pixel/click telemetry + svix verify+reject + terminal-status guard + PDF + cascade delete)",
+    "frontend": "100% on Phase 3 deltas (bulk-action bar, Send Log drawer, status chips, universal-cc input, select-all toggle, all 7 phase-3 testids present, no console errors)"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260429_dev (admin user_qa_bot_fixed_01) — confirmed working. Resend API-key owner appears to be dhananjayan@transformautomations.com — that is the only address we could send to in test mode.",
+  "seed_data_creation": "Pytest fixture creates+cleans up TEST_BC_phase3_send / TEST_BC_phase3_cascade runs against SEED_CLIENT cli_7f0b86b1ab0b. UI smoke test reused an existing ingested run (1710de57-...) and created+deleted one transient run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 3 backend is fully tested at /app/backend/tests/test_balance_confirmation_phase3.py — extend this file (or create test_balance_confirmation_phase4.py) for the recipient response loop /confirm/{token} when it lands. RESEND_TEST_RECIPIENT must remain dhananjayan@transformautomations.com until a domain is verified in Resend. Svix signature forging pattern: `svix.Webhook(secret).sign(msg_id, datetime_obj_utc, body_str)` — note third arg must be **str** not bytes (signature confirmed in svix==1.92.2). Phase 4 (public /confirm/{token} page + recipient confirm/dispute action) is OUT OF SCOPE for iteration 7 — not built yet per main-agent note. The /reminders route is currently POST not GET — adapt accordingly until main agent flips it.",
+  "rca of the issue": "No critical issues. Only environmental: Resend test-mode locks recipient to API-key owner email — workaround is to verify a sending domain at resend.com/domains so production sends work for any recipient."
+}

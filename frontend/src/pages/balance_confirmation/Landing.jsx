@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search } from "lucide-react";
+import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -24,6 +24,18 @@ const CHIP_CLS = {
   slate:   "bg-slate-50 text-slate-700 border-slate-200",
   rose:    "bg-rose-50 text-rose-800 border-rose-200",
 };
+const STATUS_CHIP = {
+  not_sent:  { label: "Not Sent",  cls: "bg-gray-100 text-gray-600 border-gray-200" },
+  queued:    { label: "Queued",    cls: "bg-blue-50 text-blue-700 border-blue-200" },
+  sent:      { label: "Sent",      cls: "bg-blue-100 text-blue-800 border-blue-300" },
+  delivered: { label: "Delivered", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  opened:    { label: "Opened",    cls: "bg-emerald-100 text-emerald-800 border-emerald-300" },
+  clicked:   { label: "Clicked",   cls: "bg-emerald-200 text-emerald-900 border-emerald-400" },
+  confirmed: { label: "Confirmed", cls: "bg-emerald-700 text-white border-emerald-800" },
+  disputed:  { label: "Disputed",  cls: "bg-amber-200 text-amber-900 border-amber-300" },
+  bounced:   { label: "Bounced",   cls: "bg-rose-100 text-rose-800 border-rose-300" },
+  failed:    { label: "Failed",    cls: "bg-rose-200 text-rose-900 border-rose-400" },
+};
 
 /* ============================================================
  * Landing page — covers no-run AND in-run states (same URL pattern as GST Recon).
@@ -41,6 +53,9 @@ export default function BalanceConfirmationLanding() {
   const [busy, setBusy] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
+  const [showSendLog, setShowSendLog] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [universalCc, setUniversalCc] = useState("");
   const dropRef = useRef(null);
 
   /* Load past runs + (optionally) hydrate run if URL has :rid */
@@ -144,6 +159,43 @@ export default function BalanceConfirmationLanding() {
       toast.error(e?.response?.data?.detail || "Update failed");
     }
   };
+
+  /* ---------- Phase 3 — Bulk Send + Reminders ---------- */
+  const sendIds = async (ledger_ids, isReminder = false) => {
+    if (!ledger_ids?.length) return;
+    setBusy(true);
+    try {
+      const cc = universalCc.split(",").map(s => s.trim()).filter(s => s.includes("@"));
+      const { data } = await http.post(`/balance-confirmation/runs/${rid}/send`, {
+        ledger_ids, cc, is_reminder: isReminder,
+      });
+      const tone = data.failed > 0 ? "warning" : "success";
+      const msg = `Sent ${data.sent} · Failed ${data.failed}${data.skipped ? ` · Skipped ${data.skipped}` : ""}`;
+      tone === "success" ? toast.success(msg) : toast.warning(msg);
+      if (data.failed && data.results) {
+        const firstErr = data.results.find(r => !r.ok);
+        if (firstErr) toast.error(`${firstErr.name || firstErr.ledger_id}: ${firstErr.error}`);
+      }
+      setSelected(new Set());
+      refreshLedgers(); refreshRun();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Bulk send failed");
+    } finally { setBusy(false); }
+  };
+  const sendSelected = () => sendIds(Array.from(selected), false);
+  const remindSelected = () => sendIds(Array.from(selected), true);
+  const sendAllVisible = () => {
+    const ids = visibleLedgers.filter(l => l.email && (l.confirmation_status === "not_sent" || l.confirmation_status === "failed")).map(l => l.ledger_id);
+    if (!ids.length) { toast.info("No eligible ledgers in current view (need email + status not_sent or failed)"); return; }
+    if (!window.confirm(`Send confirmations to ${ids.length} parties?`)) return;
+    sendIds(ids, false);
+  };
+  const toggleRow = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = (rows) => setSelected(prev => {
+    const allIds = rows.map(r => r.ledger_id);
+    const allSelected = allIds.every(id => prev.has(id));
+    return allSelected ? new Set() : new Set(allIds);
+  });
 
   /* ---------- Filtered rows ---------- */
   const visibleLedgers = useMemo(() => {
@@ -274,7 +326,7 @@ export default function BalanceConfirmationLanding() {
                           { key: "bank",             label: "Banks" },
                           { key: "other",            label: "Other" },
                           { key: "all",              label: "All" }].map(t => (
-                          <button key={t.key} onClick={() => setActiveTab(t.key)}
+                          <button key={t.key} onClick={() => { setActiveTab(t.key); setSelected(new Set()); }}
                             className={`px-2.5 py-1 text-xs font-medium rounded-sm border ${activeTab === t.key ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"}`}
                             data-testid={`bc-tab-${t.key}`}>{t.label}</button>
                         ))}
@@ -283,23 +335,54 @@ export default function BalanceConfirmationLanding() {
                         <input type="checkbox" checked={missingEmailOnly} onChange={e => setMissingEmailOnly(e.target.checked)} className="accent-rose-700" data-testid="bc-filter-missing-email"/>
                         Missing email only
                       </label>
-                      <div className="relative ml-auto">
+                      <div className="relative">
                         <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400"/>
                         <input type="text" placeholder="Search ledger / group / email"
                           value={search} onChange={e => setSearch(e.target.value)}
-                          className="text-xs h-8 pl-7 pr-3 border border-gray-300 rounded-sm w-64 focus:outline-none focus:border-emerald-600"
+                          className="text-xs h-8 pl-7 pr-3 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
                           data-testid="bc-search"/>
                       </div>
-                      <button onClick={exportCsv} className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50" data-testid="bc-csv-export">
-                        <Download size={12}/> Export CSV
-                      </button>
-                      <label className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50 cursor-pointer" data-testid="bc-csv-import">
-                        <Upload size={12}/> Import CSV
-                        <input type="file" accept=".csv,text/csv" className="hidden" onChange={e => importCsv(e.target.files?.[0])}/>
-                      </label>
+                      <div className="ml-auto flex items-center gap-2">
+                        <input type="text" placeholder="Universal cc (comma-separated)" value={universalCc}
+                          onChange={e => setUniversalCc(e.target.value)}
+                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
+                          data-testid="bc-universal-cc"/>
+                        <button onClick={() => setShowSendLog(true)} className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50" data-testid="bc-open-send-log">
+                          <Activity size={12}/> Send Log
+                        </button>
+                        <button onClick={exportCsv} className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50" data-testid="bc-csv-export">
+                          <Download size={12}/> Export CSV
+                        </button>
+                        <label className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50 cursor-pointer" data-testid="bc-csv-import">
+                          <Upload size={12}/> Import CSV
+                          <input type="file" accept=".csv,text/csv" className="hidden" onChange={e => importCsv(e.target.files?.[0])}/>
+                        </label>
+                      </div>
                     </div>
 
-                    <LedgerTable rows={visibleLedgers} onPatch={patchLedger}/>
+                    {/* Bulk action bar */}
+                    <div className="px-5 py-2.5 border-b border-gray-100 bg-gray-50 flex items-center gap-3 text-xs">
+                      <span className="font-mono text-gray-600">{selected.size} selected</span>
+                      <button disabled={!selected.size || busy} onClick={sendSelected}
+                        className="px-3 py-1.5 rounded-sm bg-emerald-700 text-white font-medium inline-flex items-center gap-1.5 hover:bg-emerald-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        data-testid="bc-bulk-send">
+                        <Send size={12}/> Send Selected
+                      </button>
+                      <button disabled={!selected.size || busy} onClick={remindSelected}
+                        className="px-3 py-1.5 rounded-sm border border-amber-700 text-amber-800 bg-white font-medium inline-flex items-center gap-1.5 hover:bg-amber-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        data-testid="bc-bulk-remind">
+                        <Bell size={12}/> Send Reminder
+                      </button>
+                      <button disabled={busy} onClick={sendAllVisible}
+                        className="px-3 py-1.5 rounded-sm border border-gray-300 text-gray-700 bg-white font-medium inline-flex items-center gap-1.5 hover:bg-gray-100 disabled:opacity-40"
+                        data-testid="bc-send-all-visible">
+                        <Send size={12}/> Send All in View
+                      </button>
+                      <span className="text-[11px] text-gray-500 ml-auto">Sender: <code>onboarding@resend.dev</code> · Reply-to: your email · Default cadence: 3/7/14 days</span>
+                    </div>
+
+                    <LedgerTable rows={visibleLedgers} onPatch={patchLedger}
+                      selected={selected} onToggle={toggleRow} onToggleAll={() => toggleAll(visibleLedgers)}/>
                     {visibleLedgers.length === 0 && (
                       <div className="p-8 text-center text-xs text-gray-500 font-mono">No ledgers match the current filter.</div>
                     )}
@@ -313,30 +396,36 @@ export default function BalanceConfirmationLanding() {
 
       {showTemplates && <TemplatesDrawer onClose={() => setShowTemplates(false)}/>}
       {showAuth && <AuthorisationDrawer clientId={clientId} onClose={() => setShowAuth(false)}/>}
+      {showSendLog && <SendLogDrawer rid={rid} onClose={() => setShowSendLog(false)}/>}
     </div>
   );
 }
 
 /* ============================================================ */
-function LedgerTable({ rows, onPatch }) {
+function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
+  const allChecked = rows.length > 0 && rows.every(r => selected.has(r.ledger_id));
   return (
     <div className="overflow-x-auto" data-testid="bc-ledger-table">
       <table className="w-full text-[12px]">
         <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
           <tr>
+            <th className="px-3 py-2 border-b border-gray-200 w-8">
+              <input type="checkbox" checked={allChecked} onChange={onToggleAll} className="accent-emerald-700" data-testid="bc-select-all"/>
+            </th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Ledger</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Group</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Category</th>
             <th className="text-right px-3 py-2 border-b border-gray-200">Closing</th>
+            <th className="text-left px-3 py-2 border-b border-gray-200">Status</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Email</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Cc</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Contact</th>
-            <th className="text-left px-3 py-2 border-b border-gray-200">GSTIN</th>
           </tr>
         </thead>
         <tbody>
           {rows.map(r => (
-            <Row key={r.ledger_id} row={r} onPatch={onPatch}/>
+            <Row key={r.ledger_id} row={r} onPatch={onPatch}
+              checked={selected.has(r.ledger_id)} onToggle={() => onToggle(r.ledger_id)}/>
           ))}
         </tbody>
       </table>
@@ -344,12 +433,16 @@ function LedgerTable({ rows, onPatch }) {
   );
 }
 
-function Row({ row, onPatch }) {
+function Row({ row, onPatch, checked, onToggle }) {
   const cat = CATS.find(c => c.key === row.category) || CATS[3];
+  const statusInfo = STATUS_CHIP[row.confirmation_status] || STATUS_CHIP.not_sent;
   return (
     <tr className="hover:bg-gray-50" data-testid={`bc-row-${row.ledger_id}`}>
-      <td className="px-3 py-2 border-b border-gray-100 max-w-[260px] truncate" title={row.name}>{row.name}</td>
-      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] max-w-[160px] truncate" title={row.parent_group}>{row.parent_group || "—"}</td>
+      <td className="px-3 py-2 border-b border-gray-100 text-center">
+        <input type="checkbox" checked={checked} onChange={onToggle} disabled={!row.email} className="accent-emerald-700 disabled:opacity-30" data-testid={`bc-row-${row.ledger_id}-select`}/>
+      </td>
+      <td className="px-3 py-2 border-b border-gray-100 max-w-[240px] truncate" title={row.name}>{row.name}</td>
+      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] max-w-[140px] truncate" title={row.parent_group}>{row.parent_group || "—"}</td>
       <td className="px-3 py-2 border-b border-gray-100">
         <select
           value={row.category} onChange={e => onPatch(row.ledger_id, { category: e.target.value })}
@@ -361,8 +454,11 @@ function Row({ row, onPatch }) {
           <option value="other">Other</option>
         </select>
       </td>
-      <td className="px-3 py-2 border-b border-gray-100 text-right font-mono">
+      <td className="px-3 py-2 border-b border-gray-100 text-right font-mono whitespace-nowrap">
         {inr(Math.abs(row.closing_balance))} <span className={`text-[10px] ${row.dr_cr === "dr" ? "text-rose-700" : "text-emerald-700"}`}>{(row.dr_cr || "").toUpperCase()}</span>
+      </td>
+      <td className="px-3 py-2 border-b border-gray-100">
+        <span className={`text-[10px] font-mono px-1.5 py-0.5 border rounded-sm ${statusInfo.cls}`} data-testid={`bc-row-${row.ledger_id}-status`}>{statusInfo.label}</span>
       </td>
       <Editable value={row.email} placeholder="email@example.com" type="email"
         onSave={v => onPatch(row.ledger_id, { email: v })}
@@ -373,7 +469,6 @@ function Row({ row, onPatch }) {
       <Editable value={row.contact_name} placeholder="Mr. ABC"
         onSave={v => onPatch(row.ledger_id, { contact_name: v })}
         testid={`bc-row-${row.ledger_id}-contact`}/>
-      <td className="px-3 py-2 border-b border-gray-100 font-mono text-[11px] text-gray-600">{row.gstin || "—"}</td>
     </tr>
   );
 }
@@ -556,3 +651,67 @@ function AuthorisationDrawer({ clientId, onClose }) {
     </>
   );
 }
+
+/* ============================================================ */
+function SendLogDrawer({ rid, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const refresh = () => {
+    setLoading(true);
+    http.get(`/balance-confirmation/runs/${rid}/send-log`)
+      .then(({ data }) => setRows(data?.rows || []))
+      .finally(() => setLoading(false));
+  };
+  useEffect(refresh, [rid]);
+  const STATUS_TONE = {
+    sent: "text-blue-700", delivered: "text-emerald-700", opened: "text-emerald-800", clicked: "text-emerald-900",
+    bounced: "text-rose-700", failed: "text-rose-800", queued: "text-blue-600",
+  };
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} data-testid="bc-sendlog-backdrop"/>
+      <div className="fixed top-0 right-0 h-screen w-[min(95vw,900px)] bg-white shadow-2xl z-50 flex flex-col" data-testid="bc-sendlog-drawer">
+        <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-gray-500">Telemetry</div>
+            <h2 className="text-lg font-semibold mt-1">Send Log</h2>
+            <div className="text-xs text-gray-500 mt-0.5">Every send, webhook event, open and click recorded against this run.</div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <button onClick={refresh} className="text-xs px-2.5 py-1.5 border border-gray-300 rounded-sm hover:bg-gray-50" data-testid="bc-sendlog-refresh">Refresh</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="bc-sendlog-close">×</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto">
+          {loading ? <div className="p-5 text-sm text-gray-500">Loading…</div> : rows.length === 0 ? (
+            <div className="p-8 text-center text-xs text-gray-500 font-mono">No events yet.</div>
+          ) : (
+            <table className="w-full text-[12px]">
+              <thead className="bg-gray-50 text-[10px] uppercase tracking-wider text-gray-600 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-2 border-b">When</th>
+                  <th className="text-left px-3 py-2 border-b">Kind</th>
+                  <th className="text-left px-3 py-2 border-b">Status</th>
+                  <th className="text-left px-3 py-2 border-b">To</th>
+                  <th className="text-left px-3 py-2 border-b">Subject / Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.log_id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 border-b font-mono text-[10.5px]">{r.ts?.slice(0, 19).replace("T", " ")}</td>
+                    <td className="px-3 py-2 border-b font-medium">{r.kind}</td>
+                    <td className={`px-3 py-2 border-b font-mono ${STATUS_TONE[r.status] || ""}`}>{r.status}</td>
+                    <td className="px-3 py-2 border-b text-gray-700">{r.to_email || "—"}</td>
+                    <td className="px-3 py-2 border-b text-gray-600 max-w-[360px] truncate" title={r.subject || r.error}>{r.subject || r.error || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
