@@ -121,10 +121,18 @@ def _resend_configured() -> bool:
 
 
 def _from_addr() -> str:
+    """Resolve the From header. Reads from env vars and FAILS LOUD if the
+    sender email is missing — production must use a verified domain, never
+    the Resend sandbox default. Tests can monkey-patch via env."""
     addr = (os.environ.get("RESEND_SENDER_EMAIL") or "").strip()
     name = (os.environ.get("RESEND_SENDER_NAME") or "").strip()
     if not addr:
-        addr = "onboarding@resend.dev"
+        raise RuntimeError(
+            "RESEND_SENDER_EMAIL is not configured. Set it on the Emergent "
+            "Deploy panel to a verified-domain address (e.g. "
+            "notifications@assureai.in). Refusing to fall back to the Resend "
+            "sandbox sender, which only delivers to the account owner."
+        )
     return f"{name} <{addr}>" if name else addr
 
 
@@ -151,10 +159,18 @@ async def send_one(*,
     resend.api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
 
     if from_name:
-        addr = (os.environ.get("RESEND_SENDER_EMAIL") or "onboarding@resend.dev").strip()
+        addr = (os.environ.get("RESEND_SENDER_EMAIL") or "").strip()
+        if not addr:
+            return {"ok": False, "error": (
+                "RESEND_SENDER_EMAIL not configured. Set it on the Emergent "
+                "Deploy panel (e.g. notifications@assureai.in)."
+            )}
         from_field = f"{from_name} <{addr}>"
     else:
-        from_field = _from_addr()
+        try:
+            from_field = _from_addr()
+        except RuntimeError as e:
+            return {"ok": False, "error": str(e)}
 
     params: Dict[str, Any] = {
         "from": from_field,
