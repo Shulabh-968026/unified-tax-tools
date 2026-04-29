@@ -187,6 +187,27 @@ export default function GstReconLanding() {
     }
   };
 
+  const downloadPdf = async () => {
+    if (!runId) return;
+    setBusy(true);
+    try {
+      const res = await http.get(`/gst-recon/runs/${runId}/working-paper.pdf`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const cd = res.headers["content-disposition"] || "";
+      const m = cd.match(/filename="(.+?)"/);
+      const filename = m ? m[1] : `GST_Recon_WorkingPaper_FY${fy}.pdf`;
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("PDF working-paper downloaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "PDF download failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const coverageComplete =
     hasBooks && hasMapping &&
     months.length === 12 && months.every(m => m.gstr1 && m.gstr2b && m.gstr3b);
@@ -342,6 +363,19 @@ export default function GstReconLanding() {
               title={summary ? "Download audit working-paper (XLSX)" : "Run reconciliation first"}
             >
               <Download size={13}/> Audit Working-Paper
+            </button>
+            <button
+              disabled={!summary || busy}
+              onClick={downloadPdf}
+              className={`h-9 px-3 rounded-sm border text-xs font-medium inline-flex items-center gap-1.5 ${
+                summary && !busy
+                  ? "border-rose-700 bg-white text-rose-800 hover:bg-rose-50"
+                  : "border-gray-200 text-gray-400 cursor-not-allowed bg-white"
+              }`}
+              data-testid="download-pdf-btn"
+              title={summary ? "Download signature-ready PDF for the audit file" : "Run reconciliation first"}
+            >
+              <Download size={13}/> Working-Paper PDF
             </button>
           </div>
         </div>

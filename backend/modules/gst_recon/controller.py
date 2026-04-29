@@ -22,6 +22,7 @@ from modules.gst_recon.aggregators import (
     extract_gstr2b_invoices,
 )
 from modules.gst_recon.excel_export import build_workbook
+from modules.gst_recon.pdf_export import build_pdf
 from modules.gst_recon.service import build_month_grid, build_summary, categorize_file, match_invoices
 from modules.gst_recon.validation import inspect_file, validate_run
 
@@ -544,5 +545,51 @@ async def export_workbook(
     return StreamingResponse(
         iter([xlsx_bytes]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+
+@router.get("/runs/{rid}/working-paper.pdf")
+async def export_working_paper_pdf(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Signature-ready PDF working-paper for the audit file.
+
+    Renders the Reconciliation Health dashboard, 12-month tables, and Annual
+    Party-wise (top-15 by variance) into a single A4 PDF a CA can print or
+    attach to the audit working-paper folder.
+    """
+    await _auth(request, session_token, authorization)
+    doc = await COLL.find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+
+    summary = doc.get("summary")
+    if not summary:
+        summary = build_summary(doc)
+        await COLL.update_one(
+            {"id": rid}, {"$set": {"summary": summary, "status": "summarized"}}
+        )
+
+    partywise_outward = await _build_partywise(rid, "outward")
+    partywise_inward = await _build_partywise(rid, "inward")
+
+    client = await db.clients.find_one(
+        {"client_id": doc.get("client_id")}, {"_id": 0}
+    )
+
+    pdf_bytes = build_pdf(doc, summary, partywise_outward, partywise_inward, client)
+    fy = (doc.get("fy") or "").replace("-", "_")
+    filename = (
+        f"GST_Recon_WorkingPaper_FY{fy}_"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf"
+    )
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
