@@ -657,6 +657,10 @@ async def bulk_send(
     if not payload.ledger_ids:
         raise HTTPException(400, "ledger_ids is required")
 
+    # Ensure default-template subjects are on the latest branded format (cheap,
+    # idempotent — only writes when a legacy prefix is detected).
+    await _ensure_default_templates()
+
     client = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0})
     if not client:
         raise HTTPException(404, "Client not found for this run")
