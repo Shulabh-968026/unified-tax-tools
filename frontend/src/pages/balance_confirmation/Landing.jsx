@@ -751,7 +751,7 @@ function ResponsesDrawer({ rid, onClose }) {
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} data-testid="bc-responses-backdrop"/>
-      <div className="fixed top-0 right-0 h-screen w-[min(95vw,920px)] bg-white shadow-2xl z-50 flex flex-col" data-testid="bc-responses-drawer">
+      <div className="fixed top-0 right-0 h-screen w-[min(95vw,720px)] bg-white shadow-2xl z-50 flex flex-col" data-testid="bc-responses-drawer">
         <div className="p-5 border-b border-gray-200 flex items-center justify-between">
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-gray-500">Recipient Responses</div>

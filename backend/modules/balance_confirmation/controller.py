@@ -1120,6 +1120,10 @@ async def public_dispute(
 ):
     """Public — recipient disagrees and (optionally) attaches their statement.
     Multipart endpoint so the file uploads land natively from the browser."""
+    # Early DoS guard — reject oversize requests BEFORE we buffer the body.
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > 9 * 1024 * 1024:  # 9MB request cap
+        raise HTTPException(413, "Attachment too large (max 8MB)")
     if not (reason or "").strip():
         raise HTTPException(400, "Please provide a reason explaining the difference.")
     ledger = await LEDGERS.find_one({"response_token": token}, {"_id": 0})
@@ -1194,8 +1198,12 @@ async def download_response_attachment(
         raise HTTPException(404, "No attachment on this response")
     content = base64.b64decode(doc["uploaded_content_b64"])
     fname = doc.get("uploaded_filename") or "recipient_statement"
+    # Sanitise filename for the Content-Disposition header — strip path
+    # separators and quotes that could break the header / enable attacks.
+    import re as _re
+    safe_fname = _re.sub(r"[\r\n\"\\]+", "_", fname).split("/")[-1].split("\\")[-1]
     # Pick a content-type by extension (best-effort)
-    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    ext = safe_fname.lower().rsplit(".", 1)[-1] if "." in safe_fname else ""
     media = {
         "pdf":  "application/pdf",
         "csv":  "text/csv",
@@ -1206,6 +1214,6 @@ async def download_response_attachment(
     return StreamingResponse(
         iter([content]),
         media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_fname}"'},
     )
 

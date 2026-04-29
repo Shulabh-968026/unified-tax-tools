@@ -1,9 +1,22 @@
 # MSS × Assure — Audit Utilities (Merged)
 
-## Balance Confirmation — Phase 4-6 backlog (next sprints)
-- [ ] **Phase 4** — Recipient response loop: public `/confirm/:token` route (no auth), tokenised landing page in AssureAI green, "Yes — Confirmed" / "Not Confirmed + reason + ledger upload" actions, response captured + status flipped, evidence stored in `bc_responses` collection
-- [ ] **Phase 5** — Confirmation Summary Report exports (Excel multi-sheet + PDF working-paper) — Sent Tracker, Status Timeline, Variances, Notes
-- [ ] **Phase 6** — Side-by-side reconciliation when recipient uploads their ledger — variance recon vs Tally Books, party-level dispute resolution UI
+## Balance Confirmation — Phase 4 live (2026-04-29)
+- [x] **Public recipient response loop** — no auth needed, accessed via the `/track/click/{token}` 302 redirect from the email
+- [x] New routes (public unless noted):
+      • `GET  /api/balance-confirmation/public/confirmation/{token}` — context for the AssureAI-green landing page (party_name, balance, dr_cr, client, auditor, status); never echoes file bytes
+      • `POST /api/balance-confirmation/public/confirmation/{token}/confirm` — JSON body, flips ledger.confirmation_status → `confirmed` (terminal)
+      • `POST /api/balance-confirmation/public/confirmation/{token}/dispute` — multipart/form-data with `Form(...)` annotations on every scalar (testing agent caught & fixed the missing-Form bug); reason required (400 if empty), file optional, 8MB cap with **early Content-Length pre-check** so we don't buffer DoS payloads. Status flips → `disputed` (terminal). Idempotent re-submit replaces the response doc but ledger stays terminal.
+      • `GET  /api/balance-confirmation/runs/{rid}/responses?decision=` — auditor-side, enriches each row with ledger_name + our_balance + our_dr_cr; auth-gated
+      • `GET  /api/balance-confirmation/runs/{rid}/responses/{response_id}/attachment` — streams the recipient's uploaded statement; **filename sanitised** for Content-Disposition; auth-gated
+- [x] New collection `bc_responses` — schema locked: `{response_id, run_id, ledger_id, response_token, decision: confirmed|disputed, responder_name/email, their_balance/dr_cr, reason, note, responder_ip, user_agent, submitted_at, uploaded_filename/size/content_b64}`
+- [x] `bc_responses` cascade-deletes on run delete (verified)
+- [x] Frontend `pages/balance_confirmation/ConfirmPage.jsx` (~370 lines): public route `/confirm/:token` outside ProtectedRoute, AssureAI green header (#047857), balance card with ₹ + Dr/Cr indicator + plain-language hint, two-button choose state (Yes / No), confirm form (name/email/note), dispute form (name/email/their balance + Dr-Cr/reason*/file upload), thank-you screen with reference id + UTC timestamp, friendly "Link Invalid or Expired" error state. Uses raw `axios` (NOT the http alias) so no auth cookie ever leaks.
+- [x] Frontend `Landing.jsx` Responses drawer (`data-testid='bc-responses-drawer'`, width capped at min(95vw, 720px) for parity with Send Log) — decision filter, side-by-side our-vs-their balance card, reason text, attachment download routed through auth-gated endpoint
+- [x] **Tests**: 57/57 backend pytest GREEN (28 P1+2 + 14 P3 + 15 P4 in `test_balance_confirmation_phase4.py`); frontend Playwright regression GREEN (test_reports/iteration_8.json)
+
+## Balance Confirmation — Phase 5-6 backlog (next sprints)
+- [ ] **Phase 5** — Confirmation Summary Report exports for the audit working paper (Excel multi-sheet + PDF) — Sent Tracker / Status Timeline / Variance Worksheet / Notes
+- [ ] **Phase 6** — Side-by-side reconciliation when recipient uploads their ledger — variance recon vs Tally Books, dispute resolution UI, recon-comments per voucher
 
 ## Problem Statement
 Merge two existing Emergent projects into ONE:
