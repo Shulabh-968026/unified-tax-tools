@@ -16,7 +16,7 @@ ASSUREAI_GREEN = "#047857"
 CUSTOMER_DEFAULT = {
     "kind": "customer",
     "name": "Customer Confirmation — Standard",
-    "subject": "Balance Confirmation Request as on {{as_at_date}} · {{client_name}}",
+    "subject": "Confirmation of Balance — M/s {{client_name}} as on {{as_at_date}}",
     "html_body": """\
 <p>Dear {{contact_name_or_party}},</p>
 
@@ -63,7 +63,7 @@ of account so we can reconcile.</p>
 VENDOR_DEFAULT = {
     "kind": "vendor",
     "name": "Vendor Confirmation — Statement Match",
-    "subject": "Statement of Account & Balance Confirmation as on {{as_at_date}} · {{client_name}}",
+    "subject": "Confirmation of Balance — M/s {{client_name}} as on {{as_at_date}}",
     "html_body": """\
 <p>Dear {{contact_name_or_party}},</p>
 
@@ -109,7 +109,7 @@ attached.</p>
 BANK_DEFAULT = {
     "kind": "bank",
     "name": "Bank Confirmation — Independent Verification",
-    "subject": "Independent Bank Confirmation as on {{as_at_date}} · {{client_name}}",
+    "subject": "Confirmation of Balance — M/s {{client_name}} as on {{as_at_date}}",
     "html_body": """\
 <p>The Branch Manager,<br/>
    <strong>{{party_name}}</strong><br/>

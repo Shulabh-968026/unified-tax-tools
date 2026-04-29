@@ -136,8 +136,13 @@ async def send_one(*,
                    reply_to: Optional[str] = None,
                    cc: Optional[List[str]] = None,
                    attachments: Optional[List[Dict[str, Any]]] = None,
-                   tags: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                   tags: Optional[List[Dict[str, str]]] = None,
+                   from_name: Optional[str] = None) -> Dict[str, Any]:
     """Send a single transactional email via Resend.
+
+    `from_name` (optional) overrides the static RESEND_SENDER_NAME for this
+    one send — used for dynamic display names like
+    ``Confirmation of Balance — M/s ABC Pvt Ltd``.
 
     Returns {ok: bool, id?, error?}. Never raises.
     """
@@ -145,8 +150,14 @@ async def send_one(*,
         return {"ok": False, "error": "RESEND_API_KEY not set"}
     resend.api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
 
+    if from_name:
+        addr = (os.environ.get("RESEND_SENDER_EMAIL") or "onboarding@resend.dev").strip()
+        from_field = f"{from_name} <{addr}>"
+    else:
+        from_field = _from_addr()
+
     params: Dict[str, Any] = {
-        "from": _from_addr(),
+        "from": from_field,
         "to": [to_email],
         "subject": subject,
         "html": html_body,

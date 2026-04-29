@@ -462,12 +462,29 @@ async def download_authorization_template(
 
 
 # ============================ Templates =======================================
+# Subject prefixes from older default seeds — auto-upgraded to the new
+# "Confirmation of Balance — M/s {{client_name}} as on {{as_at_date}}" format
+# on first /templates call, but only if user hasn't customized the subject.
+_LEGACY_DEFAULT_SUBJECT_PREFIXES = (
+    "Balance Confirmation Request",
+    "Statement of Account & Balance Confirmation",
+    "Independent Bank Confirmation",
+)
+
+
 async def _ensure_default_templates() -> None:
-    """Idempotent: insert one row per default kind if no global default exists."""
+    """Idempotent: insert one row per default kind if no global default exists.
+    Also upgrades a legacy default-subject in place to the new branded format."""
     now_iso = datetime.now(timezone.utc).isoformat()
     for d in all_defaults():
         existing = await TEMPLATES.find_one({"kind": d["kind"], "is_default": True})
         if existing:
+            cur_subj = (existing.get("subject") or "").strip()
+            if cur_subj.startswith(_LEGACY_DEFAULT_SUBJECT_PREFIXES) and cur_subj != d["subject"]:
+                await TEMPLATES.update_one(
+                    {"template_id": existing["template_id"]},
+                    {"$set": {"subject": d["subject"], "updated_at": now_iso}},
+                )
             continue
         await TEMPLATES.insert_one({
             "template_id": str(uuid.uuid4()),
@@ -731,6 +748,8 @@ async def bulk_send(
             reply_to=auditor_email or None,
             cc=cc_list or None,
             attachments=attachments or None,
+            from_name=(f"Confirmation of Balance — M/s {client.get('name')}".strip()
+                       if client.get("name") else None),
             tags=[
                 {"name": "run_id", "value": rid[:40]},
                 {"name": "kind", "value": kind},
