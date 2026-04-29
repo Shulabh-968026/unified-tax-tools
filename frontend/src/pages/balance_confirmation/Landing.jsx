@@ -54,6 +54,7 @@ export default function BalanceConfirmationLanding() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [showSendLog, setShowSendLog] = useState(false);
+  const [showResponses, setShowResponses] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [universalCc, setUniversalCc] = useState("");
   const dropRef = useRef(null);
@@ -347,6 +348,9 @@ export default function BalanceConfirmationLanding() {
                           onChange={e => setUniversalCc(e.target.value)}
                           className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
                           data-testid="bc-universal-cc"/>
+                        <button onClick={() => setShowResponses(true)} className="text-xs px-3 h-8 rounded-sm border border-emerald-300 text-emerald-800 inline-flex items-center gap-1.5 hover:bg-emerald-50" data-testid="bc-open-responses">
+                          <Mail size={12}/> Responses
+                        </button>
                         <button onClick={() => setShowSendLog(true)} className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50" data-testid="bc-open-send-log">
                           <Activity size={12}/> Send Log
                         </button>
@@ -397,6 +401,7 @@ export default function BalanceConfirmationLanding() {
       {showTemplates && <TemplatesDrawer onClose={() => setShowTemplates(false)}/>}
       {showAuth && <AuthorisationDrawer clientId={clientId} onClose={() => setShowAuth(false)}/>}
       {showSendLog && <SendLogDrawer rid={rid} onClose={() => setShowSendLog(false)}/>}
+      {showResponses && <ResponsesDrawer rid={rid} onClose={() => setShowResponses(false)}/>}
     </div>
   );
 }
@@ -709,6 +714,118 @@ function SendLogDrawer({ rid, onClose }) {
               </tbody>
             </table>
           )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+
+/* ============================================================ */
+function ResponsesDrawer({ rid, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [filter, setFilter] = useState("all"); // all | confirmed | disputed
+  const [loading, setLoading] = useState(true);
+
+  const refresh = () => {
+    setLoading(true);
+    const q = filter === "all" ? "" : `?decision=${filter}`;
+    http.get(`/balance-confirmation/runs/${rid}/responses${q}`)
+      .then(({ data }) => setRows(data?.rows || []))
+      .finally(() => setLoading(false));
+  };
+  useEffect(refresh, [rid, filter]);
+
+  const downloadAttachment = async (response_id, filename) => {
+    try {
+      const res = await http.get(`/balance-confirmation/runs/${rid}/responses/${response_id}/attachment`, { responseType: "blob" });
+      const a = document.createElement("a");
+      a.href = window.URL.createObjectURL(new Blob([res.data]));
+      a.download = filename || "recipient_statement";
+      document.body.appendChild(a); a.click(); a.remove();
+    } catch {
+      toast.error("No attachment on this response");
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} data-testid="bc-responses-backdrop"/>
+      <div className="fixed top-0 right-0 h-screen w-[min(95vw,920px)] bg-white shadow-2xl z-50 flex flex-col" data-testid="bc-responses-drawer">
+        <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-gray-500">Recipient Responses</div>
+            <h2 className="text-lg font-semibold mt-1">Confirmations Received</h2>
+            <div className="text-xs text-gray-500 mt-0.5">Submissions captured via the public /confirm/&lt;token&gt; landing page.</div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <select value={filter} onChange={e => setFilter(e.target.value)} className="text-xs px-2 py-1.5 border border-gray-300 rounded-sm" data-testid="bc-responses-filter">
+              <option value="all">All ({rows.length})</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="disputed">Disputed</option>
+            </select>
+            <button onClick={refresh} className="text-xs px-2.5 py-1.5 border border-gray-300 rounded-sm hover:bg-gray-50">Refresh</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="bc-responses-close">×</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto">
+          {loading ? <div className="p-5 text-sm text-gray-500">Loading…</div> :
+            rows.length === 0 ? (
+              <div className="p-10 text-center">
+                <div className="text-3xl mb-3">📬</div>
+                <div className="text-sm text-gray-600 font-medium">No responses yet</div>
+                <div className="text-xs text-gray-500 mt-1">Recipients haven't submitted any confirmations from the public link yet.</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {rows.map(r => (
+                  <div key={r.response_id} className="p-4 hover:bg-gray-50">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className={`text-[10px] uppercase font-mono px-1.5 py-0.5 border rounded-sm ${r.decision === "confirmed" ? "bg-emerald-700 text-white border-emerald-800" : "bg-amber-200 text-amber-900 border-amber-300"}`}>{r.decision}</span>
+                          <span className="font-semibold text-sm">{r.ledger_name}</span>
+                        </div>
+                        <div className="text-xs text-gray-600 font-mono">
+                          By <strong>{r.responder_name || "—"}</strong>
+                          {r.responder_email && <> · {r.responder_email}</>}
+                          {" · "}{(r.submitted_at || "").slice(0, 19).replace("T", " ")}
+                        </div>
+                        <div className="text-xs mt-2 grid grid-cols-2 gap-2">
+                          <div className="bg-gray-50 px-2.5 py-1.5 border border-gray-200">
+                            <div className="text-[10px] uppercase tracking-wider text-gray-500 font-mono">Our Books</div>
+                            <div className="font-semibold">₹ {Number(Math.abs(r.our_balance || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })} {(r.our_dr_cr || "").toUpperCase()}</div>
+                          </div>
+                          {r.decision === "disputed" && r.their_balance != null && (
+                            <div className={`px-2.5 py-1.5 border ${Math.abs(r.their_balance - Math.abs(r.our_balance || 0)) > 1 ? "bg-amber-50 border-amber-300" : "bg-emerald-50 border-emerald-300"}`}>
+                              <div className="text-[10px] uppercase tracking-wider text-gray-500 font-mono">Their Books</div>
+                              <div className="font-semibold">₹ {Number(r.their_balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })} {r.their_dr_cr}</div>
+                            </div>
+                          )}
+                        </div>
+                        {r.reason && (
+                          <div className="text-xs text-gray-700 mt-2 p-2 bg-amber-50 border border-amber-200 rounded-sm">
+                            <span className="font-semibold">Reason:</span> {r.reason}
+                          </div>
+                        )}
+                        {r.note && r.decision === "confirmed" && (
+                          <div className="text-xs text-gray-700 mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded-sm">
+                            <span className="font-semibold">Note:</span> {r.note}
+                          </div>
+                        )}
+                      </div>
+                      {r.uploaded_filename && (
+                        <button onClick={() => downloadAttachment(r.response_id, r.uploaded_filename)}
+                          className="text-xs px-2.5 py-1.5 border border-emerald-300 text-emerald-800 rounded-sm hover:bg-emerald-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+                          data-testid={`bc-response-${r.response_id}-attachment`}>
+                          <Download size={11}/> {r.uploaded_filename}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
         </div>
       </div>
     </>

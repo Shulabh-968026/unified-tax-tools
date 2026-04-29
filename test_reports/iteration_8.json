@@ -1,0 +1,52 @@
+{
+  "summary": "Balance Confirmation Phase 4 (public recipient response loop) — backend 15/15 GREEN, frontend public /confirm/:token + auditor Responses drawer fully verified. Tested: public GET (no-auth ctx + 404 on bad token), public POST /confirm (status flips to terminal 'confirmed', send-log row written, idempotent re-submission), terminal-status guard (pixel hit on confirmed token does NOT downgrade to 'opened'), public POST /dispute (multipart with file, empty-reason 400, oversize 8MB+ 413, status flips to 'disputed', file persisted as base64), auditor list_responses (auth-gated 401 without cookie, decision filter confirmed/disputed, ledger_name+our_balance+our_dr_cr enrichment, no _id leak, no file bytes leak), auditor download_response_attachment (auth-gated 401, content-type=application/pdf, 404 when no attachment), DELETE run cascade drops bc_responses (verified via direct DB count). Frontend: /confirm/:token mounts WITHOUT cookie/auth, Yes button renders confirm-form, No button renders dispute-form (with file input + dr/cr select), empty-reason on submit shows error, revisit a confirmed token jumps straight to thankyou-screen, invalid token shows 'Link Invalid or Expired' friendly screen (NOT blank). Auditor 'Responses' button next to Send Log opens the drawer (data-testid=bc-responses-drawer), filter dropdown (all/confirmed/disputed) works, confirmed response card shows party name, decision chip, responder identity, timestamp, our-books amount with Cr label, and note text. Found and fixed one real backend bug: /public/confirmation/{token}/dispute multipart fields (responder_name, responder_email, their_balance, their_dr_cr, reason) were declared without Form(...) so FastAPI was reading them as query params — every dispute submission failed with 400 'Please provide a reason' even when reason was set. Fix: added `from fastapi import Form` and wrapped each non-file form field with `= Form(...)`. After fix all 15 backend tests pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/balance-confirmation/public/confirmation/{token}/dispute", "issue": "FIXED by testing agent: Form(...) annotations were missing on responder_name/responder_email/their_balance/their_dr_cr/reason. FastAPI without Form(...) treats those as query params, so multipart submissions silently lost the body. After fix: 200 OK with attachment correctly persisted to bc_responses.uploaded_content_b64. Main agent should keep this Form(...) pattern for any future multipart endpoints."},
+      {"endpoint": "GET /api/balance-confirmation/public/confirmation/{token}", "issue": "When LEDGERS doc has dr_cr stored separately on it, the public ctx ignores it and recomputes from sign(closing_balance). For trade_payables stored as positive Cr the recomputation still yields 'Cr' so output is correct, but the auditor enrichment elsewhere (list_responses) returns L['dr_cr'] directly — minor inconsistency between the two read paths. Not a defect for Phase 4 acceptance."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Auditor Workbench — Responses drawer", "issues": ["Drawer is min(95vw, 920px); on the 1920px viewport it fully overlays the right half of the workbench including the entire right-side toolbar. The Send Log drawer has the same w=920px footprint. Consider 720px (matches Send Log content density of ~3-4 columns) or making it modal-overlay+ESC instead of side-sheet."]},
+      {"screen": "ConfirmPage error state ('Link Invalid or Expired')", "issues": ["Subtitle uses error.message verbatim — when the load-fetch fails with the FastAPI 404 detail it shows 'This confirmation link is invalid or has expired.' (good), but if a transient backend error returns a different message it would surface here too. Wrap with a fallback: `{error.message?.includes('expired') ? error.message : 'This confirmation link is invalid or has expired.'}`."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_confirmation_phase4.py",
+    "/app/test_reports/pytest/iteration_8.xml"
+  ],
+  "action_items": [
+    "Acknowledge the Form(...) fix on /public/confirmation/{token}/dispute (controller.py imports + signature) — keep this pattern.",
+    "Optionally cap Responses drawer width at min(95vw, 720px) for layout parity with Send Log content density, or convert to centred modal."
+  ],
+  "critical_code_review_comments": [
+    "controller.py public_dispute: BEFORE FIX — Form(...) was missing so multipart fields silently dropped to defaults; FastAPI gave no warning. Pattern to enforce: any handler that takes UploadFile + scalars MUST annotate scalars with Form(default=...). Already corrected.",
+    "controller.py _record_response: replace_one with upsert=True keyed on response_token gives clean idempotency — re-submission overwrites the response doc but ledger.confirmation_status remains terminal. Good.",
+    "controller.py _record_response: 8MB cap enforced AFTER full file read into memory — for a 10MB upload we still buffer 10MB before raising 413. For a public unauthenticated endpoint this is a small DoS vector. Consider checking request.headers.get('content-length') early, OR streaming the read with a counter.",
+    "controller.py public_get_confirmation: never returns uploaded_content_b64 (projection excludes it), good defence — recipient browser only ever sees their own filename + size on revisit, never the bytes.",
+    "controller.py list_responses & download_response_attachment: both correctly call _auth() before any DB read — no information leak via 404-vs-401 ordering.",
+    "controller.py download_response_attachment: ext-based content-type fallback to application/octet-stream — safe. Filename on Content-Disposition is unsanitised; if a recipient sets a malicious filename it lands here. Consider quoting/normalising.",
+    "controller.py delete_run: bc_responses cascade via db.bc_responses.delete_many — verified empty after delete. Good.",
+    "ConfirmPage.jsx uses raw axios (NOT the http alias) — this is correct and intentional so no Authorization cookie is sent (App.js wraps the rest of the app in an interceptor). Comment in code makes intent explicit.",
+    "Landing.jsx ResponsesDrawer is co-located with Landing (now ~860 lines total). Carry-over recommendation from iteration_6/7: split into LedgerWorkbench / ResponsesDrawer / SendLogDrawer / TemplatesDrawer / AuthDrawer modules. Not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/modules/balance_confirmation/controller.py",
+    "/app/backend/tests/test_balance_confirmation_phase4.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 Phase 4 tests pass after Form(...) fix on /dispute)",
+    "frontend": "100% on Phase 4 deltas — public no-auth route, Yes/No choices, dispute form mount, empty-reason error, revisit-thankyou, invalid-token error screen, Responses drawer + filter + response card all wired"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260429_dev (admin user_qa_bot_fixed_01) — confirmed working. Public endpoints need NO auth — verified by using a separate requests.Session() with no cookie set.",
+  "seed_data_creation": "Pytest fixture creates+cleans up TEST_BC_phase4 / TEST_BC_phase4_cascade runs against SEED_CLIENT cli_7f0b86b1ab0b. Each test consumes a different ledger index (0/1/2/3) so confirm/dispute don't collide on the same response_token. UI smoke reused existing run 1710de57-49a7-4a71-a411-817e4d49736b (Phase 3 demo run with 1 pre-existing confirmed response on A.Arun Capital).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 4 complete & GREEN. Test file: /app/backend/tests/test_balance_confirmation_phase4.py (15 tests). The Form(...) fix on dispute is in controller.py line ~1110 — preserve. For Phase 5 (Confirmation Summary Report exports) and Phase 6 (full side-by-side recon UI), build on top of bc_responses collection — schema is locked: response_id/run_id/ledger_id/response_token/decision/responder_name/responder_email/their_balance/their_dr_cr/reason/note/responder_ip/user_agent/submitted_at/uploaded_filename/uploaded_size/uploaded_content_b64. The public POST /confirm signature is JSON (PublicConfirmRequest pydantic), but /dispute is multipart — DO NOT change that, the file upload requires it. Two potential follow-ups for E1: (a) early Content-Length pre-check on /dispute to avoid buffering >8MB, (b) drawer width parity at 720px.",
+  "rca of the issue": "Root cause of the Form(...) bug: FastAPI, by default, infers parameter source from the type and the rest of the function signature. When an endpoint has `UploadFile = File(...)` plus other scalars without explicit annotation, the scalars are inferred as QUERY parameters, NOT as form fields — even though the request was multipart. Mitigation: always explicitly wrap non-file scalars in multipart endpoints with `= Form(default=...)`. Reproduction (pre-fix): `curl -X POST .../dispute -F reason=hi` → 400 'Please provide a reason explaining the difference.' Reproduction (post-fix): same curl → 200 OK with response_id."
+}

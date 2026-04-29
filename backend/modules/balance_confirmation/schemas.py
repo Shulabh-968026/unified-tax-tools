@@ -1,7 +1,7 @@
 """Pydantic schemas for the Balance Confirmation module."""
 from __future__ import annotations
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -98,3 +98,34 @@ class AuthorizationOut(BaseModel):
     size: int
     uploaded_at: str
     uploaded_by_name: str = ""
+
+
+# ============================ Phase 4 — Recipient response =================
+class PublicConfirmationCtx(BaseModel):
+    """Read-only context shown on /confirm/{token} (no auth)."""
+    party_name: str
+    contact_name: str = ""
+    closing_balance: float = 0.0
+    dr_cr: str = ""
+    as_at_date: str = ""
+    fy: str = ""
+    client_name: str = ""
+    client_gstin: str = ""
+    auditor_firm: str = ""
+    auditor_name: str = ""
+    confirmation_status: str = "not_sent"
+    submitted_response: Optional[Dict[str, Any]] = None
+
+
+class PublicConfirmRequest(BaseModel):
+    responder_name: str = ""
+    responder_email: str = ""
+    note: str = ""
+
+
+class PublicDisputeRequest(BaseModel):
+    responder_name: str = ""
+    responder_email: str = ""
+    their_balance: Optional[float] = None
+    their_dr_cr: str = ""
+    reason: str

@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Cookie, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from svix.webhooks import Webhook, WebhookVerificationError
@@ -28,6 +28,7 @@ from modules.balance_confirmation.exports import build_authorization_template_do
 from modules.balance_confirmation.schemas import (
     AuthorizationOut,
     LedgerPatch,
+    PublicConfirmRequest,
     RunCreate,
     RunOut,
     TemplateUpsert,
@@ -156,6 +157,7 @@ async def delete_run(
     await LEDGERS.delete_many({"run_id": rid})
     await BOOKS_RAW.delete_many({"run_id": rid})
     await SENDLOG.delete_many({"run_id": rid})
+    await db.bc_responses.delete_many({"run_id": rid})
     return {"deleted": True}
 
 
@@ -980,4 +982,230 @@ async def clear_send_log(
     await _auth(request, session_token, authorization)
     res = await SENDLOG.delete_many({"run_id": rid})
     return {"deleted": res.deleted_count}
+
+
+
+# ============================ Phase 4 — Recipient response loop ==============
+RESPONSES = db.bc_responses  # one doc per (token, latest submission)
+
+
+def _public_ctx_for_ledger(ledger: Dict[str, Any], run: Dict[str, Any],
+                           client: Dict[str, Any]) -> Dict[str, Any]:
+    closing = float(ledger.get("closing_balance") or 0.0)
+    dr_cr = "Dr" if closing < 0 else "Cr" if closing > 0 else ""
+    return {
+        "party_name":          ledger.get("name") or "",
+        "contact_name":        ledger.get("contact_name") or "",
+        "closing_balance":     round(abs(closing), 2),
+        "dr_cr":               dr_cr,
+        "as_at_date":          run.get("as_at_date") or "",
+        "fy":                  run.get("fy") or "",
+        "client_name":         client.get("name") or "",
+        "client_gstin":        client.get("gstin") or "",
+        "auditor_firm":        run.get("auditor_firm") or "MSS & Co.",
+        "auditor_name":        run.get("created_by_name") or "",
+        "confirmation_status": ledger.get("confirmation_status") or "not_sent",
+    }
+
+
+@router.get("/public/confirmation/{token}")
+async def public_get_confirmation(token: str):
+    """Public endpoint — no auth. Returns the context the recipient page renders."""
+    ledger = await LEDGERS.find_one({"response_token": token}, {"_id": 0})
+    if not ledger:
+        raise HTTPException(404, "This confirmation link is invalid or has expired.")
+    run = await RUNS.find_one({"id": ledger["run_id"]}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Confirmation request not found.")
+    client = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0}) or {}
+    ctx = _public_ctx_for_ledger(ledger, run, client)
+
+    # If a response already exists, surface it (read-only acknowledgement)
+    submitted = await RESPONSES.find_one(
+        {"response_token": token},
+        {"_id": 0, "uploaded_content_b64": 0},  # never echo file bytes
+    )
+    ctx["submitted_response"] = submitted
+    return ctx
+
+
+async def _record_response(*, ledger: Dict[str, Any], run: Dict[str, Any],
+                           decision: str, payload: Dict[str, Any],
+                           request: Request,
+                           uploaded: Optional[UploadFile] = None) -> Dict[str, Any]:
+    """Common writer for confirm + dispute — also flips ledger to terminal status."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc: Dict[str, Any] = {
+        "response_id": str(uuid.uuid4()),
+        "run_id": run["id"],
+        "ledger_id": ledger["ledger_id"],
+        "response_token": ledger["response_token"],
+        "decision": decision,                   # "confirmed" | "disputed"
+        "responder_name":  (payload.get("responder_name") or "").strip(),
+        "responder_email": (payload.get("responder_email") or "").strip(),
+        "their_balance":   payload.get("their_balance"),
+        "their_dr_cr":     (payload.get("their_dr_cr") or "").strip(),
+        "reason":          (payload.get("reason") or "").strip(),
+        "note":            (payload.get("note") or "").strip(),
+        "responder_ip":    (request.client.host if request.client else "") or
+                           request.headers.get("x-forwarded-for", ""),
+        "user_agent":      request.headers.get("user-agent", "")[:300],
+        "submitted_at":    now_iso,
+    }
+
+    # Optional uploaded ledger statement (disputed only)
+    if uploaded is not None:
+        content = await uploaded.read()
+        # Cap at 8MB to keep our Mongo doc sane (Resend attachment cap is 40MB
+        # but we're storing in BSON which is hard-limited at 16MB).
+        if len(content) > 8 * 1024 * 1024:
+            raise HTTPException(413, "Attachment too large (max 8MB)")
+        if content:
+            doc["uploaded_filename"] = uploaded.filename or "attachment"
+            doc["uploaded_size"] = len(content)
+            doc["uploaded_content_b64"] = base64.b64encode(content).decode("ascii")
+
+    await RESPONSES.replace_one(
+        {"response_token": ledger["response_token"]}, doc, upsert=True,
+    )
+
+    # Flip ledger status — confirmed/disputed are TERMINAL (can_transition guard)
+    set_ops: Dict[str, Any] = {
+        "confirmation_status": decision,
+        "responded_at":        now_iso,
+        "last_modified":       now_iso,
+    }
+    await LEDGERS.update_one(
+        {"ledger_id": ledger["ledger_id"]}, {"$set": set_ops},
+    )
+
+    # Audit trail
+    await SENDLOG.insert_one(_send_log_doc(
+        run_id=run["id"], ledger_id=ledger["ledger_id"],
+        kind="response", status=decision,
+        to_email=ledger.get("email", ""),
+        subject=f"Recipient {decision} via /confirm",
+    ))
+    # Don't echo file bytes back
+    out = {k: v for k, v in doc.items() if k != "uploaded_content_b64"}
+    return out
+
+
+@router.post("/public/confirmation/{token}/confirm")
+async def public_confirm(token: str, payload: PublicConfirmRequest, request: Request):
+    """Public — recipient confirms the balance shown."""
+    ledger = await LEDGERS.find_one({"response_token": token}, {"_id": 0})
+    if not ledger:
+        raise HTTPException(404, "Invalid confirmation link.")
+    run = await RUNS.find_one({"id": ledger["run_id"]}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Confirmation request not found.")
+    return await _record_response(
+        ledger=ledger, run=run,
+        decision="confirmed", payload=payload.model_dump(),
+        request=request,
+    )
+
+
+@router.post("/public/confirmation/{token}/dispute")
+async def public_dispute(
+    token: str,
+    request: Request,
+    responder_name: str = Form(""),
+    responder_email: str = Form(""),
+    their_balance: Optional[float] = Form(default=None),
+    their_dr_cr: str = Form(""),
+    reason: str = Form(""),
+    file: Optional[UploadFile] = File(default=None),
+):
+    """Public — recipient disagrees and (optionally) attaches their statement.
+    Multipart endpoint so the file uploads land natively from the browser."""
+    if not (reason or "").strip():
+        raise HTTPException(400, "Please provide a reason explaining the difference.")
+    ledger = await LEDGERS.find_one({"response_token": token}, {"_id": 0})
+    if not ledger:
+        raise HTTPException(404, "Invalid confirmation link.")
+    run = await RUNS.find_one({"id": ledger["run_id"]}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Confirmation request not found.")
+    return await _record_response(
+        ledger=ledger, run=run,
+        decision="disputed",
+        payload={
+            "responder_name": responder_name,
+            "responder_email": responder_email,
+            "their_balance": their_balance,
+            "their_dr_cr": their_dr_cr,
+            "reason": reason,
+        },
+        request=request,
+        uploaded=file,
+    )
+
+
+# ============================ Auditor-side responses view ===================
+@router.get("/runs/{rid}/responses")
+async def list_responses(
+    rid: str,
+    request: Request,
+    decision: Optional[str] = None,  # confirmed | disputed
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Run not found")
+    q: Dict[str, Any] = {"run_id": rid}
+    if decision:
+        q["decision"] = decision
+    rows = await RESPONSES.find(
+        q, {"_id": 0, "uploaded_content_b64": 0}
+    ).sort("submitted_at", -1).to_list(2000)
+    # Enrich each response with the ledger name + balance for easy display
+    if rows:
+        ledger_ids = [r["ledger_id"] for r in rows]
+        ledgers = {
+            L["ledger_id"]: L for L in await LEDGERS.find(
+                {"ledger_id": {"$in": ledger_ids}},
+                {"_id": 0, "ledger_id": 1, "name": 1, "closing_balance": 1, "dr_cr": 1, "email": 1},
+            ).to_list(5000)
+        }
+        for r in rows:
+            L = ledgers.get(r["ledger_id"]) or {}
+            r["ledger_name"] = L.get("name", "")
+            r["our_balance"] = L.get("closing_balance", 0.0)
+            r["our_dr_cr"] = L.get("dr_cr", "")
+    return {"rows": rows, "count": len(rows)}
+
+
+@router.get("/runs/{rid}/responses/{response_id}/attachment")
+async def download_response_attachment(
+    rid: str, response_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Download the recipient's uploaded statement (auth-gated)."""
+    await _auth(request, session_token, authorization)
+    doc = await RESPONSES.find_one(
+        {"run_id": rid, "response_id": response_id}, {"_id": 0},
+    )
+    if not doc or not doc.get("uploaded_content_b64"):
+        raise HTTPException(404, "No attachment on this response")
+    content = base64.b64decode(doc["uploaded_content_b64"])
+    fname = doc.get("uploaded_filename") or "recipient_statement"
+    # Pick a content-type by extension (best-effort)
+    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    media = {
+        "pdf":  "application/pdf",
+        "csv":  "text/csv",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls":  "application/vnd.ms-excel",
+        "png":  "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    }.get(ext, "application/octet-stream")
+    return StreamingResponse(
+        iter([content]),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 

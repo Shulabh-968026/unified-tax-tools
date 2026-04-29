@@ -16,6 +16,7 @@ import Msme43bhLanding from "@/pages/msme43bh/Landing";
 import Msme43bhSessionDashboard from "@/pages/msme43bh/SessionDashboard";
 import GstReconLanding from "@/pages/gst_recon/Landing";
 import BcLanding from "@/pages/balance_confirmation/Landing";
+import BcConfirmPage from "@/pages/balance_confirmation/ConfirmPage";
 
 function AppRouter() {
   const location = useLocation();
@@ -27,6 +28,7 @@ function AppRouter() {
     <Routes>
       <Route path="/" element={<Navigate to="/dashboard" replace/>}/>
       <Route path="/login" element={<Login/>}/>
+      <Route path="/confirm/:token" element={<BcConfirmPage/>}/>
       <Route path="/dashboard" element={<ProtectedRoute><ClientList/></ProtectedRoute>}/>
       <Route path="/dashboard/admin" element={<ProtectedRoute><AdminUsers/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId" element={<ProtectedRoute><ClientUtilities/></ProtectedRoute>}/>
