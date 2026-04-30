@@ -464,6 +464,63 @@ async def set_ledger_block(
     return {"ok": True, "block_label": block, "status": "confirmed"}
 
 
+@router.post("/runs/{rid}/auto-classify-pending")
+async def auto_classify_pending(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Run heuristic auto-classification across every ledger in this run that
+    has an empty block_label. Idempotent — already-classified ledgers (whether
+    auto_suggested or confirmed) are left untouched, so any auditor overrides
+    are preserved. Used as a one-shot backfill for runs ingested before the
+    auto-classifier existed, and as a manual 'apply heuristic' trigger."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+
+    # Pre-fetch {block_label → smallest active row_id}
+    default_legal_row: Dict[str, int] = {}
+    async for r in LEGAL_MASTER_COLLECTION.find(
+        {"is_active": True}, {"_id": 0, "block_label": 1, "row_id": 1},
+    ).sort([("block_label", 1), ("sort_order", 1), ("row_id", 1)]):
+        bl = r.get("block_label") or ""
+        if bl and bl not in default_legal_row:
+            default_legal_row[bl] = int(r.get("row_id") or 0)
+
+    pending = await LEDGERS.find(
+        {"run_id": rid, "$or": [
+            {"block_label": ""}, {"block_label": {"$exists": False}}, {"block_label": None},
+        ]}, {"_id": 0},
+    ).to_list(5000)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    classified = 0
+    for L in pending:
+        suggested = auto_classify_block(L.get("name", ""), L.get("parent_group", ""))
+        if not suggested:
+            continue
+        await LEDGERS.update_one(
+            {"fa_ledger_id": L["fa_ledger_id"], "run_id": rid},
+            {"$set": {
+                "block_label":            suggested,
+                "legal_master_row_id":   default_legal_row.get(suggested),
+                "classification_status":  "auto_suggested",
+                "last_modified":          now_iso,
+            }},
+        )
+        await ADDITIONS.update_many(
+            {"run_id": rid, "fa_ledger_id": L["fa_ledger_id"]},
+            {"$set": {"block_label": suggested}},
+        )
+        classified += 1
+
+    summary = await _refresh_run_summary(rid)
+    return {"ok": True, "classified": classified,
+            "still_pending": len(pending) - classified, "summary": summary}
+
+
 # ============================ Health probe (Phase 1A) =====================
 class HealthOut(BaseModel):
     ok: bool

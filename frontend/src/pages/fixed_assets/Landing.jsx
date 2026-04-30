@@ -51,6 +51,27 @@ export default function FixedAssetsLanding() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rid]);
 
+  // Backfill auto-classification for legacy runs that were ingested before
+  // the auto-classifier existed. Triggers exactly once per run when we see
+  // ledgers loaded but ALL have empty block_label.
+  const backfilledRef = useRef(new Set());
+  useEffect(() => {
+    if (!rid || !ledgers.length) return;
+    if (backfilledRef.current.has(rid)) return;
+    const allEmpty = ledgers.every(L => !L.block_label);
+    if (!allEmpty) return;
+    backfilledRef.current.add(rid);
+    http.post(`/fixed-assets/runs/${rid}/auto-classify-pending`)
+      .then(({ data }) => {
+        if (data?.classified > 0) {
+          toast.success(`Auto-classified ${data.classified} of ${ledgers.length} ledgers — review and override as needed.`);
+          refreshRun();
+          refreshLedgers();
+        }
+      })
+      .catch(() => {});
+  }, [rid, ledgers]);
+
   const refreshRun = async () => {
     const { data } = await http.get(`/fixed-assets/runs/${rid}`);
     setRun(data);
