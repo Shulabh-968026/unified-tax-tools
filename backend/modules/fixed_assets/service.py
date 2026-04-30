@@ -137,17 +137,17 @@ def fa_ledgers(books: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Asset ledgers under FA groups, MINUS depreciation ledgers (per spec)."""
     fa_groups = fa_group_names(books)
     out: List[Dict[str, Any]] = []
-    for l in books.get("ledgers") or []:
-        if l.get("parentGroup") not in fa_groups:
+    for led in books.get("ledgers") or []:
+        if led.get("parentGroup") not in fa_groups:
             continue
-        if is_depreciation_ledger(l.get("name") or ""):
+        if is_depreciation_ledger(led.get("name") or ""):
             continue
         out.append({
-            "name":              l["name"],
-            "parent_group":      l.get("parentGroup") or "",
-            "opening_balance":   float(l.get("openingBalance") or 0),
-            "closing_balance":   float(l.get("closingBalance") or 0),
-            "is_gst_applicable": str(l.get("isGSTApplicable") or "").lower() in ("yes", "true", "1"),
+            "name":              led["name"],
+            "parent_group":      led.get("parentGroup") or "",
+            "opening_balance":   float(led.get("openingBalance") or 0),
+            "closing_balance":   float(led.get("closingBalance") or 0),
+            "is_gst_applicable": str(led.get("isGSTApplicable") or "").lower() in ("yes", "true", "1"),
         })
     return out
 

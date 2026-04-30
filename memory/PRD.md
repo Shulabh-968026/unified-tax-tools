@@ -1,5 +1,30 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Phase 1F + 1G live (2026-04-30)
+- [x] **Tabbed in-run UX** — Ledgers / Additions / Credits / Compute & Export tabs at `/dashboard/clients/:cid/utilities/fixed-assets/runs/:rid`. Tab headers show live counts.
+- [x] **Additions Register tab** (`AdditionsTab.jsx`) — group-by-block toggle, free-text search, every row inline-editable: Invoice Date, PTU Date with **`[📅 Copy from Acc Date]`** and **`[📅 Copy from Inv Date]`** quick-fill buttons (per spec); 5 adjustment columns (`Discount/Credits` −, `Other Exp` +, `ITC Reversed` −, `Interest Cap` +, `Forex` +) wired through to a live "Capitalised Cost" formula on the right. Half-rate badge auto-flips when PTU < 180 days from FY end.
+- [x] **Credits tab** (`CreditsTab.jsx`) — every credit entry classifiable inline as **Sale** (capture sale_value, sale_date, buyer_name with sensible defaults from the voucher) or **Discount** (transfers magnitude to the addition's adjustment column when computation runs). Reset button to undo.
+- [x] **Compute & Export tab** (`ComputeTab.jsx`):
+      • **Opening WDV table** — one row per active block (15 standard IT blocks); editable amount + free-form note (e.g. "carried from FY 2023-24 closing WDV (3CD AY24-25)"). Total row.
+      • **`Compute` button** → `POST /runs/{rid}/compute` returns rows + totals. UI renders the schedule with STCG u/s 50 highlighted in rose for any extinguished block.
+      • **`Download Excel` button** → `GET /runs/{rid}/export.xlsx`. 4-sheet workbook (Block Summary · Additions Register · Deletions Register · Workings) following the user's sample format.
+- [x] **Backend additions**:
+      • `compute.py` — pure functions: `adjusted_cost(addition)`, `compute_block(block_label, rate, opening_wdv, additions, deletions)` (handles full-rate vs half-rate pool with sale-allocation rules, Sec 50 STCG when block extinguished), `compute_run(...)` aggregator. 5/5 unit tests pass.
+      • `export.py` — openpyxl workbook builder with Block Summary mirroring the user's sample (10 columns: Block · Rate · Opening · Adds≥180 · Adds<180 · Sales · Total · Depn · STCG · Closing).
+      • New endpoints: `GET/POST /runs/{rid}/block-opening`, `GET /runs/{rid}/additions`, `PATCH /runs/{rid}/additions/{aid}` (auto-recomputes `is_more_than_180` when PTU edits), `GET /runs/{rid}/credits`, `POST /runs/{rid}/credits/{cid}/classify`, `POST /runs/{rid}/compute`, `GET /runs/{rid}/export.xlsx`.
+- [x] **End-to-end smoke test on Velav books** with manual Opening WDV (P&M 25L · Comp 1.5L · Furn 75K · Veh 4.5L):
+      ```
+      4 blocks active · Adds ≥180d ₹1.12Cr · Adds <180d ₹1.63Cr ·
+      Depreciation ₹33.7L · Closing WDV ₹2.73Cr · STCG nil
+      Excel size 18.6KB · Sheets [Block Summary, Additions Register, Deletions Register, Workings]
+      ```
+
+### Pending — same module
+- [ ] Phase 1D — `POST /runs/{rid}/ingest-prior-3cd` (parse `Form3cdDeprAllw[]` → opening WDV by rate; cross-validate against the manual Excel; expose `/exceptions` workflow)
+- [ ] Phase 1H — Multi-FY continuity ("Roll forward closing WDV" UI button when a prior FY run exists for the same client)
+- [ ] Drag-drop UX for moving Invoice Cost into adjustment columns (currently number-input fallback works)
+- [ ] Companies Act Schedule II depreciation engine (next phase per user request)
+
 ## Fixed Assets — Phase 1A/B/C/E live (2026-04-30)
 - [x] **Module skeleton** at `/app/backend/modules/fixed_assets/` (controller / schemas / service / legal_master) + router prefix `/api/fixed-assets/*` wired in `server.py`
 - [x] **Legal master seeded** from shipped `data/it_depreciation_legal_master.xlsx` — 143 rows across 15 distinct `block_label`s (Buildings 5/10/40, Furniture 10, P&M 15/30/40, Vehicles 15/30/40/45, Computers 40, Renewable Energy 40, Ships 20, Intangibles 25). `seed_legal_master()` is idempotent; admin-only `/legal-master/reseed` for law-change refreshes.

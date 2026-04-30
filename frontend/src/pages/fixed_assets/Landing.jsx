@@ -8,9 +8,12 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen } from "lucide-react";
+import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
+import AdditionsTab from "@/pages/fixed_assets/AdditionsTab";
+import CreditsTab from "@/pages/fixed_assets/CreditsTab";
+import ComputeTab from "@/pages/fixed_assets/ComputeTab";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -31,6 +34,7 @@ export default function FixedAssetsLanding() {
   const [savingFor, setSavingFor] = useState(null); // ledger_id when saving
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all | unclassified | classified
+  const [tab, setTab] = useState("ledgers"); // ledgers | additions | credits | compute
   const dropRef = useRef(null);
 
   /* --- Initial loads --- */
@@ -268,7 +272,35 @@ export default function FixedAssetsLanding() {
           <Stat label="Credits to Review" value={summary.credits || 0} accent="rose"/>
         </div>
 
-        {/* Workbench */}
+        {/* Tab bar */}
+        <div className="flex items-center gap-1 mb-4 border-b border-[#E5E5E0]">
+          {[
+            ["ledgers",   "Ledgers",   BookOpen,    summary.total_ledgers || 0],
+            ["additions", "Additions", FileText,    summary.additions || 0],
+            ["credits",   "Credits",   ArrowDown,   summary.credits || 0],
+            ["compute",   "Compute & Export", Calculator, null],
+          ].map(([id, label, Icon, count]) => (
+            <button
+              key={id}
+              data-testid={`fa-tab-${id}`}
+              onClick={() => setTab(id)}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 text-[12.5px] -mb-px border-b-2 ${
+                tab === id ? "border-slate-900 text-slate-900 font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <Icon size={13}/>
+              {label}
+              {count !== null && (
+                <span className={`text-[10.5px] font-mono px-1.5 py-0.5 ${tab === id ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {tab === "ledgers" && (
+        /* Workbench */
         <div className="bg-white border border-[#E5E5E0]">
           <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#EDEDE7]">
             <div className="flex items-center gap-2">
@@ -343,6 +375,11 @@ export default function FixedAssetsLanding() {
             </div>
           )}
         </div>
+        )}
+
+        {tab === "additions" && <AdditionsTab rid={rid} blocks={blocks}/>}
+        {tab === "credits"   && <CreditsTab rid={rid}/>}
+        {tab === "compute"   && <ComputeTab rid={rid}/>}
       </div>
     </div>
   );

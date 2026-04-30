@@ -15,10 +15,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.fixed_assets.compute import compute_run
+from modules.fixed_assets.export import build_workbook
 from modules.fixed_assets.legal_master import (
     LEGAL_MASTER_COLLECTION,
     get_block_labels_active,
@@ -519,6 +522,275 @@ async def auto_classify_pending(
     summary = await _refresh_run_summary(rid)
     return {"ok": True, "classified": classified,
             "still_pending": len(pending) - classified, "summary": summary}
+
+
+# ============================ Additions ====================================
+def _recompute_180(addition: Dict[str, Any], fy_end: str) -> Dict[str, Any]:
+    from modules.fixed_assets.service import is_more_than_180
+    ptu = addition.get("put_to_use_date") or ""
+    full = is_more_than_180(ptu, fy_end)
+    addition["is_more_than_180"] = full
+    addition["half_rate"] = not full
+    return addition
+
+
+@router.get("/runs/{rid}/additions")
+async def list_additions(
+    rid: str,
+    request: Request,
+    block: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    q: Dict[str, Any] = {"run_id": rid}
+    if block:
+        q["block_label"] = block
+    rows = await ADDITIONS.find(q, {"_id": 0}) \
+        .sort([("block_label", 1), ("invoice_date", 1)]).to_list(5000)
+    led_map: Dict[str, str] = {}
+    async for L in LEDGERS.find({"run_id": rid}, {"_id": 0, "fa_ledger_id": 1, "name": 1}):
+        led_map[L["fa_ledger_id"]] = L.get("name", "")
+    for r in rows:
+        r["ledger_name"] = led_map.get(r.get("fa_ledger_id", ""), "")
+    return {"rows": rows}
+
+
+@router.patch("/runs/{rid}/additions/{aid}")
+async def patch_addition(
+    rid: str,
+    aid: str,
+    payload: FaAdditionPatch,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "fy_end": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    add = await ADDITIONS.find_one({"addition_id": aid, "run_id": rid}, {"_id": 0})
+    if not add:
+        raise HTTPException(404, "Addition not found")
+    fields = payload.model_dump(exclude_none=True)
+    for k, v in fields.items():
+        add[k] = v
+    if "put_to_use_date" in fields:
+        _recompute_180(add, run.get("fy_end") or "")
+    add.pop("_id", None)
+    await ADDITIONS.replace_one({"addition_id": aid, "run_id": rid}, add)
+    return {"ok": True, "row": add}
+
+
+# ============================ Credits =======================================
+@router.get("/runs/{rid}/credits")
+async def list_credits(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    rows = await CREDITS.find({"run_id": rid}, {"_id": 0}) \
+        .sort([("classification", 1), ("accounting_date", 1)]).to_list(5000)
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find({"run_id": rid},
+                                {"_id": 0, "fa_ledger_id": 1, "name": 1, "block_label": 1}):
+        led_map[L["fa_ledger_id"]] = L
+    for r in rows:
+        L = led_map.get(r.get("fa_ledger_id", ""), {})
+        r["ledger_name"] = L.get("name", "")
+        r["block_label"] = L.get("block_label", "")
+    return {"rows": rows}
+
+
+@router.post("/runs/{rid}/credits/{cid}/classify")
+async def classify_credit(
+    rid: str,
+    cid: str,
+    payload: FaCreditClassifyRequest,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    cr = await CREDITS.find_one({"credit_id": cid, "run_id": rid}, {"_id": 0})
+    if not cr:
+        raise HTTPException(404, "Credit not found")
+    classification = (payload.classification or "").strip().lower()
+    if classification not in ("sale", "discount", "pending"):
+        raise HTTPException(400, "classification must be 'sale', 'discount', or 'pending'")
+    if classification == "sale":
+        cr["classification"] = "sale"
+        cr["sale_value"] = float(payload.sale_value) if payload.sale_value is not None else cr.get("amount", 0.0)
+        cr["sale_date"] = (payload.sale_date or cr.get("sale_date") or "").strip()
+        cr["buyer_name"] = (payload.buyer_name or cr.get("buyer_name") or "").strip()
+    elif classification == "discount":
+        cr["classification"] = "discount"
+    else:
+        cr["classification"] = "pending"
+    cr.pop("_id", None)
+    await CREDITS.replace_one({"credit_id": cid, "run_id": rid}, cr)
+    return {"ok": True, "row": cr}
+
+
+# ============================ Block Opening WDV ============================
+class BlockOpeningUpsert(BaseModel):
+    block_label: str
+    opening_wdv: float
+    description: Optional[str] = ""
+
+
+@router.get("/runs/{rid}/block-opening")
+async def list_block_opening(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Return one row per active block_label; 0 when auditor has not yet
+    entered an opening WDV. Includes the canonical rate."""
+    await _auth(request, session_token, authorization)
+    blocks = await get_block_labels_active()
+    saved: Dict[str, Dict[str, Any]] = {}
+    async for b in BLOCK_OPEN.find({"run_id": rid}, {"_id": 0}):
+        saved[b["block_label"]] = b
+    rows = []
+    for b in blocks:
+        s = saved.get(b["block_label"], {})
+        rows.append({
+            "block_label": b["block_label"],
+            "rate":        b["rate"],
+            "opening_wdv": float(s.get("opening_wdv") or 0),
+            "source":      s.get("source", "manual"),
+            "description": s.get("description", ""),
+        })
+    return {"rows": rows}
+
+
+@router.post("/runs/{rid}/block-opening")
+async def upsert_block_opening(
+    rid: str,
+    payload: BlockOpeningUpsert,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    if not await LEGAL_MASTER_COLLECTION.find_one(
+        {"is_active": True, "block_label": payload.block_label}, {"_id": 0, "row_id": 1},
+    ):
+        raise HTTPException(400, f"Unknown block_label: {payload.block_label}")
+    await BLOCK_OPEN.update_one(
+        {"run_id": rid, "block_label": payload.block_label},
+        {"$set": {
+            "run_id":      rid,
+            "block_label": payload.block_label,
+            "opening_wdv": float(payload.opening_wdv or 0),
+            "source":      "manual",
+            "description": (payload.description or "").strip(),
+            "updated_at":  datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+# ============================ Compute & Export =============================
+async def _gather_compute_inputs(rid: str) -> Dict[str, Any]:
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    blocks = await get_block_labels_active()
+    blocks_meta = {b["block_label"]: b["rate"] for b in blocks}
+
+    openings = await BLOCK_OPEN.find({"run_id": rid}, {"_id": 0}).to_list(50)
+    additions = await ADDITIONS.find({"run_id": rid}, {"_id": 0}).to_list(10000)
+    credits = await CREDITS.find({"run_id": rid}, {"_id": 0}).to_list(5000)
+
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find({"run_id": rid},
+                                {"_id": 0, "fa_ledger_id": 1, "name": 1, "block_label": 1}):
+        led_map[L["fa_ledger_id"]] = L
+    for c in credits:
+        Ldoc = led_map.get(c.get("fa_ledger_id", ""), {})
+        c["block_label"] = Ldoc.get("block_label", "")
+        c["ledger_name"] = Ldoc.get("name", "")
+    for a in additions:
+        Ldoc = led_map.get(a.get("fa_ledger_id", ""), {})
+        a["ledger_name"] = Ldoc.get("name", "")
+
+    return {
+        "run":         run,
+        "blocks_meta": blocks_meta,
+        "openings":    openings,
+        "additions":   additions,
+        "credits":     credits,
+    }
+
+
+@router.post("/runs/{rid}/compute")
+async def compute_run_endpoint(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    inputs = await _gather_compute_inputs(rid)
+    rows, totals = compute_run(
+        openings=inputs["openings"],
+        blocks_meta=inputs["blocks_meta"],
+        additions=inputs["additions"],
+        deletions=inputs["credits"],
+    )
+    await RUNS.update_one({"id": rid}, {"$set": {
+        "status":           "computed",
+        "last_computed_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return {"ok": True, "rows": rows, "totals": totals}
+
+
+@router.get("/runs/{rid}/export.xlsx")
+async def export_xlsx(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    inputs = await _gather_compute_inputs(rid)
+    rows, totals = compute_run(
+        openings=inputs["openings"],
+        blocks_meta=inputs["blocks_meta"],
+        additions=inputs["additions"],
+        deletions=inputs["credits"],
+    )
+    client = await db.clients.find_one(
+        {"client_id": inputs["run"]["client_id"]}, {"_id": 0, "name": 1},
+    )
+    client_name = (client or {}).get("name") or inputs["run"].get("name") or ""
+    blob = build_workbook(
+        client_name=client_name,
+        fy_start=inputs["run"].get("fy_start") or "",
+        fy_end=inputs["run"].get("fy_end") or "",
+        rows=rows,
+        totals=totals,
+        additions=inputs["additions"],
+        deletions=inputs["credits"],
+    )
+    fy = inputs["run"].get("fy") or ""
+    safe = (client_name or "client").replace(" ", "_")[:40]
+    filename = f"IT_Depreciation_{safe}_FY{fy}.xlsx"
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ============================ Health probe (Phase 1A) =====================
