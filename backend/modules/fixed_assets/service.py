@@ -82,6 +82,31 @@ FIXED_ASSET_GROUP_ROOTS = (
 )
 
 
+# ============================ Auto-classification ===========================
+# Heuristic mapping rules — checked in order. The first matching rule wins.
+# Rules are intentionally narrow at the top (vehicles, computers) and
+# fall through to "P&M generic" only after all the specific keys are tried.
+_BLOCK_RULES: List[Tuple[str, re.Pattern]] = [
+    ("15% Block – Vehicles",          re.compile(r"\b(vehicles?|motor\s*cars?|cars?|trucks?|lorries?|two\s*wheelers?|bikes?|scooters?)\b", re.I)),
+    ("40% Block – Computers",         re.compile(r"\b(computers?|laptops?|desktops?|servers?|software|printers?|monitors?|cpus?)\b", re.I)),
+    ("10% Block – Furniture",         re.compile(r"\b(furnitures?|fittings?|chairs?|tables?|cabinets?|desks?|sofas?|benches?|cupboards?)\b", re.I)),
+    ("10% Block – Buildings",         re.compile(r"\b(buildings?|factory\s*sheds?|godowns?|office\s*premises?)\b", re.I)),
+    ("15% Block – Plant & Machinery", re.compile(r"\b(plants?|machineries|machinery|machines?|office\s*equipments?|electricals?|equipments?|boilers?|tools?|generators?|pumps?|spreading|sewing|lab\s*test|cutting|stitching|ironing)\b", re.I)),
+]
+
+
+def auto_classify_block(ledger_name: str, parent_group: str) -> str:
+    """Heuristic block classifier. Returns `block_label` or empty string.
+    Uses BOTH the ledger's name and its parent group so that ledgers like
+    `Plant & Machinery GST 18%` (under group `Plant and Machineries`) match
+    even when the rule keyword only appears in the parent group."""
+    haystack = f"{ledger_name or ''} {parent_group or ''}"
+    for block_label, pat in _BLOCK_RULES:
+        if pat.search(haystack):
+            return block_label
+    return ""
+
+
 def is_depreciation_ledger(name: str) -> bool:
     return any(p.search(name or "") for p in DEPRECIATION_LEDGER_PATTERNS)
 

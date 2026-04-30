@@ -33,6 +33,7 @@ from modules.fixed_assets.schemas import (
     FaRunOut,
 )
 from modules.fixed_assets.service import (
+    auto_classify_block,
     fa_ledgers,
     fa_voucher_lines,
     fy_dates,
@@ -195,8 +196,12 @@ async def delete_run(
 # ============================ Books Ingest =================================
 async def _refresh_run_summary(rid: str) -> Dict[str, Any]:
     led_total   = await LEDGERS.count_documents({"run_id": rid})
-    led_pending = await LEDGERS.count_documents({"run_id": rid, "classification_status": {"$in": ["pending", "auto_suggested"]}})
-    led_confirm = await LEDGERS.count_documents({"run_id": rid, "classification_status": "confirmed"})
+    # New simpler semantics: any non-empty block_label = classified;
+    # otherwise the row needs auditor attention.
+    led_pending = await LEDGERS.count_documents({"run_id": rid, "$or": [
+        {"block_label": ""}, {"block_label": {"$exists": False}}, {"block_label": None},
+    ]})
+    led_confirm = led_total - led_pending
     additions   = await ADDITIONS.count_documents({"run_id": rid})
     credits     = await CREDITS.count_documents({"run_id": rid})
     summary = {
@@ -261,9 +266,21 @@ async def ingest_books(
     now_iso = datetime.now(timezone.utc).isoformat()
     ledger_id_by_name: Dict[str, str] = {}
     led_docs: List[Dict[str, Any]] = []
+
+    # Pre-fetch a {block_label → smallest active row_id} map so each
+    # auto-classified ledger gets a sensible default legal-master entry.
+    default_legal_row: Dict[str, int] = {}
+    async for r in LEGAL_MASTER_COLLECTION.find(
+        {"is_active": True}, {"_id": 0, "block_label": 1, "row_id": 1},
+    ).sort([("block_label", 1), ("sort_order", 1), ("row_id", 1)]):
+        bl = r.get("block_label") or ""
+        if bl and bl not in default_legal_row:
+            default_legal_row[bl] = int(r.get("row_id") or 0)
+
     for L in detected:
         lid = str(uuid.uuid4())
         ledger_id_by_name[L["name"]] = lid
+        suggested = auto_classify_block(L["name"], L["parent_group"])
         led_docs.append({
             "fa_ledger_id":           lid,
             "run_id":                 rid,
@@ -273,9 +290,9 @@ async def ingest_books(
             "closing_balance":        L["closing_balance"],
             "addition_count":         0,
             "deletion_count":         0,
-            "block_label":            "",
-            "legal_master_row_id":   None,
-            "classification_status":  "pending",
+            "block_label":            suggested,
+            "legal_master_row_id":   default_legal_row.get(suggested) if suggested else None,
+            "classification_status":  "auto_suggested" if suggested else "pending",
             "classification_note":    "",
             "last_modified":          now_iso,
         })
@@ -288,7 +305,10 @@ async def ingest_books(
     add_rows = stage_addition_rows(lines, ledger_id_by_name, rid, fy_end)
     cr_rows = stage_credit_rows(lines, ledger_id_by_name, rid)
 
+    # Cascade the auto-suggested block_label down onto each addition
+    block_by_lid = {d["fa_ledger_id"]: d["block_label"] for d in led_docs}
     for d in add_rows:
+        d["block_label"] = block_by_lid.get(d["fa_ledger_id"], "")
         d["addition_id"] = str(uuid.uuid4())
     for d in cr_rows:
         d["credit_id"] = str(uuid.uuid4())
@@ -374,6 +394,74 @@ async def classify_ledger(
     )
     await _refresh_run_summary(rid)
     return {"ok": True}
+
+
+# Lightweight inline endpoint used by the workbench dropdown — needs only the
+# block_label; legal_master_row_id is auto-resolved server-side.
+class FaLedgerSetBlock(BaseModel):
+    block_label: str  # empty string ⇒ unset / pending
+
+
+@router.patch("/runs/{rid}/ledgers/{lid}/block")
+async def set_ledger_block(
+    rid: str,
+    lid: str,
+    payload: FaLedgerSetBlock,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    led = await LEDGERS.find_one({"fa_ledger_id": lid, "run_id": rid}, {"_id": 0})
+    if not led:
+        raise HTTPException(404, "Ledger not found")
+
+    block = (payload.block_label or "").strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not block:
+        # Clear classification
+        await LEDGERS.update_one(
+            {"fa_ledger_id": lid, "run_id": rid},
+            {"$set": {
+                "block_label": "",
+                "legal_master_row_id": None,
+                "classification_status": "pending",
+                "last_modified": now_iso,
+            }},
+        )
+        await ADDITIONS.update_many(
+            {"run_id": rid, "fa_ledger_id": lid},
+            {"$set": {"block_label": ""}},
+        )
+        await _refresh_run_summary(rid)
+        return {"ok": True, "block_label": "", "status": "pending"}
+
+    # Pick the smallest active row_id for this block_label as the default
+    # legal_master entry — the auditor can drill deeper later if needed.
+    default = await LEGAL_MASTER_COLLECTION.find_one(
+        {"is_active": True, "block_label": block},
+        {"_id": 0, "row_id": 1},
+        sort=[("sort_order", 1), ("row_id", 1)],
+    )
+    if not default:
+        raise HTTPException(400, f"Unknown or inactive block_label: {block}")
+
+    await LEDGERS.update_one(
+        {"fa_ledger_id": lid, "run_id": rid},
+        {"$set": {
+            "block_label": block,
+            "legal_master_row_id": int(default["row_id"]),
+            "classification_status": "confirmed",
+            "last_modified": now_iso,
+        }},
+    )
+    await ADDITIONS.update_many(
+        {"run_id": rid, "fa_ledger_id": lid},
+        {"$set": {"block_label": block}},
+    )
+    await _refresh_run_summary(rid)
+    return {"ok": True, "block_label": block, "status": "confirmed"}
 
 
 # ============================ Health probe (Phase 1A) =====================
