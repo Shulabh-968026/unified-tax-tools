@@ -1,5 +1,42 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Phase 1.5: OCR-powered invoice attachment (2026-04-30 PM-5)
+
+**Single biggest UX win on the whole module.** Auditor uploads a PDF — single tax invoice OR a combined ledger + N invoices PDF — and the system:
+1. Calls Gemini 2.5-flash via the Emergent LLM key (no auditor key chase) to **classify every page** AND **extract structured invoice data per chunk** in a single round-trip.
+2. **Slices the source PDF** into per-chunk PDFs (`pypdf`), preserving the exact pages of each invoice for audit evidence.
+3. **3-pass auto-matches** each chunk to an addition row: (a) exact normalised invoice number, (b) GSTIN+total ± ₹1 / 0.5%, (c) fuzzy invoice number with party-name fuzzy ≥80.
+4. Auditor reviews a Split-Preview modal — confirm/change target row per chunk, tick "Overwrite Description with extracted asset line", optionally skip chunks — then commits.
+
+### Backend
+- **New module** `/app/backend/modules/fixed_assets/invoice_ocr.py` — `gemini_extract` (single Gemini call with `LlmChat + FileContentWithMimeType`, temperature 0.1, schema-constrained prompt + code-fence-stripping defence) → `slice_pdf` (per-chunk via pypdf, page_range clamped to [1..n]) → `match_invoice_to_addition` (3-pass scoring; skips merged children + discount-credit pseudo-rows) → `split_extract_and_match` orchestrator that returns chunks with their gzipped+base64 PDFs ready to persist.
+- **New endpoints** in `controller.py`:
+  - `POST /runs/{rid}/upload-invoices` — multipart, .pdf-only + magic-byte (`%PDF`) check + 25 MB cap. Stashes chunks (with their gzipped PDFs) into an in-memory `_PENDING_UPLOADS` dict keyed by upload_id (TTL 1h, GC on every new upload). Returns a thin preview (drops the heavy `pdf_b64` blobs).
+  - `POST /runs/{rid}/apply-invoice-uploads` — auditor confirmation step. `replace_one(upsert=True)` semantics on `(run_id, addition_id)` so re-applying replaces (never duplicates) the attachment. `apply_description=true` overwrites the row's description AND flips `reviewed=true`.
+  - `GET /runs/{rid}/additions/{aid}/invoice` — streams the gzip-decompressed PDF inline, with `re.sub("[^A-Za-z0-9._-]+","_",...)` filename sanitiser to defend against header injection.
+  - `DELETE /runs/{rid}/additions/{aid}/invoice` — detach. **Does NOT** touch the row's description (regression-tested).
+  - `GET /runs/{rid}/invoice-attachments` — thin list (no PDF bytes, content_b64 explicitly projected out).
+- **New collection** `fa_invoice_attachments` — `{run_id, addition_id, filename, page_range, pdf_size, content_b64 (gzip+base64), ocr_extraction, uploaded_at}`. Cascade-deleted on run delete.
+- **Dependencies** — `pypdf==6.10.2` added to `requirements.txt`. `emergentintegrations` already installed.
+
+### Frontend
+- **New file** `pages/fixed_assets/additions/InvoiceOcrModal.jsx` — `InvoiceUploadDropZone` (drag-drop + file picker, dashed border that highlights on dragOver, 25 MB client-side guard), `InvoiceUploadPreviewModal` (one card per chunk: extracted metadata grid + asset-description preview + "Attach to addition row" dropdown sorted with the auto-matched row at top with ★, "Overwrite Description" checkbox, "Skip this chunk" toggle), `RowAttachmentIcon` (paperclip + delete X next to the row's Description textarea, opens PDF in new tab on click).
+- **AdditionsTab.jsx** — wires the dropzone above the ProgressStrip, parallel-fetches `/invoice-attachments` alongside the additions list, passes `attachments[a.addition_id]` into each AdditionRow, opens the preview modal on successful upload, refreshes everything on apply.
+- **AdditionRow.jsx** — paperclip + detach X mounted in the description cell (only renders when an attachment exists; doesn't disturb the existing auto-grow textarea).
+
+### End-to-end on the user's actual sample (Velav Garments — 4-page combined PDF)
+- ✅ Page 1 classified `ledger_extract`, pages 2-4 classified as `tax_invoice_first_page`
+- ✅ All 3 invoice numbers extracted character-perfect: `TN24-25-SIM-23`, `NA/1596/24-25`, `TN24-25-SIM-314`
+- ✅ Asset descriptions audit-grade: e.g. `"PEGASUS - M952-52H-2X4/D222 2 NEEDLE 4 THREAD OVERLOCK MACHINE (6 units)"`
+- ✅ 1 chunk auto-matched (party_plus_total fuzzy, score 90); other 2 surface in the modal for manual selection.
+- ✅ Per-chunk PDF stored as 1-page slice (~300-600 KB each, gzipped further in DB).
+- ✅ `download_invoice_attachment` returns valid PDF (`%PDF` magic preserved).
+
+### Testing (iteration_11.json)
+- **Backend pytest** — **12/12 GREEN** in 81 seconds (incl. 2 real Gemini calls). New file `/app/backend/tests/test_invoice_ocr_phase15.py`. Coverage: shape, auth, .pdf-only, magic-byte, 25MB cap, 3-invoice detection, ledger page detection, ≥1 auto-match, repeat-upload-fresh-id, apply-without-desc, apply-with-desc-overwrite, replace-not-duplicate, download (Content-Type + body), delete-preserves-description, second-delete idempotent, unknown-upload_id 404, list-thin-payload, run-delete cascade.
+- **Code review (12/12 points GREEN)** — temperature/JSON defence, slice_pdf clamping, matcher skip rules, magic-byte check, in-memory cache GC (with single-worker note), upsert replace semantics, description guard, delete-doesn't-touch-row, header-injection defence, thin payload projection, cascade cleanup, gzip+base64 serialisation safety.
+- **Frontend** — main agent screenshot-verified the dropzone, modal, and paperclip icon; testing agent's automated harness deferred to manual confirmation due to a tab-selector quirk (FA tabs already have `data-testid="fa-tab-*"` — false alarm).
+
 ## Fixed Assets — Additions tab refactor + Excel round-trip + power features (2026-04-30 PM-4)
 **The 640-line `AdditionsTab.jsx` monolith has been split into a slim ~370-line orchestrator + 9 focused sub-components under `pages/fixed_assets/additions/`.** Three user-asked features and five additional power-features land at the same time. Backend 16/16 GREEN, Frontend 8/8 GREEN (`/app/test_reports/iteration_10.json`).
 
