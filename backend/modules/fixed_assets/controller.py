@@ -881,9 +881,11 @@ async def upload_invoices(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Accept an invoice PDF (single, or combined ledger + multiple invoices),
-    run the Gemini splitter+extractor, match each chunk to an addition row,
-    and return a preview the auditor can review before committing."""
+    """Accept an invoice PDF (single, or combined ledger + multiple invoices) and
+    kick off the Gemini splitter+extractor in the background. Returns immediately
+    with an upload_id; the client polls GET /upload-status/{upload_id} every 2s
+    until status='done', then opens the preview modal."""
+    import asyncio
     await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
@@ -905,69 +907,139 @@ async def upload_invoices(
          "source": 1, "description": 1, "particulars": 1,
          "block_label": 1, "voucher_no": 1, "ledger_name": 1},
     ).to_list(20000)
-    # Cascade ledger_name onto each addition (UI display)
     led_map: Dict[str, str] = {}
     async for L in LEDGERS.find({"run_id": rid}, {"_id": 0, "fa_ledger_id": 1, "name": 1}):
         led_map[L["fa_ledger_id"]] = L.get("name", "")
     for a in additions:
         a["ledger_name"] = a.get("ledger_name") or ""
 
-    try:
-        from modules.fixed_assets.invoice_ocr import split_extract_and_match
-        result = await split_extract_and_match(pdf_bytes=raw, additions=additions)
-    except Exception as e:  # noqa: BLE001
-        log.warning("invoice OCR failed for run %s: %s", rid, e)
-        raise HTTPException(502, f"OCR/extraction failed: {e}")
-
-    # Stash the chunks (with their gzipped per-chunk PDFs) in the in-memory
-    # pending uploads cache. We strip pdf_b64 from the response payload so
-    # we don't ship MBs of base64 to the browser unnecessarily.
+    # Reserve a slot, then dispatch the heavy OCR work in the background so the
+    # HTTP request returns in <100ms — that prevents 60-second gateway / proxy
+    # timeouts on PDFs with many pages.
     upload_id = str(uuid.uuid4())
+    started_iso = datetime.now(timezone.utc).isoformat()
     _PENDING_UPLOADS[upload_id] = {
         "rid":       rid,
         "filename":  file.filename or "invoice.pdf",
-        "chunks":    result["chunks"],
-        "stored_at": datetime.now(timezone.utc).isoformat(),
+        "status":    "processing",
+        "stored_at": started_iso,
+        "started_at": started_iso,
+        "pdf_size":  len(raw),
+        "additions_for_ui": additions,   # used to build preview after OCR
     }
-    # Garbage-collect any pending uploads older than 1h
     _gc_pending_uploads()
 
-    # Light-payload preview for the UI: drop the heavy pdf_b64 blobs
-    preview_chunks = [
-        {
-            "chunk_index": c["chunk_index"],
-            "page_range":  c["page_range"],
-            "pdf_size":    c["pdf_size"],
-            "extraction":  c["extraction"],
-            "match":       c["match"],
-        }
-        for c in result["chunks"]
-    ]
+    async def _run_ocr_bg(uid: str, pdf_bytes: bytes, adds: List[Dict[str, Any]]):
+        from modules.fixed_assets.invoice_ocr import split_extract_and_match
+        try:
+            # `split_extract_and_match` is async, but the underlying LiteLLM
+            # HTTP call is synchronous and blocks the event loop for 30-90s.
+            # Wrapping the whole coroutine in `asyncio.to_thread` runs it on a
+            # worker thread so the upload-invoices response can be flushed
+            # immediately to the client.
+            result = await asyncio.to_thread(
+                lambda: asyncio.run(split_extract_and_match(pdf_bytes=pdf_bytes, additions=adds)),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("background OCR failed for upload %s: %s", uid, e)
+            slot = _PENDING_UPLOADS.get(uid)
+            if slot:
+                slot["status"] = "failed"
+                slot["error"]  = str(e)[:300]
+                slot["finished_at"] = datetime.now(timezone.utc).isoformat()
+            return
+        slot = _PENDING_UPLOADS.get(uid)
+        if not slot:
+            return  # GC already dropped it
+        slot["chunks"]      = result["chunks"]
+        slot["page_classifications"] = result["page_classifications"]
+        slot["ledger_pages"] = result["ledger_pages"]
+        slot["single_invoice"] = result["single_invoice"]
+        slot["summary"]     = result["summary"]
+        slot["status"]      = "done"
+        slot["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Enrich match info with the addition's display label
-    add_by_id = {a["addition_id"]: a for a in additions}
-    for c in preview_chunks:
+    asyncio.create_task(_run_ocr_bg(upload_id, raw, additions))
+    return {
+        "ok":         True,
+        "upload_id":  upload_id,
+        "filename":   file.filename or "",
+        "status":     "processing",
+        "pdf_size":   len(raw),
+    }
+
+
+@router.get("/runs/{rid}/upload-status/{upload_id}")
+async def upload_status(
+    rid: str,
+    upload_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Poll the background OCR job. While running returns {status:'processing',
+    elapsed_s:N}. On completion returns the same payload the caller would have
+    received from a synchronous upload-invoices call."""
+    await _auth(request, session_token, authorization)
+    slot = _PENDING_UPLOADS.get(upload_id)
+    if not slot or slot.get("rid") != rid:
+        raise HTTPException(404, "Upload not found or expired. Re-upload the PDF.")
+
+    started = slot.get("started_at") or slot.get("stored_at")
+    try:
+        started_dt = datetime.fromisoformat(started)
+    except Exception:  # noqa: BLE001
+        started_dt = datetime.now(timezone.utc)
+    elapsed_s = int((datetime.now(timezone.utc) - started_dt).total_seconds())
+
+    if slot["status"] == "processing":
+        return {
+            "ok":        True,
+            "status":    "processing",
+            "elapsed_s": elapsed_s,
+            "filename":  slot.get("filename", ""),
+        }
+    if slot["status"] == "failed":
+        return {
+            "ok":     False,
+            "status": "failed",
+            "error":  slot.get("error", "Unknown OCR failure"),
+            "elapsed_s": elapsed_s,
+        }
+
+    # status == 'done' — build the same preview payload as the old sync endpoint
+    add_by_id = {a["addition_id"]: a for a in slot.get("additions_for_ui") or []}
+    preview_chunks = []
+    for c in slot.get("chunks") or []:
         m = c.get("match")
         if m and m.get("addition_id") in add_by_id:
             a = add_by_id[m["addition_id"]]
             m["preview"] = {
-                "description": a.get("description") or a.get("particulars") or "",
-                "ledger_name": a.get("ledger_name") or "",
-                "block_label": a.get("block_label") or "",
+                "description":  a.get("description") or a.get("particulars") or "",
+                "ledger_name":  a.get("ledger_name") or "",
+                "block_label":  a.get("block_label") or "",
                 "invoice_cost": float(a.get("invoice_cost") or 0),
-                "invoice_no":  a.get("invoice_no") or "",
-                "voucher_no":  a.get("voucher_no") or "",
+                "invoice_no":   a.get("invoice_no") or "",
+                "voucher_no":   a.get("voucher_no") or "",
             }
-
+        preview_chunks.append({
+            "chunk_index": c["chunk_index"],
+            "page_range":  c["page_range"],
+            "pdf_size":    c["pdf_size"],
+            "extraction":  c["extraction"],
+            "match":       m,
+        })
     return {
         "ok":                  True,
+        "status":              "done",
         "upload_id":           upload_id,
-        "filename":            file.filename or "",
-        "page_classifications": result["page_classifications"],
-        "ledger_pages":        result["ledger_pages"],
-        "single_invoice":      result["single_invoice"],
-        "summary":             result["summary"],
+        "filename":            slot.get("filename", ""),
+        "page_classifications": slot.get("page_classifications") or [],
+        "ledger_pages":        slot.get("ledger_pages") or [],
+        "single_invoice":      slot.get("single_invoice", False),
+        "summary":             slot.get("summary") or {},
         "chunks":              preview_chunks,
+        "elapsed_s":           elapsed_s,
     }
 
 

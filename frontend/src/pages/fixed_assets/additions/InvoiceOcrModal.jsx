@@ -265,7 +265,9 @@ function KV({ label, v }) {
 /* Toolbar drop zone — sits at the top of the Additions tab    */
 /* =========================================================== */
 export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
-  const [drag, setDrag] = useState(false);
+  const [drag, setDrag]           = useState(false);
+  const [progress, setProgress]   = useState(null); // {filename, elapsed_s, status}
+
   const onDrop = async (ev) => {
     ev.preventDefault();
     setDrag(false);
@@ -277,6 +279,28 @@ export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
     ev.target.value = "";
     if (f) await uploadOne(f);
   };
+
+  const pollUntilDone = async (uploadId, filename) => {
+    // Poll every 2s, give up after 6 minutes.
+    const started = Date.now();
+    const TIMEOUT_MS = 6 * 60 * 1000;
+    let lastShownElapsed = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (Date.now() - started > TIMEOUT_MS) {
+        throw new Error("OCR is taking longer than 6 minutes. Try a smaller PDF.");
+      }
+      const { data } = await http.get(`/fixed-assets/runs/${rid}/upload-status/${uploadId}`);
+      if (data.status === "done") return { ...data, filename: data.filename || filename };
+      if (data.status === "failed") {
+        throw new Error(data.error || "OCR failed");
+      }
+      lastShownElapsed = data.elapsed_s ?? lastShownElapsed;
+      setProgress({ filename, elapsed_s: lastShownElapsed, status: "processing" });
+      await new Promise(res => setTimeout(res, 2000));
+    }
+  };
+
   const uploadOne = async (f) => {
     if (!f.name.toLowerCase().endsWith(".pdf")) {
       toast.error("Only .pdf files are supported.");
@@ -287,18 +311,27 @@ export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
       return;
     }
     setBusy(true);
+    setProgress({ filename: f.name, elapsed_s: 0, status: "uploading" });
     const fd = new FormData();
     fd.append("file", f);
     try {
-      const { data } = await http.post(
+      // Stage 1 — upload (small, returns in <500ms with upload_id + status:processing)
+      const { data: uploadResp } = await http.post(
         `/fixed-assets/runs/${rid}/upload-invoices`,
         fd,
-        { headers: { "Content-Type": "multipart/form-data" } },
+        { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 },
       );
-      onPreview?.({ ...data, filename: f.name });
+      // Stage 2 — poll until OCR is done (no per-poll axios timeout needed; each poll is small)
+      setProgress({ filename: f.name, elapsed_s: 0, status: "processing" });
+      const result = await pollUntilDone(uploadResp.upload_id, f.name);
+      onPreview?.(result);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Upload failed");
-    } finally { setBusy(false); }
+      const msg = e?.response?.data?.detail || e.message || "Upload failed";
+      toast.error(msg);
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
   };
 
   return (
@@ -306,21 +339,49 @@ export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
-      className={`border border-dashed px-4 py-2.5 flex items-center justify-between gap-3 ${drag ? "border-sky-500 bg-sky-50" : "border-[#D4D4D0] bg-[#FAFAF7]"}`}
+      className={`border border-dashed px-4 py-2.5 ${drag ? "border-sky-500 bg-sky-50" : "border-[#D4D4D0] bg-[#FAFAF7]"}`}
       data-testid="fa-invoice-dropzone"
     >
-      <div className="flex items-center gap-2 text-[12px] text-[#52524E]">
-        <FileScan size={14} className="text-sky-700"/>
-        <span className="font-semibold text-slate-800">Attach invoice PDFs</span>
-        <span className="text-slate-500">— drop a single invoice or a combined ledger+invoices PDF.
-          The OCR splits it, matches each invoice to a row, and fills the asset description.</span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-[12px] text-[#52524E] flex-1 min-w-0">
+          <FileScan size={14} className="text-sky-700 shrink-0"/>
+          {progress ? (
+            <ProgressLine progress={progress}/>
+          ) : (
+            <>
+              <span className="font-semibold text-slate-800">Attach invoice PDFs</span>
+              <span className="text-slate-500 truncate">— drop a single invoice or a combined ledger+invoices PDF.
+                The OCR splits it, matches each invoice to a row, and fills the asset description.</span>
+            </>
+          )}
+        </div>
+        <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] border border-sky-300 bg-white hover:bg-sky-50 text-sky-900 cursor-pointer disabled:opacity-50">
+          {busy ? <Loader2 size={13} className="animate-spin"/> : <Paperclip size={13}/>}
+          {busy ? "Working…" : "Choose PDF"}
+          <input type="file" accept=".pdf,application/pdf"
+                 onChange={onPick} disabled={busy}
+                 className="hidden" data-testid="fa-invoice-upload-input"/>
+        </label>
       </div>
-      <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] border border-sky-300 bg-white hover:bg-sky-50 text-sky-900 cursor-pointer">
-        {busy ? <Loader2 size={13} className="animate-spin"/> : <Paperclip size={13}/>}
-        Choose PDF
-        <input type="file" accept=".pdf,application/pdf"
-               onChange={onPick} className="hidden" data-testid="fa-invoice-upload-input"/>
-      </label>
+    </div>
+  );
+}
+
+function ProgressLine({ progress }) {
+  const { filename, elapsed_s, status } = progress;
+  const stage = status === "uploading" ? "Uploading PDF…" : "Analysing pages with Gemini OCR…";
+  return (
+    <div className="flex items-center gap-2 min-w-0" data-testid="fa-invoice-progress">
+      <Loader2 size={13} className="animate-spin text-sky-700"/>
+      <span className="font-mono text-[11.5px] text-slate-700 truncate">{filename}</span>
+      <span className="text-[11.5px] text-slate-500">·</span>
+      <span className="text-[11.5px] text-slate-700">{stage}</span>
+      {status === "processing" && elapsed_s > 0 && (
+        <span className="font-mono text-[10.5px] text-slate-500">~{elapsed_s}s elapsed</span>
+      )}
+      <span className="text-[11px] text-slate-400 hidden md:inline">
+        — large PDFs (10+ pages) may take 45–90 seconds
+      </span>
     </div>
   );
 }

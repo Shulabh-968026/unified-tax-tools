@@ -120,7 +120,8 @@ def slice_pdf(src_bytes: bytes, page_range: List[int]) -> bytes:
 # ============================================================ Gemini call
 async def gemini_extract(pdf_bytes: bytes) -> Dict[str, Any]:
     """Run the splitter+extractor in a single Gemini vision call.
-    Returns the parsed dict; raises ValueError on parse failure."""
+    Returns the parsed dict; raises ValueError on parse failure.
+    Retries up to 3 times on transient upstream failures (502/503/network)."""
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
         raise RuntimeError("EMERGENT_LLM_KEY not configured in backend environment.")
@@ -129,23 +130,46 @@ async def gemini_extract(pdf_bytes: bytes) -> Dict[str, Any]:
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
         tf.write(pdf_bytes)
         tmp_path = tf.name
+
+    raw: Optional[str] = None
+    last_err: Optional[Exception] = None
     try:
-        chat = LlmChat(
-            api_key=api_key,
-            session_id="fa-invoice-ocr",
-            system_message=("You extract structured tax invoice data with extreme precision. "
-                             "Never invent values. Output strict JSON only."),
-        ).with_model(*GEMINI_MODEL).with_params(temperature=0.1)
-        msg = UserMessage(
-            text=EXTRACTION_PROMPT,
-            file_contents=[FileContentWithMimeType(mime_type="application/pdf", file_path=tmp_path)],
-        )
-        raw = await chat.send_message(msg)
+        for attempt in range(1, 4):
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=f"fa-invoice-ocr-{attempt}",
+                system_message=("You extract structured tax invoice data with extreme precision. "
+                                 "Never invent values. Output strict JSON only."),
+            ).with_model(*GEMINI_MODEL).with_params(temperature=0.1)
+            msg = UserMessage(
+                text=EXTRACTION_PROMPT,
+                file_contents=[FileContentWithMimeType(mime_type="application/pdf",
+                                                      file_path=tmp_path)],
+            )
+            try:
+                raw = await chat.send_message(msg)
+                break
+            except Exception as e:  # noqa: BLE001
+                txt = str(e).lower()
+                # Retry only on transient upstream failures
+                transient = ("502" in txt or "503" in txt or "504" in txt
+                             or "bad gateway" in txt or "timeout" in txt
+                             or "temporarily" in txt or "rate" in txt)
+                last_err = e
+                log.warning("Gemini call attempt %d failed (%s): %s",
+                            attempt, "transient" if transient else "permanent", e)
+                if not transient or attempt == 3:
+                    raise
+                # Exponential backoff: 3s, 8s
+                await asyncio.sleep(3 * attempt + (attempt - 1) * 2)
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+    if raw is None:
+        raise ValueError(f"Gemini call failed after retries: {last_err}")
 
     cleaned = _strip_code_fences(raw or "")
     try:
