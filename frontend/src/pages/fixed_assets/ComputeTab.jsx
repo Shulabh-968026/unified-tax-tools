@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
+import { DriftBanner } from "./additions/ExcelRoundTripModal";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -36,6 +37,29 @@ export default function ComputeTab({ rid }) {
   const [rollApplying, setRollApplying] = useState(false);
   const [rollModalOpen, setRollModalOpen] = useState(false);
 
+  // Drift banner (carried over from Excel re-import on Additions tab)
+  const [driftWarning, setDriftWarning] = useState(null);
+  const [clearingDrift, setClearingDrift] = useState(false);
+
+  const refreshRun = useCallback(async () => {
+    if (!rid) return;
+    try {
+      const { data } = await http.get(`/fixed-assets/runs/${rid}`);
+      setDriftWarning(data?.excel_drift_warning || null);
+    } catch { /* swallow */ }
+  }, [rid]);
+
+  const clearDrift = async () => {
+    setClearingDrift(true);
+    try {
+      await http.post(`/fixed-assets/runs/${rid}/clear-excel-drift`);
+      setDriftWarning(null);
+      toast.success("Drift warning cleared");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not clear");
+    } finally { setClearingDrift(false); }
+  };
+
   const refreshOpening = useCallback(async () => {
     if (!rid) return;
     setBusy(true);
@@ -57,7 +81,7 @@ export default function ComputeTab({ rid }) {
     }
   }, [rid]);
 
-  useEffect(() => { refreshOpening(); refreshRollSource(); }, [refreshOpening, refreshRollSource]);
+  useEffect(() => { refreshOpening(); refreshRollSource(); refreshRun(); }, [refreshOpening, refreshRollSource, refreshRun]);
 
   const saveOpening = async (block_label, opening_wdv, description) => {
     setOpenings(rs => rs.map(r => r.block_label === block_label
@@ -159,6 +183,8 @@ export default function ComputeTab({ rid }) {
 
   return (
     <div className="space-y-5">
+      <DriftBanner warning={driftWarning} onClear={clearDrift} clearing={clearingDrift}/>
+
       {/* Opening WDV import toolbar (Phase 1D + 1H) */}
       <div className="bg-[#FAFAF7] border border-[#E5E5E0] p-3 flex flex-wrap items-center gap-2">
         <div className="flex-1 min-w-[220px] text-[12px] text-[#52524E]">

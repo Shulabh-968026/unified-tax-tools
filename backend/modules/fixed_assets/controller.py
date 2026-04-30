@@ -20,6 +20,12 @@ from pydantic import BaseModel
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.fixed_assets.additions_xlsx import (
+    block_drift,
+    build_additions_workbook,
+    diff_additions,
+    parse_additions_workbook,
+)
 from modules.fixed_assets.compute import compute_run
 from modules.fixed_assets.export import build_workbook
 from modules.fixed_assets.legal_master import (
@@ -846,6 +852,234 @@ async def classify_credit(
     cr.pop("_id", None)
     await CREDITS.replace_one({"credit_id": cid, "run_id": rid}, cr)
     return {"ok": True, "row": cr}
+
+
+# ============================ Bulk Patch (Phase A) =========================
+class FaAdditionsBulkPatch(BaseModel):
+    addition_ids: List[str]
+    patch:        Dict[str, Any]
+
+
+@router.post("/runs/{rid}/additions/bulk-patch")
+async def bulk_patch_additions(
+    rid: str,
+    payload: FaAdditionsBulkPatch,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Apply the same patch to many addition rows. Used by the bulk-action
+    bar (Set Block, Mark Reviewed, Copy PTU = Acc Date). Skips merged-child
+    rows and discount-credit rows for safety."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "fy_end": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    ids = [x for x in (payload.addition_ids or []) if isinstance(x, str)]
+    if not ids:
+        return {"ok": True, "updated": 0}
+    fy_end = run.get("fy_end") or ""
+    updated = 0
+    copy_ptu_from_acc = bool(payload.patch.get("__copy_ptu_from_acc"))
+    base_patch = {k: v for k, v in payload.patch.items() if not k.startswith("__")}
+
+    async for a in ADDITIONS.find({"run_id": rid, "addition_id": {"$in": ids}}, {"_id": 0}):
+        if (a.get("source") or "") == "discount_credit":
+            continue
+        if a.get("parent_addition_id"):
+            continue
+        merged = {**a, **base_patch}
+        if copy_ptu_from_acc and a.get("accounting_date"):
+            merged["put_to_use_date"] = a["accounting_date"]
+        if "put_to_use_date" in merged or copy_ptu_from_acc:
+            from modules.fixed_assets.service import is_more_than_180
+            full = is_more_than_180(merged.get("put_to_use_date") or "", fy_end)
+            merged["is_more_than_180"] = full
+            merged["half_rate"] = not full
+        merged["reviewed"] = True
+        await ADDITIONS.update_one(
+            {"addition_id": a["addition_id"], "run_id": rid},
+            {"$set": {k: v for k, v in merged.items() if k != "_id"}},
+        )
+        updated += 1
+    return {"ok": True, "updated": updated}
+
+
+# ============================ Excel Round-Trip (Phase B) ===================
+async def _gather_additions_for_xlsx(rid: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Return additions grouped by block_label. Includes ledger_name and
+    rolls in discount-credits as locked rows so the auditor sees the full
+    block picture in one sheet."""
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find({"run_id": rid},
+                                {"_id": 0, "fa_ledger_id": 1, "name": 1, "block_label": 1}):
+        led_map[L["fa_ledger_id"]] = L
+
+    rows = await ADDITIONS.find({"run_id": rid}, {"_id": 0}) \
+        .sort([("block_label", 1), ("invoice_date", 1)]).to_list(20000)
+    for r in rows:
+        Ldoc = led_map.get(r.get("fa_ledger_id", ""), {})
+        r["ledger_name"] = Ldoc.get("name", "")
+        r.setdefault("source", "addition")
+
+    # Surface discount-classified credits as negative locked addition rows
+    async for c in CREDITS.find({"run_id": rid, "classification": "discount"}, {"_id": 0}):
+        Ldoc = led_map.get(c.get("fa_ledger_id", ""), {})
+        rows.append({
+            "addition_id":         f"discount-{c['credit_id']}",
+            "parent_addition_id":  "",
+            "fa_ledger_id":        c.get("fa_ledger_id", ""),
+            "ledger_name":         Ldoc.get("name", ""),
+            "block_label":         Ldoc.get("block_label", ""),
+            "accounting_date":     c.get("accounting_date", ""),
+            "invoice_date":        c.get("accounting_date", ""),
+            "put_to_use_date":     "",
+            "description":         f"[Discount] {c.get('particulars') or ''}",
+            "party_name":          c.get("party_name", ""),
+            "voucher_no":          c.get("voucher_no", ""),
+            "invoice_no":          "",
+            "invoice_cost":        -float(c.get("amount") or 0),
+            "other_expenses":      0.0, "itc_reversed": 0.0,
+            "interest_capitalized": 0.0, "forex_fluctuations": 0.0,
+            "discount_credits":    0.0,
+            "source":              "discount_credit",
+        })
+
+    by_block: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_block.setdefault(r.get("block_label") or "(unblocked)", []).append(r)
+    return by_block
+
+
+@router.get("/runs/{rid}/additions/export.xlsx")
+async def additions_export_xlsx(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    by_block = await _gather_additions_for_xlsx(rid)
+    client = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0, "name": 1})
+    blob = build_additions_workbook(
+        client_name=(client or {}).get("name") or run.get("name") or "",
+        fy=run.get("fy") or "",
+        rows_by_block=by_block,
+    )
+    safe = (((client or {}).get("name") or "client").replace(" ", "_"))[:40]
+    fy = run.get("fy") or ""
+    filename = f"Additions_{safe}_FY{fy}.xlsx"
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/runs/{rid}/additions/import.xlsx")
+async def additions_import_xlsx(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    dry_run: bool = True,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Two-phase: dry_run=true returns a diff + drift report; dry_run=false
+    applies the changes and (when totals drift) persists a warning flag on
+    the run. The Compute tab refuses to hide that warning until the auditor
+    explicitly clears it via /clear-excel-drift."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "fy_end": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    raw = await file.read()
+    try:
+        parsed = parse_additions_workbook(raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Invalid Additions Excel: {e}")
+
+    # Build the live DB view (regular rows only — discount-credits skip)
+    db_rows = await ADDITIONS.find({"run_id": rid}, {"_id": 0}).to_list(20000)
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find({"run_id": rid},
+                                {"_id": 0, "fa_ledger_id": 1, "name": 1}):
+        led_map[L["fa_ledger_id"]] = L
+    for r in db_rows:
+        r["ledger_name"] = led_map.get(r.get("fa_ledger_id", ""), {}).get("name", "")
+
+    diff = diff_additions(db_rows=db_rows, xl_rows=parsed["rows"])
+    drift = block_drift(db_rows=db_rows, xl_changes=diff["changes"])
+
+    if dry_run:
+        return {
+            "ok":            True,
+            "dry_run":       True,
+            "filename":      file.filename or "",
+            "sheets":        parsed["sheets"],
+            "errors":        parsed["errors"],
+            "rows_changed":  len(diff["changes"]),
+            "unknown_ids":   diff["unknown_ids"],
+            "changes":       diff["changes"][:500],   # cap payload
+            "drift":         drift,
+        }
+
+    # ---- APPLY ---------------------------------------------------------
+    fy_end = run.get("fy_end") or ""
+    applied = 0
+    from modules.fixed_assets.service import is_more_than_180
+    for ch in diff["changes"]:
+        aid = ch["addition_id"]
+        patch: Dict[str, Any] = {f: v["new"] for f, v in ch["changes"].items()}
+        if "put_to_use_date" in patch:
+            full = is_more_than_180(patch["put_to_use_date"] or "", fy_end)
+            patch["is_more_than_180"] = full
+            patch["half_rate"] = not full
+        patch["reviewed"] = True
+        await ADDITIONS.update_one({"addition_id": aid, "run_id": rid}, {"$set": patch})
+        applied += 1
+
+    drift_set: Dict[str, Any] = {}
+    if drift["drifted"]:
+        drift_set = {
+            "applied_at":    datetime.now(timezone.utc).isoformat(),
+            "applied_by":    file.filename or "",
+            "blocks":        [b for b in drift["blocks"] if abs(b["diff"]) > 1.0],
+            "rows_changed":  applied,
+        }
+        await RUNS.update_one({"id": rid}, {"$set": {"excel_drift_warning": drift_set}})
+    else:
+        # Successful clean import — clear any prior drift warning.
+        await RUNS.update_one({"id": rid}, {"$unset": {"excel_drift_warning": ""}})
+
+    return {
+        "ok":           True,
+        "dry_run":      False,
+        "applied":      applied,
+        "unknown_ids":  diff["unknown_ids"],
+        "drift":        drift,
+        "drift_warning": drift_set,
+    }
+
+
+@router.post("/runs/{rid}/clear-excel-drift")
+async def clear_excel_drift(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Auditor-driven acknowledgement that the totals drift introduced by
+    a re-imported Excel has been investigated and reconciled."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    await RUNS.update_one({"id": rid}, {"$unset": {"excel_drift_warning": ""}})
+    return {"ok": True}
 
 
 # ============================ Block Opening WDV ============================

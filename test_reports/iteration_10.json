@@ -1,0 +1,53 @@
+{
+  "summary": "Fixed Assets Additions — Excel round-trip + bulk actions + drift banner (Stage-1 refactor) tested end-to-end. BACKEND 16/16 GREEN (/app/backend/tests/test_fixed_assets_additions_xlsx.py): export.xlsx returns a valid multi-sheet workbook (4 sheets for this run) with hidden id cols A+B, totals strip on rows 2-3, headers on row 4, discount-credit rows present; dry_run=true noop returns rows_changed=0/drift.drifted=false/empty changes; dry_run=true with one description edit returns rows_changed=1 + per-field {old,new} diff and does NOT persist any excel_drift_warning on the run; discount-* synthetic ids are NOT reported as unknown_ids; dry_run=false description edit returns applied=1 without drift; dry_run=false other_expenses +₹12345.67 edit returns applied=1 with drift.drifted=true and blocks[0].diff=12345.67, and persists excel_drift_warning on GET /runs/{rid}; clear-excel-drift unsets the warning; bulk-patch mark-reviewed returns updated=1; __copy_ptu_from_acc runs cleanly; bulk-patch with discount-* id returns updated=0 (skipped). Both export and bulk-patch are auth-gated (401 without cookie). FRONTEND tested on the live run in Additions tab + Compute tab: (T1) page-size=25 selected → localStorage fa.additions.pageSize='25' AND survives a full reload; (T2) column-visibility popover toggling PTU-date off removes the TH+TDs from the live table AND persists to localStorage fa.additions.colVis={'ptu_date':false,...} AND PTU column remains hidden after a full reload; (T3) Bulk toggle reveals 21 row-level checkboxes (fa-add-select-*), selecting first row renders a floating bar fa-add-bulk-bar with fa-add-bulk-set-block / fa-add-bulk-reviewed / fa-add-bulk-ptu / fa-add-bulk-clear, clicking Clear (X) makes the bar disappear; (T4) row description textarea has CSS resize:none (no manual handle) and auto-grows from 37px → 103px when six lines are typed; (T5) Export button triggers a .xlsx download (Additions_Allman_Knitwear_FY2024-25.xlsx); (T6) toolbar Fill PTU button surfaces an info toast 'Every row in this view already has a PTU date' (expected — fixture rows already have PTU); (T7/T8 — the critical Stage-1 acceptance criterion) after injecting a drifted import via API, the rose DriftBanner (data-testid='fa-drift-banner') is rendered at the TOP of BOTH the Additions tab AND the Compute & Export tab with the correct copy '… 1 row edited · 1 block drifted …' including block-level deltas, and clicking Mark Reconciled on the Compute-tab banner globally clears the warning so both tabs stop showing the banner (verified by navigating back to Additions). Run state verified clean at end (excel_drift_warning=None) so no data pollution remains. The run ID 0e4cc62f-52f9-4668-b598-f60bd0c52803 is preserved.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Additions — Toolbar",
+        "issues": [
+          "Testability: data-testid='fa-add-bulk-ptu' is used by TWO elements — the toolbar 'Fill PTU' button AND the bulk-action-bar 'PTU=Acc Date' button. Any Playwright selector on that testid currently matches 2 elements. Recommend renaming the toolbar one to 'fa-add-fill-ptu' (matches its label) and reserving 'fa-add-bulk-ptu' for the bulk bar. Functionality unaffected; pure testing hygiene."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fixed_assets_additions_xlsx.py",
+    "/app/test_reports/pytest/iteration_10.xml"
+  ],
+  "action_items": [
+    "(Optional / testability) Disambiguate the duplicate data-testid 'fa-add-bulk-ptu' — toolbar Fill PTU button should be 'fa-add-fill-ptu'; bulk-bar PTU=Acc button should stay 'fa-add-bulk-ptu'. Currently both elements share the testid which matches count=2 in Playwright.",
+    "(Pre-existing, unrelated to this PR) Hydration warning in console: <span style='display:contents'> injected by the Emergent visual editor inside a <select><option> tag violates HTML nesting. This is a visual-editor artifact, not a production code defect — ignore in prod builds."
+  ],
+  "critical_code_review_comments": [
+    "additions_xlsx.build_additions_workbook: hidden col A (addition_id) + col B (parent_addition_id) verified hidden via openpyxl column_dimensions.hidden. Good — auditors can't accidentally edit the stable id.",
+    "additions_xlsx.parse + diff_additions: synthetic discount-* ids are filtered out before the unknown_ids check, so a round-trip export→import never generates spurious 'unknown_ids'. Verified.",
+    "controller.additions_import_xlsx (dry_run=true branch): does NOT mutate fa_runs.excel_drift_warning — verified by GET /runs/{rid} returning None after a dry-run with drifting numeric edits. Correct.",
+    "controller.additions_import_xlsx (apply branch) writes {applied_at, applied_by, blocks[...], rows_changed} to fa_runs.excel_drift_warning only when any block's abs(diff) > 1. For the description-only edit case, drift.drifted=false → warning is cleared (empty dict returned in body as drift_warning:{}). Good — idempotent UX.",
+    "controller.bulk_patch_additions: __copy_ptu_from_acc:true is handled server-side and silently skipped for rows where ptu is already equal to accounting_date (response had updated=0 or 1 — both OK; no 400/500 raised). Verified. Rows with parent_addition_id and source=='discount_credit' are excluded before patching — verified by supplying a discount-* id and receiving updated=0.",
+    "AdditionsTab.jsx: driftWarning state is sourced from runRes.data.excel_drift_warning; ComputeTab.jsx also subscribes to the same key. Both banners render the same DriftBanner component so the copy is consistent. Clearing via either banner calls POST /clear-excel-drift and both tabs re-fetch the run object → banner disappears globally. No race condition observed.",
+    "AdditionsToolbar.jsx — column-visibility popover writes the ENTIRE colVis map (not just the toggled key) to localStorage fa.additions.colVis. If a future schema adds a new column key, existing users' persisted map will default that key to visible via the JS spread fallback in AdditionsTab (assumed — not re-read here but verified empirically the map is well-formed).",
+    "AdditionsToolbar.jsx — page-size select writes fa.additions.pageSize on change and the AdditionsTab reads it on mount. Verified persistence across full reload.",
+    "AdditionRow.jsx — description textarea has `resize: none` and its row height auto-grows on typing (37→103px observed). No manual resize handle. Matches spec.",
+    "BulkActionBar.jsx — the 'Clear (X)' button emits onClear that collapses selection → bar unmounts (count=0 confirmed). No orphaned state."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_fixed_assets_additions_xlsx.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 passed)",
+    "frontend": "100% on the 8 Stage-1 acceptance checks (page-size persist, colVis persist, Bulk toggle + bar + Clear, textarea auto-grow, Export download, Fill PTU toast, DriftBanner on Additions, DriftBanner on Compute + Mark Reconciled clears both)"
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260430_dev (admin user_qa_bot_fixed_01 / qa-bot@transformautomations.com) — verified working against /api/auth/me and all fixed-assets endpoints.",
+  "seed_data_creation": "No new seed data. Test-induced mutations are self-reverting: every drift-injecting test ends with a revert or a clear-excel-drift call. Final state verified: excel_drift_warning=None, run intact with all 101 additions, 4 blocks classified. Run id 0e4cc62f-52f9-4668-b598-f60bd0c52803 preserved per brief.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Fixed Assets Additions Stage-1 GREEN on both backend and frontend. New regression file: /app/backend/tests/test_fixed_assets_additions_xlsx.py (16 tests, 2s runtime). Key selectors to reuse: fa-add-block-filter, fa-add-ledger-filter (only when >=2 ledgers in a block), fa-add-search, fa-add-show-merged, fa-add-page-size, fa-add-bulk-toggle, fa-add-bulk-ptu (DUPLICATED — also on toolbar), fa-add-export-xlsx, fa-add-import-file (input[type=file]), fa-add-import-xlsx (label), fa-add-colvis-toggle → fa-add-colvis-popover → fa-add-colvis-{ptu_date|other_expenses|itc_reversed|interest_capitalized|forex_fluctuations|discount_credits|supplier|voucher_no|invoice_no|invoice_date}, fa-add-bulk-bar, fa-add-bulk-set-block, fa-add-bulk-reviewed, fa-add-bulk-clear, fa-add-select-{addition_id}, fa-addition-{addition_id}, fa-merged-{addition_id}, fa-add-unlink-{addition_id}, fa-drift-banner, fa-drift-clear, fa-add-import-modal, fa-add-import-drift, fa-add-import-clean, fa-add-import-apply, fa-add-import-close, fa-import-change-{addition_id}-{field}, fa-add-page-prev, fa-add-page-next, fa-row-saving/fa-row-saved/fa-row-save-error. API response contracts: dry_run=true uses {ok, dry_run, sheets, rows_changed, unknown_ids, changes, drift, errors}; dry_run=false uses {ok, dry_run, applied, drift, drift_warning, errors, changes?}. Note the key mismatch — tests must switch 'rows_changed' ↔ 'applied' by branch. Bulk-patch returns {updated:int}. Clear-drift returns 200 and zero-out warning.",
+  "rca of the issue": "No bugs discovered. Single testability nit: data-testid='fa-add-bulk-ptu' is bound to BOTH the toolbar 'Fill PTU' button and the bulk-action-bar 'PTU=Acc Date' button (count=2 in Playwright). Recommend the toolbar button use 'fa-add-fill-ptu' so each element has a unique testid. This is a trivial one-line change in AdditionsToolbar.jsx."
+}
