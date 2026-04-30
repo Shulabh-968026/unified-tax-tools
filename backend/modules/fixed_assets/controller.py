@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import gzip
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,7 @@ ADDITIONS = db.fa_additions
 CREDITS = db.fa_credits
 BLOCK_OPEN = db.fa_block_opening
 BOOKS_RAW = db.fa_books_raw
+INVOICE_ATTACH = db.fa_invoice_attachments
 
 
 async def _auth(request: Request, tok: Optional[str], hdr: Optional[str]):
@@ -201,6 +203,7 @@ async def delete_run(
     await CREDITS.delete_many({"run_id": rid})
     await BLOCK_OPEN.delete_many({"run_id": rid})
     await BOOKS_RAW.delete_many({"run_id": rid})
+    await INVOICE_ATTACH.delete_many({"run_id": rid})
     return {"ok": True}
 
 
@@ -852,6 +855,277 @@ async def classify_credit(
     cr.pop("_id", None)
     await CREDITS.replace_one({"credit_id": cid, "run_id": rid}, cr)
     return {"ok": True, "row": cr}
+
+
+# ============================ Invoice OCR (Phase 1.5) =====================
+class InvoiceApplySelection(BaseModel):
+    """Auditor confirms which chunks to attach + per-chunk addition_id +
+    whether to overwrite the addition's `description` field with the OCR-
+    extracted asset description."""
+    upload_id:    str
+    selections: List[Dict[str, Any]]   # [{chunk_index, addition_id, apply_description: bool}]
+
+
+# In-memory cache of pending uploads (TTL 1 hour). For the audit workflow
+# the auditor reviews the preview and then commits within minutes — we
+# don't need to persist the gzipped chunks across server restarts. If that
+# ever becomes a real concern we'd flip this to a small Mongo collection.
+_PENDING_UPLOADS: Dict[str, Dict[str, Any]] = {}
+
+
+@router.post("/runs/{rid}/upload-invoices")
+async def upload_invoices(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Accept an invoice PDF (single, or combined ledger + multiple invoices),
+    run the Gemini splitter+extractor, match each chunk to an addition row,
+    and return a preview the auditor can review before committing."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(400, "Only .pdf files are supported.")
+
+    raw = await file.read()
+    if not raw[:4] == b"%PDF":
+        raise HTTPException(400, "File doesn't look like a valid PDF.")
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(413, "PDF exceeds 25 MB limit. Split before uploading.")
+
+    # Pull the run's additions for matching (only fields we need)
+    additions = await ADDITIONS.find(
+        {"run_id": rid},
+        {"_id": 0, "addition_id": 1, "invoice_no": 1, "invoice_cost": 1,
+         "party_name": 1, "party_gstin": 1, "parent_addition_id": 1,
+         "source": 1, "description": 1, "particulars": 1,
+         "block_label": 1, "voucher_no": 1, "ledger_name": 1},
+    ).to_list(20000)
+    # Cascade ledger_name onto each addition (UI display)
+    led_map: Dict[str, str] = {}
+    async for L in LEDGERS.find({"run_id": rid}, {"_id": 0, "fa_ledger_id": 1, "name": 1}):
+        led_map[L["fa_ledger_id"]] = L.get("name", "")
+    for a in additions:
+        a["ledger_name"] = a.get("ledger_name") or ""
+
+    try:
+        from modules.fixed_assets.invoice_ocr import split_extract_and_match
+        result = await split_extract_and_match(pdf_bytes=raw, additions=additions)
+    except Exception as e:  # noqa: BLE001
+        log.warning("invoice OCR failed for run %s: %s", rid, e)
+        raise HTTPException(502, f"OCR/extraction failed: {e}")
+
+    # Stash the chunks (with their gzipped per-chunk PDFs) in the in-memory
+    # pending uploads cache. We strip pdf_b64 from the response payload so
+    # we don't ship MBs of base64 to the browser unnecessarily.
+    upload_id = str(uuid.uuid4())
+    _PENDING_UPLOADS[upload_id] = {
+        "rid":       rid,
+        "filename":  file.filename or "invoice.pdf",
+        "chunks":    result["chunks"],
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Garbage-collect any pending uploads older than 1h
+    _gc_pending_uploads()
+
+    # Light-payload preview for the UI: drop the heavy pdf_b64 blobs
+    preview_chunks = [
+        {
+            "chunk_index": c["chunk_index"],
+            "page_range":  c["page_range"],
+            "pdf_size":    c["pdf_size"],
+            "extraction":  c["extraction"],
+            "match":       c["match"],
+        }
+        for c in result["chunks"]
+    ]
+
+    # Enrich match info with the addition's display label
+    add_by_id = {a["addition_id"]: a for a in additions}
+    for c in preview_chunks:
+        m = c.get("match")
+        if m and m.get("addition_id") in add_by_id:
+            a = add_by_id[m["addition_id"]]
+            m["preview"] = {
+                "description": a.get("description") or a.get("particulars") or "",
+                "ledger_name": a.get("ledger_name") or "",
+                "block_label": a.get("block_label") or "",
+                "invoice_cost": float(a.get("invoice_cost") or 0),
+                "invoice_no":  a.get("invoice_no") or "",
+                "voucher_no":  a.get("voucher_no") or "",
+            }
+
+    return {
+        "ok":                  True,
+        "upload_id":           upload_id,
+        "filename":            file.filename or "",
+        "page_classifications": result["page_classifications"],
+        "ledger_pages":        result["ledger_pages"],
+        "single_invoice":      result["single_invoice"],
+        "summary":             result["summary"],
+        "chunks":              preview_chunks,
+    }
+
+
+def _gc_pending_uploads() -> None:
+    """Drop pending uploads older than an hour."""
+    now = datetime.now(timezone.utc)
+    drop = []
+    for uid, payload in _PENDING_UPLOADS.items():
+        try:
+            stored = datetime.fromisoformat(payload["stored_at"])
+        except Exception:  # noqa: BLE001
+            drop.append(uid)
+            continue
+        if (now - stored).total_seconds() > 3600:
+            drop.append(uid)
+    for uid in drop:
+        _PENDING_UPLOADS.pop(uid, None)
+
+
+@router.post("/runs/{rid}/apply-invoice-uploads")
+async def apply_invoice_uploads(
+    rid: str,
+    payload: InvoiceApplySelection,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Persist the auditor-confirmed chunks: store each chunk PDF in
+    fa_invoice_attachments, and (when requested) overwrite the addition's
+    `description` with the OCR-extracted line."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+
+    pending = _PENDING_UPLOADS.get(payload.upload_id)
+    if not pending or pending.get("rid") != rid:
+        raise HTTPException(404, "Upload not found or expired. Re-upload the PDF.")
+
+    chunks_by_idx = {c["chunk_index"]: c for c in pending["chunks"]}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    saved = 0
+    descriptions_updated = 0
+
+    for sel in payload.selections:
+        ci = sel.get("chunk_index")
+        aid = (sel.get("addition_id") or "").strip()
+        apply_desc = bool(sel.get("apply_description", False))
+        if ci is None or not aid:
+            continue
+        chunk = chunks_by_idx.get(int(ci))
+        if not chunk:
+            continue
+        add = await ADDITIONS.find_one(
+            {"run_id": rid, "addition_id": aid},
+            {"_id": 0, "addition_id": 1, "description": 1, "particulars": 1},
+        )
+        if not add:
+            continue
+
+        ext = chunk["extraction"]
+        # Persist (or replace) the attachment for this addition. One
+        # invoice PDF chunk per addition; re-upload replaces.
+        await INVOICE_ATTACH.replace_one(
+            {"run_id": rid, "addition_id": aid},
+            {
+                "run_id":         rid,
+                "addition_id":    aid,
+                "filename":       pending["filename"],
+                "page_range":     chunk["page_range"],
+                "pdf_size":       chunk["pdf_size"],
+                "content_b64":    chunk["pdf_b64"],   # gzipped+base64 from invoice_ocr.py
+                "ocr_extraction": ext,
+                "uploaded_at":    now_iso,
+            },
+            upsert=True,
+        )
+        saved += 1
+
+        if apply_desc and ext.get("description"):
+            await ADDITIONS.update_one(
+                {"run_id": rid, "addition_id": aid},
+                {"$set": {
+                    "description":     ext["description"][:500],
+                    "reviewed":        True,
+                    "last_modified":   now_iso,
+                }},
+            )
+            descriptions_updated += 1
+
+    # Drop the pending upload — it's been committed
+    _PENDING_UPLOADS.pop(payload.upload_id, None)
+
+    await _refresh_run_summary(rid)
+    return {"ok": True, "attached": saved, "descriptions_updated": descriptions_updated}
+
+
+@router.get("/runs/{rid}/additions/{aid}/invoice")
+async def download_invoice_attachment(
+    rid: str,
+    aid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Stream back the per-chunk PDF stored against this addition row."""
+    import base64
+    import gzip
+    await _auth(request, session_token, authorization)
+    doc = await INVOICE_ATTACH.find_one(
+        {"run_id": rid, "addition_id": aid}, {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(404, "No invoice attached to this addition")
+    try:
+        blob = gzip.decompress(base64.b64decode(doc["content_b64"]))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Stored attachment is corrupt: {e}")
+
+    fname = (doc.get("filename") or "invoice.pdf")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", fname)
+    return Response(
+        content=blob,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe}"'},
+    )
+
+
+@router.delete("/runs/{rid}/additions/{aid}/invoice")
+async def delete_invoice_attachment(
+    rid: str,
+    aid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Detach the stored invoice from this addition (does NOT touch the row's
+    `description` field — that stays as is so any auditor edits aren't lost)."""
+    await _auth(request, session_token, authorization)
+    res = await INVOICE_ATTACH.delete_one({"run_id": rid, "addition_id": aid})
+    return {"ok": True, "deleted": res.deleted_count}
+
+
+@router.get("/runs/{rid}/invoice-attachments")
+async def list_invoice_attachments(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Return a thin list (no pdf bytes) of every addition that has an
+    invoice attached — used to render paperclip icons on the Additions tab."""
+    await _auth(request, session_token, authorization)
+    rows = await INVOICE_ATTACH.find(
+        {"run_id": rid},
+        {"_id": 0, "addition_id": 1, "filename": 1, "pdf_size": 1,
+         "page_range": 1, "uploaded_at": 1, "ocr_extraction": 1},
+    ).to_list(20000)
+    return {"rows": rows}
 
 
 # ============================ Bulk Patch (Phase A) =========================

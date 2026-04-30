@@ -16,6 +16,9 @@ import { BulkActionBar } from "./additions/BulkActionBar";
 import {
   DriftBanner, ExcelImportPreviewModal,
 } from "./additions/ExcelRoundTripModal";
+import {
+  InvoiceUploadDropZone, InvoiceUploadPreviewModal,
+} from "./additions/InvoiceOcrModal";
 
 const lsGet = (k, fb) => {
   try { const v = localStorage.getItem(k); return v == null ? fb : JSON.parse(v); }
@@ -48,6 +51,12 @@ export default function AdditionsTab({ rid, blocks }) {
   const [driftWarning, setDriftWarning] = useState(null);
   const [clearingDrift, setClearingDrift] = useState(false);
 
+  // Invoice OCR (Phase 1.5)
+  const [ocrBusy, setOcrBusy]           = useState(false);
+  const [ocrPreview, setOcrPreview]     = useState(null);
+  const [ocrApplying, setOcrApplying]   = useState(false);
+  const [attachments, setAttachments]   = useState({});  // {addition_id: {filename, pdf_size, ...}}
+
   // Persist UI prefs
   useEffect(() => lsSet(LS_PAGE_SIZE, pageSize), [pageSize]);
   useEffect(() => lsSet(LS_COL_VIS, colVis), [colVis]);
@@ -57,14 +66,18 @@ export default function AdditionsTab({ rid, blocks }) {
     if (!rid) return;
     setBusy(true);
     try {
-      const [r, p, runRes] = await Promise.all([
+      const [r, p, runRes, atts] = await Promise.all([
         http.get(`/fixed-assets/runs/${rid}/additions`),
         http.get(`/fixed-assets/runs/${rid}/additions/progress`),
         http.get(`/fixed-assets/runs/${rid}`),
+        http.get(`/fixed-assets/runs/${rid}/invoice-attachments`),
       ]);
       setRows(r.data?.rows || []);
       setProgress(p.data || { rows: [], summary: {} });
       setDriftWarning(runRes.data?.excel_drift_warning || null);
+      const map = {};
+      for (const a of (atts.data?.rows || [])) map[a.addition_id] = a;
+      setAttachments(map);
       if (!activeBlock && p.data?.rows?.length) {
         setActiveBlock(p.data.rows[0].block_label);
       }
@@ -331,6 +344,13 @@ export default function AdditionsTab({ rid, blocks }) {
     <div className="space-y-3">
       <DriftBanner warning={driftWarning} onClear={clearDrift} clearing={clearingDrift}/>
 
+      <InvoiceUploadDropZone
+        rid={rid}
+        busy={ocrBusy}
+        setBusy={setOcrBusy}
+        onPreview={setOcrPreview}
+      />
+
       <ProgressStrip
         progress={progress}
         active={activeBlock}
@@ -406,6 +426,9 @@ export default function AdditionsTab({ rid, blocks }) {
                              colVis={colVis}
                              bulkMode={bulkMode}
                              selected={selectedIds.has(a.addition_id)}
+                             attachment={attachments[a.addition_id]}
+                             onAttachmentChanged={refresh}
+                             rid={rid}
                              onToggleSelect={toggleSelect}
                              onPatch={(p) => patchRow(a, p)}
                              onOpenLink={() => setLinkFor(a)}/>
@@ -442,6 +465,20 @@ export default function AdditionsTab({ rid, blocks }) {
           applying={importing}
           onClose={() => { setImportPreview(null); setImportFile(null); }}
           onApply={importApply}
+        />
+      )}
+
+      {ocrPreview && (
+        <InvoiceUploadPreviewModal
+          rid={rid}
+          preview={ocrPreview}
+          additions={rows}
+          applying={ocrApplying}
+          onClose={() => setOcrPreview(null)}
+          onApplied={async () => {
+            setOcrApplying(true);
+            try { await refresh(); } finally { setOcrApplying(false); setOcrPreview(null); }
+          }}
         />
       )}
     </div>

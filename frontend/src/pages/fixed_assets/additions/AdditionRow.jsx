@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Calendar, CalendarDays, Link2, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { inr, capitalised } from "./utils";
+import { RowAttachmentIcon } from "./InvoiceOcrModal";
 
 /**
  * AdditionRow — full editable line with:
@@ -11,6 +12,7 @@ import { inr, capitalised } from "./utils";
  */
 export function AdditionRow({
   a, blocks, colVis, bulkMode, selected, onToggleSelect, onPatch, onOpenLink,
+  attachment, onAttachmentChanged, rid,
 }) {
   const [local, setLocal] = useState(a);
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
@@ -117,14 +119,22 @@ export function AdditionRow({
       )}
 
       <td className="px-2 py-1">
-        <AutoGrowTextarea
-          value={local.description || ""}
-          disabled={locked}
-          onChange={(v) => setF("description", v)}
-          onBlur={() => flush("description", a.description)}
-          placeholder={a.particulars || "Description"}
-          className={txtInput + " resize-none"}
-        />
+        <div className="flex items-start gap-1">
+          <AutoGrowTextarea
+            value={local.description || ""}
+            disabled={locked}
+            onChange={(v) => setF("description", v)}
+            onBlur={() => flush("description", a.description)}
+            placeholder={a.particulars || "Description"}
+            className={txtInput + " resize-none"}
+          />
+          <RowAttachmentIcon
+            rid={rid}
+            addition={a}
+            attachment={attachment}
+            onDeleted={onAttachmentChanged}
+          />
+        </div>
       </td>
 
       {/* Invoice Cost — read-only display, with merge button */}

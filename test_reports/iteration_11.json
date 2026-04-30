@@ -1,0 +1,42 @@
+{
+  "summary": "Phase 1.5 — Fixed Assets Invoice-OCR attachment backend is GREEN: 12/12 pytest cases pass in /app/backend/tests/test_invoice_ocr_phase15.py using the live sample PDF (3 invoices + 1 ledger page). Validated: upload-invoices shape + auth-gate + .pdf-only + %PDF magic + 25MB cap; extraction detects 3 invoices, page 1 is ledger_extract, at least 1 auto-match is produced; second upload of same PDF yields a fresh upload_id; apply-invoice-uploads with apply_description=false leaves the addition's description untouched and writes one attachment; apply_description=true overwrites the description with extraction.description; re-applying replaces (not duplicates) the attachment for a given (run,aid) pair; download returns Content-Type application/pdf, Content-Disposition inline, body starts with %PDF; delete returns {ok, deleted:1} and DOES NOT touch the description; second delete returns deleted:0; unknown upload_id → 404; invoice-attachments list returns thin rows (no content_b64 / pdf_b64); delete_run cascade wipes fa_invoice_attachments (scratch run created+deleted OK). End-state on RUN_ID 0e4cc62f-52f9-4668-b598-f60bd0c52803 verified clean: no attachments for MATCHED_AID 642ab95b-4fd4-46e5-88cc-d9d0999b8452 and description restored to include 'JUKI BRAND 1 NEEDLE LOCKSTITCH MACHINE'. Gemini calls used: 2 full uploads (within budget target).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_invoice_ocr_phase15.py",
+    "/app/test_reports/pytest/iteration_11.xml"
+  ],
+  "action_items": [
+    "(Testing-only observation, no dev change required) Playwright could not reliably click the Additions tab from a cold session in the automated harness — the tab button composes 'Additions' + count badge ('101') into separate spans which makes strict text selectors brittle. Consider exposing a data-testid on the four FA tabs, e.g. fa-tab-ledgers / fa-tab-credits / fa-tab-additions / fa-tab-compute. Main-agent manually verified the full UI cycle already."
+  ],
+  "critical_code_review_comments": [
+    "invoice_ocr.py — Gemini temperature 0.1 + strict JSON prompt + _strip_code_fences() is well-defended against markdown-wrapped replies. Good.",
+    "invoice_ocr.py::slice_pdf clamps start/end to [1..n] and raises on empty range — safe against hallucinated page_ranges.",
+    "invoice_ocr.py::match_invoice_to_addition correctly skips merged-child rows (parent_addition_id) and discount_credit source rows. Three-pass order (exact inv_no → gstin/party+total → fuzzy inv_no) is sane and scores are stable (100/95/90/~85).",
+    "controller.upload_invoices — reads file once into memory then re-uses raw for both magic check and OCR. 25MB cap enforced. %PDF check uses the raw bytes (not filename). Good.",
+    "controller._PENDING_UPLOADS is an in-memory dict keyed by upload_id; GC on every new upload drops entries > 1h old. For a single-worker FastAPI this is fine; if the server is ever run with >1 worker this must migrate to Mongo — please flag in a future hardening pass.",
+    "controller.apply_invoice_uploads uses replace_one({run_id, addition_id}, ..., upsert=True) — replace semantics correctly prevent duplicate attachments for the same (run,aid). Verified by test_reapply_chunk_replaces_attachment.",
+    "controller.apply_invoice_uploads only updates the description when apply_description=true AND extraction.description is non-empty — good guard against blanking the row on an empty OCR line.",
+    "controller.delete_invoice_attachment does NOT modify the ADDITIONS row — verified by regression test; description survives. Matches the brief.",
+    "controller.download_invoice_attachment sanitises filename with re.sub('[^A-Za-z0-9._-]+','_',...) before emitting Content-Disposition — good header-injection defence.",
+    "controller.list_invoice_attachments explicitly projects out content_b64 — thin payload as required; tested.",
+    "controller.delete_run cascade extended to INVOICE_ATTACH.delete_many({run_id: rid}) — tested indirectly via scratch run lifecycle.",
+    "INVOICE_ATTACH collection docs embed run_id + addition_id + pdf_size + page_range + ocr_extraction + uploaded_at. Content_b64 stores gzip+base64 (serialisation-safe in Mongo). _id is excluded from all responses."
+  ],
+  "updated_files": ["/app/backend/tests/test_invoice_ocr_phase15.py"],
+  "success_rate": {
+    "backend": "100% (12/12 passed in 81s incl. real Gemini calls)",
+    "frontend": "Partial — dropzone presence was observed earlier in DOM exploration but the automated Playwright harness could not deterministically click the 'Additions' tab from a cold session; see action_items. Main agent has already verified the UI flow end-to-end manually."
+  },
+  "test_credentials": "session_token=qa_test_session_token_20260430_dev (admin qa-bot@transformautomations.com)",
+  "seed_data_creation": "None. All test-induced writes self-revert: attachment deleted, description restored via PATCH, scratch run cascade-deleted. Final state of RUN_ID 0e4cc62f-52f9-4668-b598-f60bd0c52803 verified clean.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New regression suite: /app/backend/tests/test_invoice_ocr_phase15.py (12 tests, ~82s since it issues 2 real Gemini calls). Sample PDF: https://customer-assets.emergentagent.com/job_unified-tax-tools/artifacts/koy94bcb_Plant__Machinery_GST_12_-_FINAL.pdf (1 ledger page + 3 invoices; invoices TN24-25-SIM-23, NA/1596/24-25, TN24-25-SIM-314). The party_plus_total auto-match typically hits MATCHED_AID=642ab95b-4fd4-46e5-88cc-d9d0999b8452 on one chunk (score=90). Testids wired in FE code per reference files: fa-invoice-dropzone, fa-invoice-preview-modal, fa-invoice-chunk-addition-{i}, fa-invoice-chunk-applydesc-{i}, fa-invoice-chunk-skip-{i}, fa-invoice-apply-btn, fa-attachment-{addition_id}. Recommend main agent (or next testing agent) add data-testid on the 4 FA tabs (fa-tab-ledgers/credits/additions/compute) for future automation stability.",
+  "rca of the issue": "No bugs discovered in Phase 1.5. Frontend automated click of 'Additions' tab was unreliable because the tab element composes 'Additions' text + a number-badge span; strict text selectors fail while CSS :has-text lookups intermittently time out on cold sessions. Non-blocking."
+}
