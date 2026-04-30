@@ -28,6 +28,8 @@ export default function ClientUtilities() {
       navigate(`/dashboard/clients/${clientId}/utilities/gst-recon`);
     } else if (u.id === "balance-confirmation") {
       navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation`);
+    } else if (u.id === "fixed-assets") {
+      navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets`);
     }
   };
 
