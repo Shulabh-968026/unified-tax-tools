@@ -1,5 +1,16 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Additions UX overhaul (2026-04-30 PM)
+- [x] **Tab order reflowed** Ledgers → Credits → Additions → Compute & Export so the auditor classifies credits before reaching the Additions register.
+- [x] **Discount-classified credits surface in Additions** as locked, negative-cost rows (`source: "discount_credit"`, rendered with rose tint, all fields disabled). They flow into the depreciation working as negative pseudo-additions automatically — auditor never has to copy the figure twice.
+- [x] **Per-block progress strip** at the top of Additions tab: ✓ Done / ◐ In Progress / ○ Not Started chips per block, with row counts (`reviewed/total`). Clicking a chip switches the active block. Server endpoint `GET /runs/{rid}/additions/progress`.
+- [x] **`reviewed` flag** added to addition rows. Server flips it to True on every PATCH so any auditor edit is treated as a review action; that's what drives the progress strip without needing an explicit "Mark Reviewed" button.
+- [x] **15-column auditor-friendly layout** in the requested order: Acc Date · PTU Date · Description of Asset (editable multi-line) · Invoice Cost · Other Exp · ITC Reversed · Interest Cap · Forex · Discounts · Total · IT Block · Supplier · Voucher No · Invoice No · Inv Date.
+- [x] **Drag-and-drop transfers** — Invoice Cost cell is `draggable`; drop into any of the 5 adjustment columns triggers a `prompt()` with default = full amount. User accepts or types a partial. Server-side: single PATCH adjusts both fields. Drop targets all 5 adjustment columns.
+- [x] **Auto-extract Invoice No** from voucher narration on ingest (regex `(?:bill|inv)\s*(?:no)?\s*[:-]?\s*(...)` with sensible tail-stripping). 5 / 60 distinct narrations matched on Velav books — auditor edits the rest inline.
+- [x] **Block filter dropdown** + 10-rows-per-page pagination · search box (description, party, voucher, invoice no).
+- [x] **Backend response merges discount credits** into `/additions` and `/compute` so all downstream consumers see them as negative additions automatically.
+
 ## Fixed Assets — Phase 1F + 1G live (2026-04-30)
 - [x] **Tabbed in-run UX** — Ledgers / Additions / Credits / Compute & Export tabs at `/dashboard/clients/:cid/utilities/fixed-assets/runs/:rid`. Tab headers show live counts.
 - [x] **Additions Register tab** (`AdditionsTab.jsx`) — group-by-block toggle, free-text search, every row inline-editable: Invoice Date, PTU Date with **`[📅 Copy from Acc Date]`** and **`[📅 Copy from Inv Date]`** quick-fill buttons (per spec); 5 adjustment columns (`Discount/Credits` −, `Other Exp` +, `ITC Reversed` −, `Interest Cap` +, `Forex` +) wired through to a live "Capitalised Cost" formula on the right. Half-rate badge auto-flips when PTU < 180 days from FY end.

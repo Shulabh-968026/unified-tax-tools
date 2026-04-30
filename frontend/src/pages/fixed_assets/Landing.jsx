@@ -275,10 +275,10 @@ export default function FixedAssetsLanding() {
         {/* Tab bar */}
         <div className="flex items-center gap-1 mb-4 border-b border-[#E5E5E0]">
           {[
-            ["ledgers",   "Ledgers",   BookOpen,    summary.total_ledgers || 0],
-            ["additions", "Additions", FileText,    summary.additions || 0],
-            ["credits",   "Credits",   ArrowDown,   summary.credits || 0],
-            ["compute",   "Compute & Export", Calculator, null],
+            ["ledgers",   "Ledgers",          BookOpen,    summary.total_ledgers || 0],
+            ["credits",   "Credits",          ArrowDown,   summary.credits || 0],
+            ["additions", "Additions",        FileText,    summary.additions || 0],
+            ["compute",   "Compute & Export", Calculator,  null],
           ].map(([id, label, Icon, count]) => (
             <button
               key={id}

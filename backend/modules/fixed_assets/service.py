@@ -165,6 +165,26 @@ _INV_DATE_PATTERNS = [
     ),
 ]
 
+# Invoice/Bill number — captured from narration on a best-effort basis.
+# Stops at a date keyword, "for ", "nos", punctuation or end of segment.
+_INV_NO_PATTERN = re.compile(
+    r"\b(?:bill|inv(?:oice)?)\.?\s*(?:no\.?|num\.?|#)?\s*[:\-]?\s*"
+    r"([A-Za-z0-9][A-Za-z0-9\-/.\s]{0,40}?)"
+    r"(?=\s*(?:dt\b|date\b|dat\b|for\b|nos\b|qty\b|@|,|;|\.\s|$))",
+    re.I,
+)
+_INV_NO_TAIL_STRIP = re.compile(r"\s*(?:dt|date|dat|for|nos|qty|@).*$", re.I)
+
+
+def detect_invoice_no(narration: str) -> str:
+    if not narration:
+        return ""
+    m = _INV_NO_PATTERN.search(narration)
+    if not m:
+        return ""
+    raw = _INV_NO_TAIL_STRIP.sub("", m.group(1)).strip(" ,.;:-/")
+    return raw[:30]
+
 
 def _normalise_date(token: str) -> str:
     """Best-effort dd/mm/yyyy → YYYY-MM-DD. Returns '' if not parseable."""

@@ -107,7 +107,11 @@ class FaAdditionOut(BaseModel):
 
 class FaAdditionPatch(BaseModel):
     invoice_date: Optional[str] = None
+    invoice_no: Optional[str] = None
     put_to_use_date: Optional[str] = None
+    description: Optional[str] = None
+    party_name: Optional[str] = None
+    voucher_no: Optional[str] = None
     invoice_cost: Optional[float] = None
     discount_credits: Optional[float] = None
     other_expenses: Optional[float] = None
@@ -116,6 +120,7 @@ class FaAdditionPatch(BaseModel):
     forex_fluctuations: Optional[float] = None
     block_label: Optional[str] = None
     notes: Optional[str] = None
+    reviewed: Optional[bool] = None
 
 
 class FaCreditEntryOut(BaseModel):

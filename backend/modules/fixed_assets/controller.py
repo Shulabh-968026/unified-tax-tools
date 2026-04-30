@@ -542,18 +542,117 @@ async def list_additions(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
+    """Returns regular additions PLUS any credit entries the auditor has
+    classified as 'discount' — surfaced as locked, negative-cost addition
+    rows so they appear inline in the Additions register. Discount rows are
+    not editable from this endpoint (managed via `/credits/.../classify`)."""
     await _auth(request, session_token, authorization)
     q: Dict[str, Any] = {"run_id": rid}
     if block:
         q["block_label"] = block
     rows = await ADDITIONS.find(q, {"_id": 0}) \
         .sort([("block_label", 1), ("invoice_date", 1)]).to_list(5000)
-    led_map: Dict[str, str] = {}
-    async for L in LEDGERS.find({"run_id": rid}, {"_id": 0, "fa_ledger_id": 1, "name": 1}):
-        led_map[L["fa_ledger_id"]] = L.get("name", "")
+
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find({"run_id": rid},
+                                {"_id": 0, "fa_ledger_id": 1, "name": 1, "block_label": 1}):
+        led_map[L["fa_ledger_id"]] = L
     for r in rows:
-        r["ledger_name"] = led_map.get(r.get("fa_ledger_id", ""), "")
+        Ldoc = led_map.get(r.get("fa_ledger_id", ""), {})
+        r["ledger_name"] = Ldoc.get("name", "")
+        # Defensive defaults for documents written before reviewed/source/desc
+        # fields were introduced — keeps the UI clean for legacy runs.
+        r.setdefault("reviewed", False)
+        r.setdefault("source", "addition")
+        r.setdefault("description", r.get("particulars", ""))
+        r.setdefault("invoice_no", "")
+
+    # --- Merge in discount-classified credits as negative rows --------------
+    cred_q: Dict[str, Any] = {"run_id": rid, "classification": "discount"}
+    discount_rows = []
+    async for c in CREDITS.find(cred_q, {"_id": 0}):
+        Ldoc = led_map.get(c.get("fa_ledger_id", ""), {})
+        bl = Ldoc.get("block_label", "")
+        if block and bl != block:
+            continue
+        discount_rows.append({
+            "addition_id":         f"discount-{c['credit_id']}",
+            "run_id":              rid,
+            "fa_ledger_id":        c.get("fa_ledger_id", ""),
+            "block_label":         bl,
+            "voucher_id":          c.get("voucher_id", ""),
+            "voucher_no":          c.get("voucher_no", ""),
+            "voucher_type":        c.get("voucher_type", ""),
+            "accounting_date":     c.get("accounting_date", ""),
+            "invoice_date":        c.get("accounting_date", ""),
+            "invoice_no":          "",
+            "put_to_use_date":     "",
+            "party_name":          c.get("party_name", ""),
+            "particulars":         c.get("particulars", ""),
+            "description":         f"[Discount] {c.get('particulars') or ''}",
+            "ledger_name":         Ldoc.get("name", ""),
+            "invoice_cost":        -float(c.get("amount") or 0),
+            "discount_credits":    0.0,
+            "other_expenses":      0.0,
+            "itc_reversed":        0.0,
+            "interest_capitalized": 0.0,
+            "forex_fluctuations":  0.0,
+            "is_more_than_180":    True,
+            "half_rate":           False,
+            "reviewed":            True,
+            "source":              "discount_credit",
+            "credit_id":           c["credit_id"],
+        })
+    rows.extend(discount_rows)
+    rows.sort(key=lambda r: ((r.get("block_label") or "~"),
+                             (r.get("invoice_date") or r.get("accounting_date") or "")))
     return {"rows": rows}
+
+
+@router.get("/runs/{rid}/additions/progress")
+async def additions_progress(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Per-block progress of the Additions tab — used to render the
+    "2 done · 2 not started · 1 in progress" strip the auditor sees at the
+    top of the tab. A row counts as 'reviewed' once the auditor has touched
+    any field on it (server sets reviewed=True on every PATCH)."""
+    await _auth(request, session_token, authorization)
+    pipeline = [
+        {"$match": {"run_id": rid, "block_label": {"$ne": ""}}},
+        {"$group": {
+            "_id":      "$block_label",
+            "total":    {"$sum": 1},
+            "reviewed": {"$sum": {"$cond": [{"$eq": ["$reviewed", True]}, 1, 0]}},
+        }},
+    ]
+    raw: Dict[str, Dict[str, int]] = {}
+    async for r in ADDITIONS.aggregate(pipeline):
+        raw[r["_id"]] = {"total": r["total"], "reviewed": r["reviewed"]}
+
+    blocks = await get_block_labels_active()
+    out = []
+    for b in blocks:
+        bl = b["block_label"]
+        agg = raw.get(bl)
+        if not agg:
+            continue
+        total = agg["total"]
+        rev = agg["reviewed"]
+        status = "done" if rev == total else ("in_progress" if rev > 0 else "not_started")
+        out.append({"block_label": bl, "rate": b["rate"],
+                    "total": total, "reviewed": rev, "status": status})
+
+    summary = {
+        "blocks":       len(out),
+        "done":         sum(1 for r in out if r["status"] == "done"),
+        "in_progress":  sum(1 for r in out if r["status"] == "in_progress"),
+        "not_started":  sum(1 for r in out if r["status"] == "not_started"),
+    }
+    return {"rows": out, "summary": summary}
 
 
 @router.patch("/runs/{rid}/additions/{aid}")
@@ -566,6 +665,8 @@ async def patch_addition(
     authorization: Optional[str] = Header(default=None),
 ):
     await _auth(request, session_token, authorization)
+    if aid.startswith("discount-"):
+        raise HTTPException(400, "Discount rows are managed via Credits tab")
     run = await RUNS.find_one({"id": rid}, {"_id": 0, "fy_end": 1})
     if not run:
         raise HTTPException(404, "Run not found")
@@ -577,6 +678,9 @@ async def patch_addition(
         add[k] = v
     if "put_to_use_date" in fields:
         _recompute_180(add, run.get("fy_end") or "")
+    # Any auditor edit marks the row as reviewed (drives the per-block
+    # progress strip — Done / In Progress / Not Started).
+    add["reviewed"] = True
     add.pop("_id", None)
     await ADDITIONS.replace_one({"addition_id": aid, "run_id": rid}, add)
     return {"ok": True, "row": add}
@@ -723,6 +827,36 @@ async def _gather_compute_inputs(rid: str) -> Dict[str, Any]:
     for a in additions:
         Ldoc = led_map.get(a.get("fa_ledger_id", ""), {})
         a["ledger_name"] = Ldoc.get("name", "")
+
+    # Discount-classified credits become negative pseudo-additions so they
+    # reduce the block's capitalised cost in the depreciation working.
+    for c in credits:
+        if (c.get("classification") or "").lower() != "discount":
+            continue
+        if not c.get("block_label"):
+            continue
+        additions.append({
+            "block_label":         c["block_label"],
+            "fa_ledger_id":        c.get("fa_ledger_id", ""),
+            "ledger_name":         c.get("ledger_name", ""),
+            "voucher_no":          c.get("voucher_no", ""),
+            "voucher_type":        c.get("voucher_type", ""),
+            "accounting_date":     c.get("accounting_date", ""),
+            "invoice_date":        c.get("accounting_date", ""),
+            "put_to_use_date":     "",
+            "particulars":         f"[Discount] {c.get('particulars') or ''}",
+            "description":         f"[Discount] {c.get('particulars') or ''}",
+            "party_name":          c.get("party_name", ""),
+            "invoice_cost":        -float(c.get("amount") or 0),
+            "discount_credits":    0.0,
+            "other_expenses":      0.0,
+            "itc_reversed":        0.0,
+            "interest_capitalized": 0.0,
+            "forex_fluctuations":  0.0,
+            "is_more_than_180":    True,
+            "half_rate":           False,
+            "source":              "discount_credit",
+        })
 
     return {
         "run":         run,
