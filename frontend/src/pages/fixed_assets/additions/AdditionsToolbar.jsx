@@ -116,7 +116,7 @@ export function AdditionsToolbar({
 
         {/* Bulk PTU copy from Acc Date */}
         <button
-          data-testid="fa-add-bulk-ptu"
+          data-testid="fa-add-fill-ptu"
           onClick={onBulkCopyPTUFromAcc}
           className="inline-flex items-center gap-1 px-2 py-1 text-[11.5px] border border-slate-300 hover:bg-slate-50"
           title={`Copy Acc Date → PTU for every row in ${activeBlock || "this block"} that has no PTU yet`}

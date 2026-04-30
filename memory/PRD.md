@@ -1,5 +1,52 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Additions tab refactor + Excel round-trip + power features (2026-04-30 PM-4)
+**The 640-line `AdditionsTab.jsx` monolith has been split into a slim ~370-line orchestrator + 9 focused sub-components under `pages/fixed_assets/additions/`.** Three user-asked features and five additional power-features land at the same time. Backend 16/16 GREEN, Frontend 8/8 GREEN (`/app/test_reports/iteration_10.json`).
+
+### Component split
+```
+pages/fixed_assets/additions/
+├── utils.js                     # inr / capitalised / ADJ_FIELDS / COLUMN_DEFS / LS keys
+├── ProgressStrip.jsx            # extracted as-is from inline def
+├── Pager.jsx                    # extracted prev/next pager
+├── AdditionsToolbar.jsx         # block + ledger + search filters + page-size + Fill PTU
+│                                # + Export / Import buttons + column-vis gear popover
+├── AdditionRow.jsx              # editable row + per-row save indicator + auto-grow textarea
+├── MergedRow.jsx                # compact "↳ Merged" strip row
+├── MergeModal.jsx               # parent-pick + adjustment-column modal (ex-LinkModal)
+├── BulkActionBar.jsx            # floating bottom bar — Set Block / Mark Reviewed / PTU=Acc
+└── ExcelRoundTripModal.jsx      # ImportPreviewModal + DriftBanner (re-used by ComputeTab)
+```
+
+### Per-block Excel round-trip (export ↔ edit ↔ re-import)
+- [x] `GET /runs/{rid}/additions/export.xlsx` — multi-sheet workbook (one sheet per active block_label). Each sheet:
+      • Title row + frozen totals strip (rows 2-3) + locked headers (row 4)
+      • Hidden columns A=addition_id, B=parent_addition_id (so merge linkage survives the round-trip)
+      • Editable cells highlighted yellow, locked / read-only cells grey, discount-credit rows tinted rose
+      • All 16 visible columns (Ledger · Acc Date · PTU · Description · Invoice Cost · 5× adjustments · Total Capitalised · Supplier · Voucher · Invoice · Inv Date · Source)
+- [x] `POST /runs/{rid}/additions/import.xlsx?dry_run=true` — parses, diffs against the live DB, runs a **block-totals drift check** (tolerance ₹1), and returns a JSON preview with `{rows_changed, unknown_ids, changes:[{addition_id, changes:{field:{old,new}}}], drift:{drifted, blocks:[{db_total, excel_total, diff}]}, errors}`. `discount-*` synthetic ids are silently skipped (no spurious unknown_ids). Text fields are trimmed before diff so trailing-newline noise is suppressed.
+- [x] `POST /runs/{rid}/additions/import.xlsx?dry_run=false` — applies the diff, recomputes `is_more_than_180`/`half_rate` whenever PTU changes, and persists `fa_runs.excel_drift_warning` only when ≥1 block drifts beyond tolerance.
+- [x] `POST /runs/{rid}/clear-excel-drift` — auditor-driven acknowledgement that unsets the persistent warning.
+- [x] **Persistent `DriftBanner`** (rose, full-width) renders at the top of BOTH the Additions tab AND the Compute & Export tab whenever `excel_drift_warning` is set on the run. Auditor can't generate the final report without seeing it. Clicking "Mark Reconciled" on either banner clears the flag globally.
+- [x] `ExcelImportPreviewModal` — diff table (per-row, per-field old → new), drift banner inside the modal, "Apply Anyway" / "Apply Changes" CTA labelled per drift state.
+
+### User-asked quick wins
+- [x] **Configurable rows-per-page** dropdown (10 / 25 / 50) next to the pager, persisted to `localStorage["fa.additions.pageSize"]`.
+- [x] **Per-row save indicator** — every editable row now shows a tiny inline status dot near the Acc Date cell: spinning loader while saving, emerald ✓ for ~2.2s on success, rose alert on error. Driven by the row's own promise, not a global flag.
+- [x] **Per-block Ledger filter** — when an active block has ≥2 distinct ledgers, a `All ledgers (N)` dropdown appears next to the block filter so the auditor can drill into one ledger at a time. Resets when block changes.
+
+### Additional power features
+- [x] **Bulk inline actions** — toolbar "Bulk" toggle reveals checkbox column on every editable row. Selecting one or more rows surfaces a floating action bar at bottom-center with: Set Block to… / Mark Reviewed / PTU = Acc Date / Clear (X). Backed by new `POST /runs/{rid}/additions/bulk-patch` (skips merged children + discount rows; handles the `__copy_ptu_from_acc` magic key server-side and recomputes the half-rate flag).
+- [x] **Column visibility toggle** — gear icon in toolbar opens a popover with checkboxes for 10 togglable columns (Acc Date · Description · Invoice Cost · Total · IT Block always visible). State persisted to `localStorage["fa.additions.colVis"]`.
+- [x] **Description "Auto-grow textarea"** — replaces the fixed-2-row textarea with a JS-driven height: `min(180px, max(34px, scrollHeight))`. No more cramped multi-line asset descriptions; resize handle removed.
+- [x] **Block-aware "Fill PTU"** toolbar button — copies Acc Date → PTU for every row in the active filter that has no PTU yet (only one server round-trip via bulk-patch).
+- [x] **Renamed test-id** `fa-add-bulk-ptu` (toolbar) → `fa-add-fill-ptu` to disambiguate from the bulk-bar's `fa-add-bulk-ptu` (testing-agent action item).
+
+### End-to-end verification (testing agent iteration_10)
+- **Backend** — `tests/test_fixed_assets_additions_xlsx.py` 16/16 GREEN: export shape, dry-run noop, dry-run-with-edit diff, drift-flag persistence, clear-drift reset, discount-* skipping, bulk-patch mark-reviewed, bulk-patch __copy_ptu_from_acc, bulk-patch discount-id skip, auth gates.
+- **Frontend** — page-size persists across full reload, column-vis persists across full reload, Bulk → 21 row checkboxes → floating bar with all 4 actions, Description textarea grows 37px → 103px on six lines, Excel export downloads cleanly, drifted re-import shows `DriftBanner` on BOTH tabs, "Mark Reconciled" on Compute tab clears the banner globally.
+- **Run state preserved** — `0e4cc62f-…` run ended with `excel_drift_warning=None`; no data pollution.
+
 ## Fixed Assets — Phase 1D + 1H live (2026-04-30 PM-3)
 - [x] **Phase 1D — Prior-year 3CD import** — `POST /runs/{rid}/ingest-prior-3cd` parses `FORM3CA.F3CA.Form3cdDeprAllw[]`, aggregates by rate, and for each rate returns the list of active blocks sharing that rate as `candidate_block_labels`. `suggested_block_label` is populated only when the rate uniquely maps to a single block. Companion `POST /runs/{rid}/apply-prior-3cd` (JSON body `{items:[{rate, block_label, opening_wdv}]}`) writes the auditor-confirmed mapping into `fa_block_opening` with `source="prior_3cd"` + a descriptive ref to the uploaded filename.
 - [x] **Phase 1H — Multi-FY roll-forward** — `GET /runs/{rid}/roll-forward-source` runs the compute engine on the most recent prior-FY run for the same client (explicitly or by `fy_end` lookup) and returns the resulting positive-closing-WDV rows. `POST /runs/{rid}/roll-forward` writes each into `fa_block_opening` with `source="prior_run"` + `source_ref="run:<src_id>"`, and stamps `rolled_from_run_id` on the current run.
