@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronLeft, ChevronRight, FileText, Loader2,
   CheckCircle2, Circle, CircleDot, Search, Calendar, CalendarDays,
-  Split, X,
+  Link2, Link2Off, X,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -32,8 +32,9 @@ export default function AdditionsTab({ rid, blocks }) {
   const [progress, setProgress] = useState({ rows: [], summary: {} });
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
-  const [activeBlock, setActiveBlock] = useState(""); // first block selected on first load
+  const [activeBlock, setActiveBlock] = useState("");
   const [page, setPage] = useState(1);
+  const [showMerged, setShowMerged] = useState(true);
 
   const refresh = useCallback(async () => {
     if (!rid) return;
@@ -68,13 +69,28 @@ export default function AdditionsTab({ rid, blocks }) {
     }
   };
 
-  /* Split modal — auditor enters how the invoice cost is broken up */
-  const [splitFor, setSplitFor] = useState(null);   // addition row
-  const closeSplit = () => setSplitFor(null);
-  const applySplit = async (a, values) => {
-    closeSplit();
-    await patchRow(a, values);
-    toast.success("Split applied");
+  /* Link child → parent (Option A) */
+  const [linkFor, setLinkFor] = useState(null);   // child row pending link
+  const closeLink = () => setLinkFor(null);
+  const applyLink = async (child, { parent_addition_id, linked_as }) => {
+    closeLink();
+    try {
+      await http.post(`/fixed-assets/runs/${rid}/additions/${child.addition_id}/link`,
+                      { parent_addition_id, linked_as });
+      toast.success("Line item merged");
+      refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Link failed");
+    }
+  };
+  const unlink = async (child) => {
+    try {
+      await http.post(`/fixed-assets/runs/${rid}/additions/${child.addition_id}/unlink`);
+      toast.success("Unlinked");
+      refresh();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Unlink failed");
+    }
   };
 
   /* ---------------- Filtering / pagination ---------------- */
@@ -85,12 +101,53 @@ export default function AdditionsTab({ rid, blocks }) {
     if (activeBlock) xs = xs.filter(r => r.block_label === activeBlock);
     const q = search.trim().toLowerCase();
     if (q) xs = xs.filter(r => `${r.description || r.particulars} ${r.party_name} ${r.voucher_no} ${r.invoice_no}`.toLowerCase().includes(q));
-    return xs;
-  }, [rows, activeBlock, search]);
+    if (!showMerged) xs = xs.filter(r => !r.parent_addition_id);
+
+    // Order children directly after their parent so the relationship is
+    // visible at a glance during paginated review.
+    const byId = new Map(xs.map(r => [r.addition_id, r]));
+    const childrenByParent = new Map();
+    for (const r of xs) {
+      const p = r.parent_addition_id;
+      if (p && byId.has(p)) {
+        if (!childrenByParent.has(p)) childrenByParent.set(p, []);
+        childrenByParent.get(p).push(r);
+      }
+    }
+    const ordered = [];
+    const seen = new Set();
+    for (const r of xs) {
+      if (r.parent_addition_id && byId.has(r.parent_addition_id)) continue; // child handled later
+      if (seen.has(r.addition_id)) continue;
+      ordered.push(r); seen.add(r.addition_id);
+      for (const c of childrenByParent.get(r.addition_id) || []) {
+        if (!seen.has(c.addition_id)) { ordered.push(c); seen.add(c.addition_id); }
+      }
+    }
+    // Orphans (child whose parent isn't in current filter)
+    for (const r of xs) if (!seen.has(r.addition_id)) ordered.push(r);
+    return ordered;
+  }, [rows, activeBlock, search, showMerged]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   useEffect(() => { if (page > totalPages) setPage(1); }, [totalPages, page]);
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Eligible parent rows for linking — same block, not itself merged, not the
+  // child being linked. Used by the LinkModal dropdown.
+  const parentCandidates = useMemo(() => {
+    if (!activeBlock) return [];
+    return rows.filter(r => r.source !== "discount_credit"
+                            && r.block_label === activeBlock
+                            && !r.parent_addition_id);
+  }, [rows, activeBlock]);
+
+  // Map addition_id → row, for rendering "Merged into <description>" labels
+  const rowsById = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) m.set(r.addition_id, r);
+    return m;
+  }, [rows]);
 
   /* ---------------- Render ---------------- */
   return (
@@ -124,6 +181,12 @@ export default function AdditionsTab({ rid, blocks }) {
               </option>
             ))}
           </select>
+          <label className="text-[11px] flex items-center gap-1 text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={showMerged}
+                   onChange={(e) => setShowMerged(e.target.checked)}
+                   data-testid="fa-add-show-merged"/>
+            Show merged
+          </label>
           <div className="relative">
             <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"/>
             <input
@@ -167,9 +230,15 @@ export default function AdditionsTab({ rid, blocks }) {
                 No additions in this block match the filter.
               </td></tr>
             ) : paged.map(a => (
-              <Row key={a.addition_id} a={a} blocks={blocks}
-                   onPatch={(p) => patchRow(a, p)}
-                   onOpenSplit={() => setSplitFor(a)}/>
+              a.parent_addition_id ? (
+                <MergedRow key={a.addition_id} a={a}
+                           parent={rowsById.get(a.parent_addition_id)}
+                           onUnlink={() => unlink(a)}/>
+              ) : (
+                <Row key={a.addition_id} a={a} blocks={blocks}
+                     onPatch={(p) => patchRow(a, p)}
+                     onOpenLink={() => setLinkFor(a)}/>
+              )
             ))}
           </tbody>
         </table>
@@ -181,8 +250,9 @@ export default function AdditionsTab({ rid, blocks }) {
         <Pager page={page} totalPages={totalPages} onPage={setPage}/>
       </div>
 
-      {splitFor && (
-        <SplitModal addition={splitFor} onClose={closeSplit} onApply={(v) => applySplit(splitFor, v)}/>
+      {linkFor && (
+        <LinkModal child={linkFor} candidates={parentCandidates}
+                   onClose={closeLink} onApply={(p) => applyLink(linkFor, p)}/>
       )}
     </div>
   );
@@ -253,7 +323,7 @@ function Pager({ page, totalPages, onPage }) {
   );
 }
 
-function Row({ a, blocks, onPatch, onOpenSplit }) {
+function Row({ a, blocks, onPatch, onOpenLink }) {
   const [local, setLocal] = useState(a);
   useEffect(() => setLocal(a), [a.addition_id, a.invoice_cost, a.other_expenses, a.itc_reversed,
                                 a.interest_capitalized, a.forex_fluctuations, a.discount_credits,
@@ -340,12 +410,12 @@ function Row({ a, blocks, onPatch, onOpenSplit }) {
           {!locked && (
             <button
               type="button"
-              title="Split — enter Other Exp / ITC / Interest / Forex / Discounts in one go"
-              onClick={onOpenSplit}
-              className="text-slate-400 hover:text-slate-900 p-0.5"
-              data-testid={`fa-add-split-${a.addition_id}`}
+              title="Merge this line into another asset (e.g. freight, installation, GST etc.)"
+              onClick={onOpenLink}
+              className="text-slate-400 hover:text-sky-700 p-0.5"
+              data-testid={`fa-add-link-${a.addition_id}`}
             >
-              <Split size={11}/>
+              <Link2 size={11}/>
             </button>
           )}
         </div>
@@ -404,93 +474,163 @@ function Row({ a, blocks, onPatch, onOpenSplit }) {
 function round2(n) { return Math.round(n * 100) / 100; }
 
 /* --------------------------------------------------------------- */
-/* Split modal — replaces the awkward drag-drop                    */
+/* MergedRow — compact row for line items that have been merged    */
 /* --------------------------------------------------------------- */
-const SPLIT_FIELDS = [
-  { key: "other_expenses",       label: "Other Expenses",      sign: "+" },
-  { key: "itc_reversed",         label: "ITC Reversed",        sign: "−" },
-  { key: "interest_capitalized", label: "Interest Capitalised", sign: "+" },
-  { key: "forex_fluctuations",   label: "Forex Fluctuations",  sign: "+" },
-  { key: "discount_credits",     label: "Discounts/Credits",   sign: "−" },
-];
+const ADJ_LABELS = {
+  other_expenses:       "Other Expenses",
+  itc_reversed:         "ITC Reversed",
+  interest_capitalized: "Interest Capitalised",
+  forex_fluctuations:   "Forex",
+  discount_credits:     "Discounts/Credits",
+};
 
-function SplitModal({ addition, onClose, onApply }) {
-  const a = addition;
-  const [vals, setVals] = useState(() => {
-    const out = {};
-    for (const f of SPLIT_FIELDS) out[f.key] = Number(a[f.key] || 0);
-    return out;
-  });
-  const setF = (k, v) => setVals(s => ({ ...s, [k]: v }));
+function MergedRow({ a, parent, onUnlink }) {
+  const parentDesc = (parent?.description || parent?.particulars || parent?.party_name || "(parent)").slice(0, 90);
+  return (
+    <tr className="bg-slate-50/70 text-slate-500" data-testid={`fa-merged-${a.addition_id}`}>
+      <td colSpan={15} className="px-2 py-1.5">
+        <div className="flex items-center gap-2 text-[11px]">
+          <Link2 size={11} className="text-sky-600"/>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-sky-700">↳ Merged</span>
+          <span className="truncate max-w-[260px]" title={a.description || a.particulars}>
+            {a.description || a.particulars || "(no description)"}
+          </span>
+          <span className="text-slate-400">·</span>
+          <span className="font-mono">₹ {Math.abs(Number(a.invoice_cost || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+          <span className="text-slate-400">·</span>
+          <span>into <strong className="text-slate-700">{parentDesc}</strong></span>
+          <span className="text-slate-400">·</span>
+          <span>as <strong className="text-slate-700">{ADJ_LABELS[a.linked_as] || a.linked_as}</strong></span>
+          <button onClick={onUnlink}
+                  data-testid={`fa-add-unlink-${a.addition_id}`}
+                  className="ml-auto inline-flex items-center gap-1 text-[11px] px-2 py-0.5 border border-slate-300 hover:bg-white text-slate-700">
+            <Link2Off size={10}/> Unlink
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
 
-  const baseAmount = Number(a.invoice_cost || 0);
-  const adjPositive = Number(vals.other_expenses) + Number(vals.interest_capitalized) + Number(vals.forex_fluctuations);
-  const adjNegative = Number(vals.itc_reversed) + Number(vals.discount_credits);
-  const newTotal = baseAmount + adjPositive - adjNegative;
+/* --------------------------------------------------------------- */
+/* LinkModal — pick parent + which adjustment column                */
+/* --------------------------------------------------------------- */
+function LinkModal({ child, candidates, onClose, onApply }) {
+  const [parentId, setParentId] = useState(child.parent_addition_id || "");
+  const [linkedAs, setLinkedAs] = useState(child.linked_as || "other_expenses");
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let xs = candidates.filter(c => c.addition_id !== child.addition_id);
+    if (q) xs = xs.filter(c => `${c.description || c.particulars} ${c.party_name} ${c.voucher_no} ${c.invoice_no}`.toLowerCase().includes(q));
+    return xs.slice(0, 200);
+  }, [candidates, search, child.addition_id]);
+
+  const parent = candidates.find(c => c.addition_id === parentId);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-6"
-         data-testid="fa-split-modal">
-      <div className="bg-white border border-[#E5E5E0] w-full max-w-xl">
+         data-testid="fa-link-modal">
+      <div className="bg-white border border-[#E5E5E0] w-full max-w-3xl max-h-[80vh] flex flex-col">
         <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-[#EDEDE7]">
-          <div>
-            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-600">Split Invoice Cost</div>
+          <div className="min-w-0">
+            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-600">Merge line item</div>
             <div className="font-heading text-base mt-0.5 truncate">
-              {a.description || a.particulars || a.party_name}
+              {child.description || child.particulars || child.party_name}
             </div>
             <div className="text-[11px] text-slate-500 mt-0.5">
-              Voucher {a.voucher_no} · Invoice Cost (read-only) ₹ {Math.abs(baseAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              ₹ {Math.abs(Number(child.invoice_cost || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })} ·
+              Voucher {child.voucher_no} · Block {child.block_label}
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-900 p-1"
-                  data-testid="fa-split-close">
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-900 p-1" data-testid="fa-link-close">
             <X size={16}/>
           </button>
         </div>
 
-        <div className="p-4 space-y-2">
-          <p className="text-[11.5px] text-slate-600 mb-2">
-            Enter how the invoice splits across each component. Invoice Cost stays as captured from the books;
-            these values flow into the Total used for depreciation.
-          </p>
-          {SPLIT_FIELDS.map(f => (
-            <div key={f.key} className="grid grid-cols-[160px_60px_1fr] items-center gap-2">
-              <label className="text-[12px] text-slate-700">{f.label}</label>
-              <span className={`text-[11px] font-mono ${f.sign === "−" ? "text-rose-700" : "text-emerald-700"}`}>{f.sign}</span>
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-slate-600">
+              Parent asset (in same IT Block) — search and pick one
+            </label>
+            <div className="relative mt-1">
+              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"/>
               <input
-                type="number" step="0.01"
-                value={vals[f.key]}
-                onChange={(e) => setF(f.key, parseFloat(e.target.value || 0))}
-                onFocus={(e) => e.target.select()}
-                className="px-2 py-1 text-right border border-[#D4D4D0] focus:border-slate-700 focus:outline-none text-[12.5px] font-mono"
-                data-testid={`fa-split-${f.key}`}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by description, voucher, invoice, party…"
+                className="pl-7 pr-2 py-1.5 text-[12px] border border-[#D4D4D0] focus:outline-none focus:border-slate-700 w-full"
+                data-testid="fa-link-search"
               />
             </div>
-          ))}
-
-          <div className="border-t border-[#EDEDE7] pt-3 mt-2 grid grid-cols-[160px_60px_1fr] items-center gap-2">
-            <label className="text-[12px] text-slate-700 font-semibold">Capitalised Total</label>
-            <span/>
-            <div className="px-2 py-1 text-right font-mono text-[13px] font-semibold">
-              ₹ {newTotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <div className="mt-1 border border-[#E5E5E0] max-h-[280px] overflow-y-auto bg-[#FBFBF8]">
+              {filtered.length === 0 ? (
+                <div className="p-4 text-center text-[12px] text-slate-500">
+                  {candidates.length === 0
+                    ? "No candidate parent assets in this block."
+                    : "No matches — try a different search."}
+                </div>
+              ) : filtered.map(c => (
+                <label
+                  key={c.addition_id}
+                  data-testid={`fa-link-candidate-${c.addition_id}`}
+                  className={`flex items-start gap-2 px-3 py-2 cursor-pointer border-b border-[#EDEDE7] hover:bg-white ${parentId === c.addition_id ? "bg-sky-50" : ""}`}
+                >
+                  <input type="radio" name="parent" className="mt-1"
+                         checked={parentId === c.addition_id}
+                         onChange={() => setParentId(c.addition_id)}/>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] truncate" title={c.description || c.particulars}>
+                      {c.description || c.particulars || c.party_name || "(no description)"}
+                    </div>
+                    <div className="text-[10.5px] text-slate-500 truncate">
+                      ₹ {Number(c.invoice_cost || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })} ·
+                      Vch {c.voucher_no} · {c.invoice_no || "no inv#"} · {(c.invoice_date || "").slice(0, 10)} ·
+                      {c.party_name}
+                    </div>
+                  </div>
+                </label>
+              ))}
             </div>
           </div>
+
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-slate-600">
+              Add to which column on the parent?
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+              {Object.entries(ADJ_LABELS).map(([k, label]) => (
+                <button
+                  key={k}
+                  data-testid={`fa-link-as-${k}`}
+                  onClick={() => setLinkedAs(k)}
+                  className={`px-2 py-1 text-[11.5px] border ${linkedAs === k ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 hover:bg-slate-100"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {parent && (
+            <div className="bg-emerald-50 border border-emerald-200 px-3 py-2 text-[11.5px]">
+              <strong>₹ {Math.abs(Number(child.invoice_cost || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+              {" "}will be added to <strong>{parent.description || parent.particulars || parent.party_name}</strong>'s
+              {" "}<strong>{ADJ_LABELS[linkedAs]}</strong> column.
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#EDEDE7] bg-[#FBFBF8]">
           <button onClick={onClose} className="px-3 py-1.5 text-[12.5px] border border-slate-300 hover:bg-slate-100">Cancel</button>
           <button
-            data-testid="fa-split-apply"
-            onClick={() => onApply({
-              other_expenses:       round2(vals.other_expenses),
-              itc_reversed:         round2(vals.itc_reversed),
-              interest_capitalized: round2(vals.interest_capitalized),
-              forex_fluctuations:   round2(vals.forex_fluctuations),
-              discount_credits:     round2(vals.discount_credits),
-            })}
-            className="px-3 py-1.5 text-[12.5px] bg-slate-900 text-white hover:bg-slate-800"
+            data-testid="fa-link-apply"
+            onClick={() => onApply({ parent_addition_id: parentId, linked_as: linkedAs })}
+            disabled={!parentId}
+            className="px-3 py-1.5 text-[12.5px] bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50"
           >
-            Apply
+            Merge
           </button>
         </div>
       </div>

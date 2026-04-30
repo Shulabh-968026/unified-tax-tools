@@ -123,6 +123,11 @@ class FaAdditionPatch(BaseModel):
     reviewed: Optional[bool] = None
 
 
+class FaAdditionLink(BaseModel):
+    parent_addition_id: str
+    linked_as: str       # one of ADJ_FIELDS
+
+
 class FaCreditEntryOut(BaseModel):
     """A credit entry pending classification as Sale or Discount."""
     model_config = ConfigDict(extra="allow")

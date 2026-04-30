@@ -29,6 +29,7 @@ from modules.fixed_assets.legal_master import (
     seed_legal_master,
 )
 from modules.fixed_assets.schemas import (
+    FaAdditionLink,
     FaAdditionPatch,
     FaCreditClassifyRequest,
     FaLedgerClassifyRequest,
@@ -566,6 +567,8 @@ async def list_additions(
         r.setdefault("source", "addition")
         r.setdefault("description", r.get("particulars", ""))
         r.setdefault("invoice_no", "")
+        r.setdefault("parent_addition_id", "")
+        r.setdefault("linked_as", "")
 
     # --- Merge in discount-classified credits as negative rows --------------
     cred_q: Dict[str, Any] = {"run_id": rid, "classification": "discount"}
@@ -684,6 +687,110 @@ async def patch_addition(
     add.pop("_id", None)
     await ADDITIONS.replace_one({"addition_id": aid, "run_id": rid}, add)
     return {"ok": True, "row": add}
+
+
+# ============================ Link / Unlink (Option A) =====================
+ADJ_FIELDS_VALID = ("other_expenses", "itc_reversed", "interest_capitalized",
+                    "forex_fluctuations", "discount_credits")
+
+
+async def _unlink_addition(rid: str, aid: str) -> None:
+    """Internal helper — undoes any existing parent linkage on `aid`.
+    Decrements the parent's <linked_as> column by `aid.invoice_cost` and
+    clears the child's parent_addition_id / linked_as fields."""
+    add = await ADDITIONS.find_one({"addition_id": aid, "run_id": rid}, {"_id": 0})
+    if not add:
+        return
+    parent_id = add.get("parent_addition_id") or ""
+    if not parent_id:
+        return
+    parent = await ADDITIONS.find_one({"addition_id": parent_id, "run_id": rid}, {"_id": 0})
+    if parent:
+        col = add.get("linked_as") or "other_expenses"
+        if col in ADJ_FIELDS_VALID:
+            new_val = max(0.0, float(parent.get(col, 0)) - float(add.get("invoice_cost", 0)))
+            await ADDITIONS.update_one(
+                {"addition_id": parent_id, "run_id": rid},
+                {"$set": {col: round(new_val, 2)}},
+            )
+    await ADDITIONS.update_one(
+        {"addition_id": aid, "run_id": rid},
+        {"$set": {"parent_addition_id": "", "linked_as": ""}},
+    )
+
+
+@router.post("/runs/{rid}/additions/{aid}/link")
+async def link_addition(
+    rid: str,
+    aid: str,
+    payload: FaAdditionLink,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Merge `aid` into another addition. The full `aid.invoice_cost` flows
+    into the parent's `<linked_as>` column; the child stays in the table but
+    is treated as 'merged' (skipped by compute, rendered compactly in UI)."""
+    await _auth(request, session_token, authorization)
+    if aid.startswith("discount-"):
+        raise HTTPException(400, "Discount rows are managed via Credits tab")
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    if payload.linked_as not in ADJ_FIELDS_VALID:
+        raise HTTPException(400, f"linked_as must be one of {ADJ_FIELDS_VALID}")
+    if payload.parent_addition_id == aid:
+        raise HTTPException(400, "Cannot link a row to itself")
+
+    add = await ADDITIONS.find_one({"addition_id": aid, "run_id": rid}, {"_id": 0})
+    if not add:
+        raise HTTPException(404, "Addition not found")
+    parent = await ADDITIONS.find_one(
+        {"addition_id": payload.parent_addition_id, "run_id": rid}, {"_id": 0},
+    )
+    if not parent:
+        raise HTTPException(404, "Parent addition not found")
+    if parent.get("parent_addition_id"):
+        raise HTTPException(400, "Cannot link to a row that is itself merged")
+    # Block-coherence: keep linked rows inside the same block as the parent
+    if (add.get("block_label") or "") and (parent.get("block_label") or "") and \
+            add["block_label"] != parent["block_label"]:
+        raise HTTPException(400, "Parent and child must belong to the same IT Block")
+
+    # Idempotently undo any prior link first
+    await _unlink_addition(rid, aid)
+
+    amt = float(add.get("invoice_cost", 0))
+    new_val = round(float(parent.get(payload.linked_as, 0)) + amt, 2)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await ADDITIONS.update_one(
+        {"addition_id": payload.parent_addition_id, "run_id": rid},
+        {"$set": {payload.linked_as: new_val, "reviewed": True}},
+    )
+    await ADDITIONS.update_one(
+        {"addition_id": aid, "run_id": rid},
+        {"$set": {
+            "parent_addition_id": payload.parent_addition_id,
+            "linked_as":          payload.linked_as,
+            "reviewed":           True,
+            "last_modified":      now_iso,
+        }},
+    )
+    return {"ok": True}
+
+
+@router.post("/runs/{rid}/additions/{aid}/unlink")
+async def unlink_addition(
+    rid: str,
+    aid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    await _unlink_addition(rid, aid)
+    return {"ok": True}
 
 
 # ============================ Credits =======================================
@@ -813,7 +920,10 @@ async def _gather_compute_inputs(rid: str) -> Dict[str, Any]:
     blocks_meta = {b["block_label"]: b["rate"] for b in blocks}
 
     openings = await BLOCK_OPEN.find({"run_id": rid}, {"_id": 0}).to_list(50)
-    additions = await ADDITIONS.find({"run_id": rid}, {"_id": 0}).to_list(10000)
+    additions_all = await ADDITIONS.find({"run_id": rid}, {"_id": 0}).to_list(10000)
+    # Merged child rows already had their invoice_cost rolled into a parent's
+    # adjustment column via /link — skip them here to avoid double counting.
+    additions = [a for a in additions_all if not (a.get("parent_addition_id") or "")]
     credits = await CREDITS.find({"run_id": rid}, {"_id": 0}).to_list(5000)
 
     led_map: Dict[str, Dict[str, Any]] = {}

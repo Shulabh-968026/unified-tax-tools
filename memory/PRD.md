@@ -1,5 +1,14 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Line-item Merge / Link (2026-04-30 PM-2)
+- [x] **Replaced fragile drag-drop with explicit Link UX** (Option A). Each addition row gets a `🔗 Merge` icon next to Invoice Cost; click → modal to pick a parent asset (searchable, same-block-only) and which adjustment column the line item flows into.
+- [x] **Backend persistence** — `parent_addition_id` + `linked_as` fields on every addition. Idempotent endpoints `POST /runs/{rid}/additions/{aid}/link` and `/unlink`. Server-side guards: same-block coherence, no self-link, no chained linking (cannot link to a row that's itself merged).
+- [x] **Compute engine skips merged rows** to avoid double counting. The full child invoice_cost has already been added to the parent's `<linked_as>` column at link time, atomically.
+- [x] **Visual treatment** — merged rows render as a compact grey strip showing `↳ Merged · {child desc} · ₹{amount} · into "{parent desc}" · as {column}` with a one-click `Unlink` button. Filter toggle "Show merged" hides them entirely when off.
+- [x] **Sort discipline** — children render directly under their parent in the table for at-a-glance review (no jumping pages to verify a relationship).
+- [x] **Smoke-tested** end-to-end on Velav books: parent's `other_expenses` jumps from 0 → ₹142,000 on link; back to 0 on unlink; depreciation total is unchanged because the merged child's invoice_cost flowed into the parent's adjustment column atomically.
+- [x] **Invoice Cost column is now read-only** (per earlier ask) — sourced from books, can never be overwritten by accident.
+
 ## Fixed Assets — Additions UX overhaul (2026-04-30 PM)
 - [x] **Tab order reflowed** Ledgers → Credits → Additions → Compute & Export so the auditor classifies credits before reaching the Additions register.
 - [x] **Discount-classified credits surface in Additions** as locked, negative-cost rows (`source: "discount_credit"`, rendered with rose tint, all fields disabled). They flow into the depreciation working as negative pseudo-additions automatically — auditor never has to copy the figure twice.
