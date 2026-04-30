@@ -1,5 +1,18 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Phase 1D + 1H live (2026-04-30 PM-3)
+- [x] **Phase 1D — Prior-year 3CD import** — `POST /runs/{rid}/ingest-prior-3cd` parses `FORM3CA.F3CA.Form3cdDeprAllw[]`, aggregates by rate, and for each rate returns the list of active blocks sharing that rate as `candidate_block_labels`. `suggested_block_label` is populated only when the rate uniquely maps to a single block. Companion `POST /runs/{rid}/apply-prior-3cd` (JSON body `{items:[{rate, block_label, opening_wdv}]}`) writes the auditor-confirmed mapping into `fa_block_opening` with `source="prior_3cd"` + a descriptive ref to the uploaded filename.
+- [x] **Phase 1H — Multi-FY roll-forward** — `GET /runs/{rid}/roll-forward-source` runs the compute engine on the most recent prior-FY run for the same client (explicitly or by `fy_end` lookup) and returns the resulting positive-closing-WDV rows. `POST /runs/{rid}/roll-forward` writes each into `fa_block_opening` with `source="prior_run"` + `source_ref="run:<src_id>"`, and stamps `rolled_from_run_id` on the current run.
+- [x] **Frontend — Compute tab toolbar** (`ComputeTab.jsx`):
+      • Amber **"Import from Prior 3CD"** button — hidden file picker → staged-preview modal. Each rate row shows 3CD description, prior closing WDV, an editable opening-WDV input (defaults to prior closing), and a block-label dropdown of candidates (★ marks the auto-suggested one when the mapping is unique). Rose warning when a rate has no active block. Applies only rows where a block was chosen.
+      • Emerald **"Roll forward from FY YYYY-YY"** button — enabled only when a prior run exists for the client; button text dynamically shows the source FY. Opens a confirmation modal listing each block + its prior closing WDV + total.
+      • **Source chip** on every Opening WDV row — `MANUAL` / `PRIOR 3CD` / `ROLLED FWD` colour-coded, auto-flips based on `fa_block_opening.source`.
+- [x] **End-to-end verified** on the live QA env:
+      • 3CD import of `sample_3cd.json` (3 rate rows at 40/15/10%) → staged preview returned correctly with candidate lists; apply with 2 confirmed blocks wrote `source=prior_3cd` + sensible description.
+      • Seeded a synthetic prior-FY run, computed it (Closing 15% P&M ₹8.5L · 40% Computers ₹1.5L), then roll-forward-source returned those closings, apply wrote both with `source=prior_run` and description `Auto-rolled forward from FY 2023-24`.
+      • Frontend smoke — both buttons render, disabled-state text flips to "Roll forward (no prior FY)" when unavailable, opening table now has a 5th Source column.
+- [x] **Data hygiene** — the synthetic FY 2023-24 run was deleted and the main run's openings were reset to 0 after verification, keeping the DB clean.
+
 ## Fixed Assets — Line-item Merge / Link (2026-04-30 PM-2)
 - [x] **Replaced fragile drag-drop with explicit Link UX** (Option A). Each addition row gets a `🔗 Merge` icon next to Invoice Cost; click → modal to pick a parent asset (searchable, same-block-only) and which adjustment column the line item flows into.
 - [x] **Backend persistence** — `parent_addition_id` + `linked_as` fields on every addition. Idempotent endpoints `POST /runs/{rid}/additions/{aid}/link` and `/unlink`. Server-side guards: same-block coherence, no self-link, no chained linking (cannot link to a row that's itself merged).
