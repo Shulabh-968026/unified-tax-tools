@@ -1,8 +1,9 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArrowDown, ArrowUp, ChevronLeft, ChevronRight, FileText, Loader2,
+  ChevronLeft, ChevronRight, FileText, Loader2,
   CheckCircle2, Circle, CircleDot, Search, Calendar, CalendarDays,
+  Split, X,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -15,10 +16,6 @@ const inr = (v) => {
 };
 
 const ADJ_FIELDS = ["other_expenses", "itc_reversed", "interest_capitalized", "forex_fluctuations", "discount_credits"];
-const ADJ_SIGN = {
-  other_expenses: 1, itc_reversed: -1, interest_capitalized: 1,
-  forex_fluctuations: 1, discount_credits: -1,
-};
 const PAGE_SIZE = 10;
 
 function capitalised(a) {
@@ -58,7 +55,7 @@ export default function AdditionsTab({ rid, blocks }) {
   }, [rid, activeBlock]);
   useEffect(() => { refresh(); }, [refresh]);
 
-  /* ---------------- Patch + drag-drop ---------------- */
+  /* ---------------- Patch ---------------- */
   const patchRow = async (a, patch) => {
     if (a.source === "discount_credit") return;        // locked
     setRows(rs => rs.map(r => r.addition_id === a.addition_id ? { ...r, ...patch, reviewed: true } : r));
@@ -71,33 +68,13 @@ export default function AdditionsTab({ rid, blocks }) {
     }
   };
 
-  const dropAmount = async (a, srcField, dstField) => {
-    const srcVal = Number(a[srcField] || 0);
-    if (!srcVal) {
-      toast.message("Nothing to transfer (source value is zero)");
-      return;
-    }
-    const raw = window.prompt(
-      `Transfer how much from ${labelFor(srcField)} → ${labelFor(dstField)}?\n` +
-      `Available in ${labelFor(srcField)}: ₹ ${srcVal.toLocaleString("en-IN")}\n` +
-      `Enter to accept full amount, or type a different number.`,
-      String(srcVal),
-    );
-    if (raw === null) return;
-    const amt = Number(raw);
-    if (!isFinite(amt) || amt <= 0) {
-      toast.error("Invalid amount");
-      return;
-    }
-    if (amt > Math.abs(srcVal) + 0.01) {
-      toast.error(`Cannot transfer more than available (₹ ${srcVal.toLocaleString("en-IN")})`);
-      return;
-    }
-    const patch = {
-      [srcField]: round2(srcVal - amt),
-      [dstField]: round2(Number(a[dstField] || 0) + amt),
-    };
-    patchRow(a, patch);
+  /* Split modal — auditor enters how the invoice cost is broken up */
+  const [splitFor, setSplitFor] = useState(null);   // addition row
+  const closeSplit = () => setSplitFor(null);
+  const applySplit = async (a, values) => {
+    closeSplit();
+    await patchRow(a, values);
+    toast.success("Split applied");
   };
 
   /* ---------------- Filtering / pagination ---------------- */
@@ -192,7 +169,7 @@ export default function AdditionsTab({ rid, blocks }) {
             ) : paged.map(a => (
               <Row key={a.addition_id} a={a} blocks={blocks}
                    onPatch={(p) => patchRow(a, p)}
-                   onDropAmount={(src, dst) => dropAmount(a, src, dst)}/>
+                   onOpenSplit={() => setSplitFor(a)}/>
             ))}
           </tbody>
         </table>
@@ -203,6 +180,10 @@ export default function AdditionsTab({ rid, blocks }) {
         <span className="text-[11px] text-slate-500">Page {page} of {totalPages}</span>
         <Pager page={page} totalPages={totalPages} onPage={setPage}/>
       </div>
+
+      {splitFor && (
+        <SplitModal addition={splitFor} onClose={closeSplit} onApply={(v) => applySplit(splitFor, v)}/>
+      )}
     </div>
   );
 }
@@ -272,7 +253,7 @@ function Pager({ page, totalPages, onPage }) {
   );
 }
 
-function Row({ a, blocks, onPatch, onDropAmount }) {
+function Row({ a, blocks, onPatch, onOpenSplit }) {
   const [local, setLocal] = useState(a);
   useEffect(() => setLocal(a), [a.addition_id, a.invoice_cost, a.other_expenses, a.itc_reversed,
                                 a.interest_capitalized, a.forex_fluctuations, a.discount_credits,
@@ -289,37 +270,20 @@ function Row({ a, blocks, onPatch, onDropAmount }) {
   const total = capitalised(local);
   const halfRate = !!local.half_rate;
 
-  /* Drag handlers */
-  const dragStart = (e, field) => {
-    e.dataTransfer.setData("text/plain", JSON.stringify({ aid: a.addition_id, field }));
-    e.dataTransfer.effectAllowed = "move";
-  };
-  const dropOn = (e, field) => {
-    e.preventDefault();
-    try {
-      const { aid, field: src } = JSON.parse(e.dataTransfer.getData("text/plain"));
-      if (aid !== a.addition_id) return;
-      if (src === field) return;
-      onDropAmount(src, field);
-    } catch { /* ignore */ }
-  };
-
   const baseInput = "w-full px-1 py-0.5 text-right border border-[#E5E5E0] focus:border-slate-700 focus:outline-none text-[11px] font-mono";
   const txtInput  = "w-full px-1 py-0.5 border border-[#E5E5E0] focus:border-slate-700 focus:outline-none text-[11px]";
 
   const NumberCell = ({ field }) => (
-    <td
-      className={`px-1 py-1 ${locked ? "bg-slate-50" : ""}`}
-      onDragOver={(e) => { if (!locked) e.preventDefault(); }}
-      onDrop={(e) => { if (!locked) dropOn(e, field); }}
-    >
+    <td className={`px-1 py-1 ${locked ? "bg-slate-50" : ""}`}>
       <input
         type="number" step="0.01"
         value={local[field] || 0}
         disabled={locked}
         onChange={(e) => setF(field, parseFloat(e.target.value || 0))}
+        onFocus={(e) => e.target.select()}
         onBlur={() => flush(field, a[field])}
         className={baseInput}
+        data-testid={`fa-add-${field}-${a.addition_id}`}
       />
     </td>
   );
@@ -340,10 +304,10 @@ function Row({ a, blocks, onPatch, onDropAmount }) {
           {!locked && (
             <>
               <button title="Copy from Acc Date" type="button"
-                      onClick={() => { setF("put_to_use_date", a.accounting_date || ""); flush("put_to_use_date", a.put_to_use_date); }}
+                      onClick={() => { setF("put_to_use_date", a.accounting_date || ""); onPatch({ put_to_use_date: a.accounting_date || "" }); }}
                       className="text-slate-400 hover:text-slate-900 p-0.5"><Calendar size={10}/></button>
               <button title="Copy from Inv Date" type="button"
-                      onClick={() => { setF("put_to_use_date", a.invoice_date || ""); flush("put_to_use_date", a.put_to_use_date); }}
+                      onClick={() => { setF("put_to_use_date", a.invoice_date || ""); onPatch({ put_to_use_date: a.invoice_date || "" }); }}
                       className="text-slate-400 hover:text-slate-900 p-0.5"><CalendarDays size={10}/></button>
             </>
           )}
@@ -363,18 +327,28 @@ function Row({ a, blocks, onPatch, onDropAmount }) {
           placeholder={a.particulars || "Description"}
         />
       </td>
-      <td className={`px-2 py-1 ${locked ? "bg-slate-50" : ""}`}>
-        <input
-          type="number" step="0.01"
-          value={local.invoice_cost || 0}
-          disabled={locked}
-          onChange={(e) => setF("invoice_cost", parseFloat(e.target.value || 0))}
-          onBlur={() => flush("invoice_cost", a.invoice_cost)}
-          draggable={!locked && Number(local.invoice_cost || 0) > 0}
-          onDragStart={(e) => dragStart(e, "invoice_cost")}
-          className={baseInput + " cursor-grab"}
-          title="Drag this number to transfer it to an adjustment column"
-        />
+      {/* Invoice Cost — read-only display from books, with a Split-helper button */}
+      <td className={`px-2 py-1 ${locked ? "bg-slate-50" : "bg-[#F9F9F8]"}`}>
+        <div className="flex items-center gap-1">
+          <div
+            className="flex-1 px-1 py-0.5 text-right text-[11px] font-mono text-slate-900"
+            title="Read-only — sourced from Tally Books"
+            data-testid={`fa-add-invoice-cost-${a.addition_id}`}
+          >
+            {inr(local.invoice_cost)}
+          </div>
+          {!locked && (
+            <button
+              type="button"
+              title="Split — enter Other Exp / ITC / Interest / Forex / Discounts in one go"
+              onClick={onOpenSplit}
+              className="text-slate-400 hover:text-slate-900 p-0.5"
+              data-testid={`fa-add-split-${a.addition_id}`}
+            >
+              <Split size={11}/>
+            </button>
+          )}
+        </div>
       </td>
       <NumberCell field="other_expenses"/>
       <NumberCell field="itc_reversed"/>
@@ -427,15 +401,99 @@ function Row({ a, blocks, onPatch, onDropAmount }) {
   );
 }
 
-function labelFor(field) {
-  return ({
-    invoice_cost:        "Invoice Cost",
-    other_expenses:      "Other Expenses",
-    itc_reversed:        "ITC Reversed",
-    interest_capitalized: "Interest Capitalised",
-    forex_fluctuations:  "Forex Fluctuations",
-    discount_credits:    "Discounts/Credits",
-  })[field] || field;
-}
-
 function round2(n) { return Math.round(n * 100) / 100; }
+
+/* --------------------------------------------------------------- */
+/* Split modal — replaces the awkward drag-drop                    */
+/* --------------------------------------------------------------- */
+const SPLIT_FIELDS = [
+  { key: "other_expenses",       label: "Other Expenses",      sign: "+" },
+  { key: "itc_reversed",         label: "ITC Reversed",        sign: "−" },
+  { key: "interest_capitalized", label: "Interest Capitalised", sign: "+" },
+  { key: "forex_fluctuations",   label: "Forex Fluctuations",  sign: "+" },
+  { key: "discount_credits",     label: "Discounts/Credits",   sign: "−" },
+];
+
+function SplitModal({ addition, onClose, onApply }) {
+  const a = addition;
+  const [vals, setVals] = useState(() => {
+    const out = {};
+    for (const f of SPLIT_FIELDS) out[f.key] = Number(a[f.key] || 0);
+    return out;
+  });
+  const setF = (k, v) => setVals(s => ({ ...s, [k]: v }));
+
+  const baseAmount = Number(a.invoice_cost || 0);
+  const adjPositive = Number(vals.other_expenses) + Number(vals.interest_capitalized) + Number(vals.forex_fluctuations);
+  const adjNegative = Number(vals.itc_reversed) + Number(vals.discount_credits);
+  const newTotal = baseAmount + adjPositive - adjNegative;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-6"
+         data-testid="fa-split-modal">
+      <div className="bg-white border border-[#E5E5E0] w-full max-w-xl">
+        <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-[#EDEDE7]">
+          <div>
+            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-600">Split Invoice Cost</div>
+            <div className="font-heading text-base mt-0.5 truncate">
+              {a.description || a.particulars || a.party_name}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-0.5">
+              Voucher {a.voucher_no} · Invoice Cost (read-only) ₹ {Math.abs(baseAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-900 p-1"
+                  data-testid="fa-split-close">
+            <X size={16}/>
+          </button>
+        </div>
+
+        <div className="p-4 space-y-2">
+          <p className="text-[11.5px] text-slate-600 mb-2">
+            Enter how the invoice splits across each component. Invoice Cost stays as captured from the books;
+            these values flow into the Total used for depreciation.
+          </p>
+          {SPLIT_FIELDS.map(f => (
+            <div key={f.key} className="grid grid-cols-[160px_60px_1fr] items-center gap-2">
+              <label className="text-[12px] text-slate-700">{f.label}</label>
+              <span className={`text-[11px] font-mono ${f.sign === "−" ? "text-rose-700" : "text-emerald-700"}`}>{f.sign}</span>
+              <input
+                type="number" step="0.01"
+                value={vals[f.key]}
+                onChange={(e) => setF(f.key, parseFloat(e.target.value || 0))}
+                onFocus={(e) => e.target.select()}
+                className="px-2 py-1 text-right border border-[#D4D4D0] focus:border-slate-700 focus:outline-none text-[12.5px] font-mono"
+                data-testid={`fa-split-${f.key}`}
+              />
+            </div>
+          ))}
+
+          <div className="border-t border-[#EDEDE7] pt-3 mt-2 grid grid-cols-[160px_60px_1fr] items-center gap-2">
+            <label className="text-[12px] text-slate-700 font-semibold">Capitalised Total</label>
+            <span/>
+            <div className="px-2 py-1 text-right font-mono text-[13px] font-semibold">
+              ₹ {newTotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-[#EDEDE7] bg-[#FBFBF8]">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12.5px] border border-slate-300 hover:bg-slate-100">Cancel</button>
+          <button
+            data-testid="fa-split-apply"
+            onClick={() => onApply({
+              other_expenses:       round2(vals.other_expenses),
+              itc_reversed:         round2(vals.itc_reversed),
+              interest_capitalized: round2(vals.interest_capitalized),
+              forex_fluctuations:   round2(vals.forex_fluctuations),
+              discount_credits:     round2(vals.discount_credits),
+            })}
+            className="px-3 py-1.5 text-[12.5px] bg-slate-900 text-white hover:bg-slate-800"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
