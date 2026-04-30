@@ -338,3 +338,43 @@ def parse_books_json(content_bytes: bytes) -> Dict[str, Any]:
         raw = gzip.decompress(raw)
     text = raw.decode("utf-8-sig", errors="replace").strip()
     return json.loads(text)
+
+
+def parse_prior_3cd(content_bytes: bytes) -> List[Dict[str, Any]]:
+    """Parse a prior-year Form 3CD JSON → list of {rate, opening_wdv,
+    closing_wdv, dep_allowable, additions_total, deductions_total}.
+
+    Looks up the array at `FORM3CA.F3CA.Form3cdDeprAllw` — the standard
+    layout produced by the official Form 3CD JSON utility. When a rate row
+    repeats (unusual), the values are summed.
+    """
+    data = parse_books_json(content_bytes)
+    form3ca = (data.get("FORM3CA") or {}).get("F3CA") or {}
+    entries = form3ca.get("Form3cdDeprAllw") or []
+    if not isinstance(entries, list):
+        return []
+    agg: Dict[float, Dict[str, Any]] = {}
+    for e in entries:
+        try:
+            rate = float(e.get("RateOfDep") or 0)
+        except (ValueError, TypeError):
+            continue
+        if rate <= 0:
+            continue
+        row = agg.setdefault(rate, {
+            "rate":              rate,
+            "opening_wdv":       0.0,
+            "closing_wdv":       0.0,
+            "dep_allowable":     0.0,
+            "additions_total":   0.0,
+            "deductions_total":  0.0,
+            "desc_block_assets": "",
+        })
+        row["opening_wdv"]      += float(e.get("OpeningWDV") or 0)
+        row["closing_wdv"]      += float(e.get("WrittenDownVal") or 0)
+        row["dep_allowable"]    += float(e.get("DepAllowable") or 0)
+        row["additions_total"]  += float(e.get("TotalPurchaseValue") or 0)
+        row["deductions_total"] += float(e.get("adjustment") or 0)
+        if not row["desc_block_assets"]:
+            row["desc_block_assets"] = str(e.get("DescBlockAssets") or "")
+    return sorted(agg.values(), key=lambda r: -r["rate"])

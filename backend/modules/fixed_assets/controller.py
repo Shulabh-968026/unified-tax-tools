@@ -42,6 +42,7 @@ from modules.fixed_assets.service import (
     fa_voucher_lines,
     fy_dates,
     parse_books_json,
+    parse_prior_3cd,
     stage_addition_rows,
     stage_credit_rows,
 )
@@ -909,6 +910,194 @@ async def upsert_block_opening(
         upsert=True,
     )
     return {"ok": True}
+
+
+# ============================ Prior 3CD Import (Phase 1D) ==================
+@router.post("/runs/{rid}/ingest-prior-3cd")
+async def ingest_prior_3cd(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Parse the uploaded prior-year Form 3CD JSON, auto-map each rate row to
+    the active block_label(s) sharing that rate, and return a staged preview.
+    Nothing is written to fa_block_opening at this step — auditor confirms
+    via POST /apply-prior-3cd."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+
+    raw = await file.read()
+    try:
+        rate_rows = parse_prior_3cd(raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Invalid 3CD JSON: {e}")
+    if not rate_rows:
+        raise HTTPException(400, "No depreciation entries found in 3CD JSON "
+                                 "(expected FORM3CA.F3CA.Form3cdDeprAllw).")
+
+    blocks = await get_block_labels_active()
+    by_rate: Dict[float, List[Dict[str, Any]]] = {}
+    for b in blocks:
+        by_rate.setdefault(b["rate"], []).append(b)
+
+    staged = []
+    for r in rate_rows:
+        cands = by_rate.get(r["rate"], [])
+        suggested = cands[0]["block_label"] if len(cands) == 1 else ""
+        staged.append({
+            **r,
+            "suggested_block_label":  suggested,
+            "candidate_block_labels": [c["block_label"] for c in cands],
+            "needs_review":           len(cands) != 1,
+        })
+
+    await RUNS.update_one({"id": rid}, {"$set": {
+        "prior_3cd_staged":      staged,
+        "prior_3cd_filename":    file.filename or "",
+        "prior_3cd_ingested_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return {"ok": True, "rows": staged}
+
+
+class Prior3CDApplyItem(BaseModel):
+    rate: float
+    block_label: str
+    opening_wdv: float
+
+
+class Prior3CDApply(BaseModel):
+    items: List[Prior3CDApplyItem]
+
+
+@router.post("/runs/{rid}/apply-prior-3cd")
+async def apply_prior_3cd(
+    rid: str,
+    payload: Prior3CDApply,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Write the auditor-confirmed 3CD opening WDV into fa_block_opening."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "prior_3cd_filename": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    valid_blocks = {b["block_label"] for b in await get_block_labels_active()}
+
+    applied = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    fname = run.get("prior_3cd_filename") or "prior_3cd.json"
+    for item in payload.items:
+        bl = (item.block_label or "").strip()
+        if not bl or bl not in valid_blocks:
+            continue
+        await BLOCK_OPEN.update_one(
+            {"run_id": rid, "block_label": bl},
+            {"$set": {
+                "run_id":      rid,
+                "block_label": bl,
+                "opening_wdv": float(item.opening_wdv or 0),
+                "source":      "prior_3cd",
+                "source_ref":  fname,
+                "description": f"Auto-imported from prior 3CD ({fname})",
+                "updated_at":  now_iso,
+            }},
+            upsert=True,
+        )
+        applied += 1
+    return {"ok": True, "applied": applied}
+
+
+# ============================ Multi-FY Roll Forward (Phase 1H) =============
+async def _roll_forward_preview(rid: str) -> Dict[str, Any]:
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    src_id = run.get("rolled_from_run_id") or ""
+    if not src_id:
+        src = await RUNS.find_one(
+            {"client_id": run["client_id"], "id": {"$ne": rid},
+             "fy_end":  {"$lt": run.get("fy_end") or ""}},
+            {"_id": 0, "id": 1, "fy": 1, "fy_end": 1},
+            sort=[("fy_end", -1)],
+        )
+        if not src:
+            return {"ok": False, "reason": "No prior FY run found for this client."}
+        src_id = src["id"]
+
+    src_run = await RUNS.find_one({"id": src_id}, {"_id": 0})
+    if not src_run:
+        return {"ok": False, "reason": "Linked prior run not found."}
+
+    src_inputs = await _gather_compute_inputs(src_id)
+    from modules.fixed_assets.compute import compute_run as _cr
+    rows, _totals = _cr(
+        openings=src_inputs["openings"],
+        blocks_meta=src_inputs["blocks_meta"],
+        additions=src_inputs["additions"],
+        deletions=src_inputs["credits"],
+    )
+    items = [
+        {"block_label": r["block_label"], "closing_wdv": float(r["closing_wdv"])}
+        for r in rows if r["closing_wdv"] > 0
+    ]
+    return {
+        "ok":         True,
+        "src_run_id": src_id,
+        "src_fy":     src_run.get("fy") or "",
+        "src_name":   src_run.get("name") or "",
+        "items":      items,
+    }
+
+
+@router.get("/runs/{rid}/roll-forward-source")
+async def roll_forward_source_endpoint(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    return await _roll_forward_preview(rid)
+
+
+@router.post("/runs/{rid}/roll-forward")
+async def roll_forward_endpoint(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    preview = await _roll_forward_preview(rid)
+    if not preview.get("ok"):
+        raise HTTPException(400, preview.get("reason") or "Roll-forward source unavailable")
+
+    src_fy = preview["src_fy"]
+    src_run_id = preview["src_run_id"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    applied = 0
+    for it in preview["items"]:
+        bl = it["block_label"]
+        await BLOCK_OPEN.update_one(
+            {"run_id": rid, "block_label": bl},
+            {"$set": {
+                "run_id":      rid,
+                "block_label": bl,
+                "opening_wdv": float(it["closing_wdv"]),
+                "source":      "prior_run",
+                "source_ref":  f"run:{src_run_id}",
+                "description": f"Auto-rolled forward from FY {src_fy}",
+                "updated_at":  now_iso,
+            }},
+            upsert=True,
+        )
+        applied += 1
+    await RUNS.update_one({"id": rid}, {"$set": {"rolled_from_run_id": src_run_id}})
+    return {"ok": True, "applied": applied, "src_fy": src_fy, "src_run_id": src_run_id}
 
 
 # ============================ Compute & Export =============================
