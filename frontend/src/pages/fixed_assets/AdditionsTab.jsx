@@ -19,6 +19,7 @@ import {
 import {
   InvoiceUploadDropZone, InvoiceUploadPreviewModal,
 } from "./additions/InvoiceOcrModal";
+import { InvoiceInbox } from "./additions/InvoiceInbox";
 
 const lsGet = (k, fb) => {
   try { const v = localStorage.getItem(k); return v == null ? fb : JSON.parse(v); }
@@ -56,6 +57,8 @@ export default function AdditionsTab({ rid, blocks }) {
   const [ocrPreview, setOcrPreview]     = useState(null);
   const [ocrApplying, setOcrApplying]   = useState(false);
   const [attachments, setAttachments]   = useState({});  // {addition_id: {filename, pdf_size, ...}}
+  const [ledgersList, setLedgersList]   = useState([]);  // for the modal's ledger filter
+  const [inboxRefreshKey, setInboxRefreshKey] = useState(0);  // bump to force inbox refresh
 
   // Persist UI prefs
   useEffect(() => lsSet(LS_PAGE_SIZE, pageSize), [pageSize]);
@@ -66,11 +69,12 @@ export default function AdditionsTab({ rid, blocks }) {
     if (!rid) return;
     setBusy(true);
     try {
-      const [r, p, runRes, atts] = await Promise.all([
+      const [r, p, runRes, atts, lgs] = await Promise.all([
         http.get(`/fixed-assets/runs/${rid}/additions`),
         http.get(`/fixed-assets/runs/${rid}/additions/progress`),
         http.get(`/fixed-assets/runs/${rid}`),
         http.get(`/fixed-assets/runs/${rid}/invoice-attachments`),
+        http.get(`/fixed-assets/runs/${rid}/ledgers`).catch(() => ({ data: { rows: [] } })),
       ]);
       setRows(r.data?.rows || []);
       setProgress(p.data || { rows: [], summary: {} });
@@ -78,6 +82,11 @@ export default function AdditionsTab({ rid, blocks }) {
       const map = {};
       for (const a of (atts.data?.rows || [])) map[a.addition_id] = a;
       setAttachments(map);
+      setLedgersList((lgs.data?.rows || []).map(L => ({
+        fa_ledger_id: L.fa_ledger_id || L.id,
+        name:         L.name,
+        block_label:  L.block_label,
+      })).filter(L => L.fa_ledger_id && L.name));
       if (!activeBlock && p.data?.rows?.length) {
         setActiveBlock(p.data.rows[0].block_label);
       }
@@ -317,6 +326,24 @@ export default function AdditionsTab({ rid, blocks }) {
     } finally { setClearingDrift(false); }
   };
 
+  // ---------------- Invoice OCR — Resume from inbox ----------------
+  const resumeFromInbox = async (uploadId) => {
+    try {
+      const { data } = await http.get(
+        `/fixed-assets/runs/${rid}/upload-status/${uploadId}`,
+      );
+      if (data.status !== "done") {
+        toast.error(data.status === "processing"
+          ? "Still analysing — try again in a few seconds."
+          : (data.error || "This upload is in a failed state."));
+        return;
+      }
+      setOcrPreview(data);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Could not load upload");
+    }
+  };
+
   // ---------------- Layout ----------------
   // Total visible columns = 1 (Acc Date) + 1 (Description) + 1 (Invoice Cost)
   // + visible adjustments + 1 (Total) + 1 (IT Block) + visible right columns
@@ -348,7 +375,14 @@ export default function AdditionsTab({ rid, blocks }) {
         rid={rid}
         busy={ocrBusy}
         setBusy={setOcrBusy}
-        onPreview={setOcrPreview}
+        onUploaded={() => setInboxRefreshKey(k => k + 1)}
+      />
+
+      <InvoiceInbox
+        rid={rid}
+        refreshKey={inboxRefreshKey}
+        onResume={resumeFromInbox}
+        refreshAdditions={refresh}
       />
 
       <ProgressStrip
@@ -473,11 +507,18 @@ export default function AdditionsTab({ rid, blocks }) {
           rid={rid}
           preview={ocrPreview}
           additions={rows}
+          ledgers={ledgersList}
           applying={ocrApplying}
           onClose={() => setOcrPreview(null)}
           onApplied={async () => {
             setOcrApplying(true);
-            try { await refresh(); } finally { setOcrApplying(false); setOcrPreview(null); }
+            try {
+              await refresh();
+              setInboxRefreshKey(k => k + 1);
+            } finally {
+              setOcrApplying(false);
+              setOcrPreview(null);
+            }
           }}
         />
       )}

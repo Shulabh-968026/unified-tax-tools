@@ -41,35 +41,25 @@ export function AdditionsToolbar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {/* Block filter */}
+        {/* Ledger filter (within the active block) — always visible.
+            Block selection happens via the chips strip above. */}
         <select
-          data-testid="fa-add-block-filter"
-          value={activeBlock}
-          onChange={(e) => onPickBlock(e.target.value)}
-          className="px-2 py-1 text-[11.5px] border border-[#D4D4D0] focus:outline-none"
+          data-testid="fa-add-ledger-filter"
+          value={ledgerFilter}
+          onChange={(e) => onPickLedger(e.target.value)}
+          className="px-2 py-1 text-[11.5px] border border-[#D4D4D0] focus:outline-none max-w-[260px]"
+          title="Filter by ledger within this block"
         >
-          {blockChoices.map(b => (
-            <option key={b.block_label} value={b.block_label}>
-              {b.block_label} · {b.reviewed}/{b.total} done
+          <option value="">
+            All ledgers
+            {ledgerChoices.length > 0 ? ` (${ledgerChoices.length})` : ""}
+          </option>
+          {ledgerChoices.map(l => (
+            <option key={l.name} value={l.name}>
+              {l.name} · {l.count} row{l.count === 1 ? "" : "s"}
             </option>
           ))}
         </select>
-
-        {/* Ledger filter (within active block) */}
-        {ledgerChoices.length > 1 && (
-          <select
-            data-testid="fa-add-ledger-filter"
-            value={ledgerFilter}
-            onChange={(e) => onPickLedger(e.target.value)}
-            className="px-2 py-1 text-[11.5px] border border-[#D4D4D0] focus:outline-none max-w-[170px]"
-            title="Filter by ledger within this block"
-          >
-            <option value="">All ledgers ({ledgerChoices.length})</option>
-            {ledgerChoices.map(l => (
-              <option key={l.name} value={l.name}>{l.name} · {l.count}</option>
-            ))}
-          </select>
-        )}
 
         <label className="text-[11px] flex items-center gap-1 text-slate-600 cursor-pointer">
           <input type="checkbox" checked={showMerged}

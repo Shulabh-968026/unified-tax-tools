@@ -1,39 +1,55 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, CheckCircle2, Eye, FileScan, Loader2,
-  Paperclip, Sparkles, X,
+  AlertCircle, CheckCircle2, FileScan, Loader2,
+  Paperclip, Sparkles, X, BookMarked,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import { inr } from "./utils";
 
 /**
- * Split-preview modal shown right after the auditor uploads a PDF.
- * Receives the response from POST /upload-invoices and lets the auditor:
- *  - confirm/change the matched addition for each chunk
+ * Split-preview modal — opens when the auditor clicks "Resume" / "Review"
+ * on an inbox row. Receives the upload-status payload (Mongo-backed) and
+ * lets the auditor:
+ *  - confirm/change the matched addition for each pending chunk
  *  - tick "Apply description" per chunk
  *  - skip a chunk altogether
- *  - then commit via POST /apply-invoice-uploads
+ *  - filter the target dropdown by the auto-detected ledger (or any ledger)
  */
 export function InvoiceUploadPreviewModal({
-  rid, preview, additions, applying, onClose, onApplied,
+  rid, preview, additions, ledgers, applying, onClose, onApplied,
 }) {
+  // Auto-restrict-by-ledger when the OCR detected one. Auditor can flip
+  // to "All ledgers" via the toggle.
+  const detectedLedgerId = preview?.detected_fa_ledger_id || "";
+  const detectedLedgerName = preview?.detected_ledger_name || "";
+
+  const [restrictLedgerId, setRestrictLedgerId] = useState(detectedLedgerId);
+
   // Local draft of selections — start with auto-matches checked + apply-desc on
+  // (skip already-applied chunks).
   const [draft, setDraft] = useState(() =>
     (preview?.chunks || []).map(c => ({
       chunk_index:       c.chunk_index,
       addition_id:       c.match?.addition_id || "",
-      apply_description: !!(c.match && c.extraction?.description),
-      skip:              false,
+      apply_description: !c.applied && !!(c.match && c.extraction?.description),
+      skip:              !!c.applied,   // already-applied chunks default to "skip"
     })),
   );
 
   const update = (idx, patch) => setDraft(d => d.map((r, i) => i === idx ? { ...r, ...patch } : r));
 
-  const eligibleAdditions = useMemo(() => additions.filter(a =>
-    !a.parent_addition_id && (a.source || "addition") !== "discount_credit"
-  ), [additions]);
+  // Build the list of additions the dropdown shows — filter by ledger if set.
+  const eligibleAdditions = useMemo(() => {
+    let xs = additions.filter(a =>
+      !a.parent_addition_id && (a.source || "addition") !== "discount_credit"
+    );
+    if (restrictLedgerId) {
+      xs = xs.filter(a => a.fa_ledger_id === restrictLedgerId);
+    }
+    return xs;
+  }, [additions, restrictLedgerId]);
 
   const apply = async () => {
     const selections = draft
@@ -60,8 +76,12 @@ export function InvoiceUploadPreviewModal({
   };
 
   if (!preview) return null;
-  const chunks = preview.chunks || [];
-  const summary = preview.summary || {};
+  const chunks       = preview.chunks || [];
+  const summary      = preview.summary || {};
+  const appliedCount = chunks.filter(c => c.applied).length;
+  const pendingCount = chunks.length - appliedCount;
+  const ledgerForDetected = ledgers?.find(L => L.fa_ledger_id === detectedLedgerId);
+
   const ledgerNote = (preview.ledger_pages || []).length
     ? `Page ${preview.ledger_pages.join(", ")} detected as Ledger Extract — kept for record but not attached to any row.`
     : null;
@@ -79,14 +99,45 @@ export function InvoiceUploadPreviewModal({
             <div className="text-[11.5px] text-slate-500 mt-0.5">
               {summary.pages_total} page{summary.pages_total === 1 ? "" : "s"} ·
               {" "}{summary.invoices_detected} invoice{summary.invoices_detected === 1 ? "" : "s"} detected ·
-              <span className="text-emerald-700"> {summary.matched} auto-matched</span> ·
-              <span className="text-amber-700"> {summary.unmatched} need review</span>
+              {appliedCount > 0 && <span className="text-emerald-700"> {appliedCount} already attached ·</span>}
+              <span className="text-amber-700"> {pendingCount} pending</span>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-900 p-1"
                   data-testid="fa-invoice-preview-close">
             <X size={16}/>
           </button>
+        </div>
+
+        {/* Ledger filter strip — auto-detect + manual override + escape hatch */}
+        <div className="px-4 py-2 bg-[#FAFAF7] border-b border-[#EDEDE7] flex items-center flex-wrap gap-3 text-[12px]">
+          <BookMarked size={13} className="text-sky-700"/>
+          <span className="font-mono text-[10.5px] uppercase tracking-wider text-slate-500">
+            Limit dropdowns to ledger
+          </span>
+          <select
+            data-testid="fa-invoice-ledger-filter"
+            value={restrictLedgerId}
+            onChange={(e) => setRestrictLedgerId(e.target.value)}
+            className="px-2 py-1 text-[11.5px] border border-[#D4D4D0] focus:outline-none max-w-[280px]"
+          >
+            <option value="">All ledgers ({(ledgers || []).length})</option>
+            {(ledgers || []).map(L => (
+              <option key={L.fa_ledger_id} value={L.fa_ledger_id}>
+                {L.name}
+                {L.fa_ledger_id === detectedLedgerId ? "  ★ detected" : ""}
+              </option>
+            ))}
+          </select>
+          {detectedLedgerName && (
+            <span className="text-[11px] text-slate-600">
+              Detected on the ledger pages:
+              <span className="ml-1 font-medium text-slate-800">{detectedLedgerName}</span>
+              {ledgerForDetected
+                ? <span className="ml-1 text-emerald-700">(auto-mapped)</span>
+                : <span className="ml-1 text-amber-700">(no run-ledger match — using "All ledgers")</span>}
+            </span>
+          )}
         </div>
 
         {ledgerNote && (
@@ -107,18 +158,19 @@ export function InvoiceUploadPreviewModal({
               draft={draft[i]}
               onUpdate={(p) => update(i, p)}
               additions={eligibleAdditions}
+              allAdditions={additions}
+              restrictLedgerId={restrictLedgerId}
             />
           ))}
         </div>
 
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-[#EDEDE7] bg-[#FBFBF8]">
           <div className="text-[11px] text-slate-500">
-            {draft.filter(s => !s.skip && s.addition_id).length} of {chunks.length} chunk(s) ready to attach.
-            Each addition can hold one invoice — re-uploading replaces the existing attachment.
+            {draft.filter(s => !s.skip && s.addition_id).length} of {pendingCount || chunks.length} pending chunk(s) ready to attach.
           </div>
           <div className="flex gap-2">
             <button onClick={onClose} className="px-3 py-1.5 text-[12.5px] border border-slate-300 hover:bg-slate-100">
-              Cancel
+              Close
             </button>
             <button
               data-testid="fa-invoice-apply-btn"
@@ -136,14 +188,14 @@ export function InvoiceUploadPreviewModal({
   );
 }
 
-function ChunkCard({ chunk, draft, onUpdate, additions }) {
+function ChunkCard({ chunk, draft, onUpdate, additions, allAdditions, restrictLedgerId }) {
   const e = chunk.extraction || {};
   const m = chunk.match;
   const matched = !!m;
+  const isApplied = !!chunk.applied;
   const skip = !!draft.skip;
 
-  // Filter additions for the dropdown — show all eligible, with the matched
-  // one suggested at top.
+  // Sort: matched-and-eligible first, then the rest.
   const sorted = useMemo(() => {
     if (!matched) return additions;
     const top = additions.filter(a => a.addition_id === m.addition_id);
@@ -151,7 +203,36 @@ function ChunkCard({ chunk, draft, onUpdate, additions }) {
     return [...top, ...rest];
   }, [additions, matched, m?.addition_id]);
 
-  const selectedAdd = additions.find(a => a.addition_id === draft.addition_id);
+  const matchOutOfFilter = matched && restrictLedgerId
+    && !additions.some(a => a.addition_id === m.addition_id);
+  const selectedAdd = (allAdditions || additions).find(a => a.addition_id === draft.addition_id);
+
+  // Already-applied chunks are rendered as compact ✓ rows
+  if (isApplied) {
+    const appliedRow = chunk.applied_preview || {};
+    return (
+      <div
+        data-testid={`fa-invoice-chunk-${chunk.chunk_index}`}
+        className="border border-emerald-300 bg-emerald-50/60"
+      >
+        <div className="flex items-center gap-3 px-3 py-2 text-[12.5px]">
+          <CheckCircle2 size={14} className="text-emerald-700 shrink-0"/>
+          <span className="font-mono text-[11px] text-emerald-900">
+            Pages {chunk.page_range[0]}{chunk.page_range[0] !== chunk.page_range[1] ? `–${chunk.page_range[1]}` : ""}
+            {" · "}#{e.invoice_no || "?"}
+            {" · "}₹ {inr(e.total_value)}
+          </span>
+          <span className="text-slate-400">→</span>
+          <span className="text-slate-800 truncate flex-1">
+            {appliedRow.description || appliedRow.party_name || appliedRow.invoice_no || "(applied row)"}
+          </span>
+          <span className="text-[10.5px] font-mono uppercase tracking-wider text-emerald-800 bg-emerald-100 border border-emerald-200 px-1.5 py-0.5 shrink-0">
+            Already attached
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -168,6 +249,12 @@ function ChunkCard({ chunk, draft, onUpdate, additions }) {
           <span className={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 border ${matched ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-amber-100 text-amber-800 border-amber-200"}`}>
             {matched ? `Matched · ${m.method}` : "Needs review"}
           </span>
+          {matchOutOfFilter && (
+            <span className="text-[10px] text-amber-700">
+              <AlertCircle size={9} className="inline mr-0.5"/>
+              Match is in another ledger — pick from current filter or switch to "All ledgers"
+            </span>
+          )}
         </div>
         <label className="text-[11px] text-slate-600 flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={skip}
@@ -178,7 +265,6 @@ function ChunkCard({ chunk, draft, onUpdate, additions }) {
       </div>
 
       <div className="grid grid-cols-12 gap-3 p-3 text-[12px]">
-        {/* Extraction summary */}
         <div className="col-span-7 space-y-1.5">
           <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Extracted from PDF</div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11.5px]">
@@ -199,10 +285,16 @@ function ChunkCard({ chunk, draft, onUpdate, additions }) {
           </div>
         </div>
 
-        {/* Targeting + actions */}
         <div className="col-span-5 space-y-2">
           <div>
-            <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">Attach to addition row</div>
+            <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              Attach to addition row
+              {restrictLedgerId && (
+                <span className="ml-1 normal-case text-slate-400">
+                  ({additions.length} from selected ledger)
+                </span>
+              )}
+            </div>
             <select
               disabled={skip}
               value={draft.addition_id || ""}
@@ -218,7 +310,7 @@ function ChunkCard({ chunk, draft, onUpdate, additions }) {
                 </option>
               ))}
             </select>
-            {matched && (
+            {matched && !matchOutOfFilter && (
               <div className="text-[10.5px] text-emerald-700 mt-1">
                 <CheckCircle2 size={10} className="inline mr-0.5"/> Auto-match: {m.why}
               </div>
@@ -262,75 +354,71 @@ function KV({ label, v }) {
 }
 
 /* =========================================================== */
-/* Toolbar drop zone — sits at the top of the Additions tab    */
+/* Toolbar drop zone — multi-file, fire-and-forget into inbox  */
 /* =========================================================== */
-export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
-  const [drag, setDrag]           = useState(false);
-  const [progress, setProgress]   = useState(null); // {filename, elapsed_s, status}
+export function InvoiceUploadDropZone({ rid, onUploaded, busy, setBusy }) {
+  const [drag, setDrag]         = useState(false);
+  const [queue, setQueue]       = useState([]); // [{name, status, error?}]
 
   const onDrop = async (ev) => {
     ev.preventDefault();
     setDrag(false);
-    const f = ev.dataTransfer?.files?.[0];
-    if (f) await uploadOne(f);
+    const files = Array.from(ev.dataTransfer?.files || []);
+    if (files.length) await uploadAll(files);
   };
   const onPick = async (ev) => {
-    const f = ev.target.files?.[0];
+    const files = Array.from(ev.target.files || []);
     ev.target.value = "";
-    if (f) await uploadOne(f);
+    if (files.length) await uploadAll(files);
   };
 
-  const pollUntilDone = async (uploadId, filename) => {
-    // Poll every 2s, give up after 6 minutes.
-    const started = Date.now();
-    const TIMEOUT_MS = 6 * 60 * 1000;
-    let lastShownElapsed = 0;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      if (Date.now() - started > TIMEOUT_MS) {
-        throw new Error("OCR is taking longer than 6 minutes. Try a smaller PDF.");
-      }
-      const { data } = await http.get(`/fixed-assets/runs/${rid}/upload-status/${uploadId}`);
-      if (data.status === "done") return { ...data, filename: data.filename || filename };
-      if (data.status === "failed") {
-        throw new Error(data.error || "OCR failed");
-      }
-      lastShownElapsed = data.elapsed_s ?? lastShownElapsed;
-      setProgress({ filename, elapsed_s: lastShownElapsed, status: "processing" });
-      await new Promise(res => setTimeout(res, 2000));
-    }
-  };
+  const uploadAll = async (files) => {
+    const validFiles = files.filter(f => {
+      const ok = f.name.toLowerCase().endsWith(".pdf");
+      if (!ok) toast.error(`Skipped non-PDF: ${f.name}`);
+      const small = f.size <= 25 * 1024 * 1024;
+      if (!small) toast.error(`${f.name} exceeds 25 MB`);
+      return ok && small;
+    });
+    if (!validFiles.length) return;
 
-  const uploadOne = async (f) => {
-    if (!f.name.toLowerCase().endsWith(".pdf")) {
-      toast.error("Only .pdf files are supported.");
-      return;
-    }
-    if (f.size > 25 * 1024 * 1024) {
-      toast.error("PDF exceeds 25 MB.");
-      return;
-    }
     setBusy(true);
-    setProgress({ filename: f.name, elapsed_s: 0, status: "uploading" });
+    const initial = validFiles.map(f => ({ name: f.name, status: "uploading" }));
+    setQueue(initial);
+
+    // Fire all uploads in parallel — backend kicks off OCR per file in the
+    // background, returns upload_id immediately. The Inbox panel polls.
+    const results = await Promise.allSettled(validFiles.map((f, idx) => uploadOne(f, idx)));
+    const okCount = results.filter(r => r.status === "fulfilled").length;
+    const failCount = results.length - okCount;
+
+    if (okCount > 0) {
+      toast.success(`${okCount} PDF${okCount === 1 ? "" : "s"} uploaded — Gemini is analysing in the background. Check the Invoice Inbox below.`);
+    }
+    if (failCount > 0) {
+      toast.error(`${failCount} upload${failCount === 1 ? "" : "s"} failed — see queue.`);
+    }
+    onUploaded?.();
+    // Auto-clear the in-flight queue after a few seconds; the Inbox below
+    // takes over the visibility.
+    setTimeout(() => setQueue([]), 3500);
+    setBusy(false);
+  };
+
+  const uploadOne = async (f, idx) => {
     const fd = new FormData();
     fd.append("file", f);
     try {
-      // Stage 1 — upload (small, returns in <500ms with upload_id + status:processing)
-      const { data: uploadResp } = await http.post(
+      await http.post(
         `/fixed-assets/runs/${rid}/upload-invoices`,
         fd,
-        { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 },
+        { headers: { "Content-Type": "multipart/form-data" }, timeout: 120000 },
       );
-      // Stage 2 — poll until OCR is done (no per-poll axios timeout needed; each poll is small)
-      setProgress({ filename: f.name, elapsed_s: 0, status: "processing" });
-      const result = await pollUntilDone(uploadResp.upload_id, f.name);
-      onPreview?.(result);
+      setQueue(q => q.map((row, i) => i === idx ? { ...row, status: "queued" } : row));
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "Upload failed";
-      toast.error(msg);
-    } finally {
-      setBusy(false);
-      setProgress(null);
+      setQueue(q => q.map((row, i) => i === idx ? { ...row, status: "failed", error: msg } : row));
+      throw e;
     }
   };
 
@@ -345,20 +433,20 @@ export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-[12px] text-[#52524E] flex-1 min-w-0">
           <FileScan size={14} className="text-sky-700 shrink-0"/>
-          {progress ? (
-            <ProgressLine progress={progress}/>
+          {queue.length > 0 ? (
+            <UploadQueueLine queue={queue}/>
           ) : (
             <>
               <span className="font-semibold text-slate-800">Attach invoice PDFs</span>
-              <span className="text-slate-500 truncate">— drop a single invoice or a combined ledger+invoices PDF.
-                The OCR splits it, matches each invoice to a row, and fills the asset description.</span>
+              <span className="text-slate-500 truncate">— drop one or many PDFs.
+                Each is queued into the Invoice Inbox below; review &amp; attach at your own pace.</span>
             </>
           )}
         </div>
         <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] border border-sky-300 bg-white hover:bg-sky-50 text-sky-900 cursor-pointer disabled:opacity-50">
           {busy ? <Loader2 size={13} className="animate-spin"/> : <Paperclip size={13}/>}
-          {busy ? "Working…" : "Choose PDF"}
-          <input type="file" accept=".pdf,application/pdf"
+          {busy ? "Uploading…" : "Choose PDFs"}
+          <input type="file" accept=".pdf,application/pdf" multiple
                  onChange={onPick} disabled={busy}
                  className="hidden" data-testid="fa-invoice-upload-input"/>
         </label>
@@ -367,21 +455,21 @@ export function InvoiceUploadDropZone({ rid, onPreview, busy, setBusy }) {
   );
 }
 
-function ProgressLine({ progress }) {
-  const { filename, elapsed_s, status } = progress;
-  const stage = status === "uploading" ? "Uploading PDF…" : "Analysing pages with Gemini OCR…";
+function UploadQueueLine({ queue }) {
+  const ok = queue.filter(r => r.status === "queued").length;
+  const failed = queue.filter(r => r.status === "failed").length;
+  const inFlight = queue.filter(r => r.status === "uploading").length;
   return (
-    <div className="flex items-center gap-2 min-w-0" data-testid="fa-invoice-progress">
-      <Loader2 size={13} className="animate-spin text-sky-700"/>
-      <span className="font-mono text-[11.5px] text-slate-700 truncate">{filename}</span>
-      <span className="text-[11.5px] text-slate-500">·</span>
-      <span className="text-[11.5px] text-slate-700">{stage}</span>
-      {status === "processing" && elapsed_s > 0 && (
-        <span className="font-mono text-[10.5px] text-slate-500">~{elapsed_s}s elapsed</span>
-      )}
-      <span className="text-[11px] text-slate-400 hidden md:inline">
-        — large PDFs (10+ pages) may take 45–90 seconds
-      </span>
+    <div className="flex items-center gap-2 min-w-0 text-[11.5px]" data-testid="fa-invoice-progress">
+      {inFlight > 0
+        ? <><Loader2 size={13} className="animate-spin text-sky-700"/> Uploading {inFlight} of {queue.length}…</>
+        : (
+          <>
+            <CheckCircle2 size={13} className="text-emerald-700"/>
+            {ok} of {queue.length} sent to Inbox
+            {failed > 0 && <span className="text-rose-700">· {failed} failed</span>}
+          </>
+        )}
     </div>
   );
 }

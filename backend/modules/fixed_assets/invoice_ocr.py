@@ -42,6 +42,12 @@ For EACH page (1..N), classify it as one of:
                                    annexure, T&Cs, signature block — NO new invoice header)
   - "other"                    — anything else (cover page, blank, signed challan, etc.)
 
+If any ledger_extract pages exist, also extract:
+  - detected_ledger_name — the ledger name as it appears on the ledger header,
+                           e.g. "Computer GST 18%", "Plant & Machinery GST 12%",
+                           "Furniture & Fixtures". Trim trailing words like
+                           "Ledger Account". Empty string if no ledger page.
+
 Group consecutive invoice pages into chunks: one chunk = one_first_page +
 zero_or_more_continuation pages. Boundary signals: "TAX INVOICE" header, new IRN,
 new supplier GSTIN, new invoice number.
@@ -72,6 +78,7 @@ Rules:
 Return ONLY valid JSON, no markdown fences, no commentary:
 {
   "page_classifications": [{"page": 1, "kind": "ledger_extract"}, ...],
+  "detected_ledger_name": "Computer GST 18%",
   "invoices": [...],
   "ledger_pages": [1, ...]
 }
@@ -202,6 +209,7 @@ async def gemini_extract(pdf_bytes: bytes) -> Dict[str, Any]:
         "page_classifications": data.get("page_classifications") or [],
         "invoices":             invs,
         "ledger_pages":         data.get("ledger_pages") or [],
+        "detected_ledger_name": (data.get("detected_ledger_name") or "").strip(),
     }
 
 
@@ -280,9 +288,29 @@ def match_invoice_to_addition(
     return None
 
 
+def detect_fa_ledger_id(detected_name: str, run_ledgers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fuzzy-match the OCR-detected ledger name against the run's actual ledgers.
+    Returns {fa_ledger_id, name, score} on confident match (≥85), else None."""
+    if not detected_name or not run_ledgers:
+        return None
+    best = None
+    for L in run_ledgers:
+        name = (L.get("name") or "").strip()
+        if not name:
+            continue
+        score = max(
+            fuzz.token_set_ratio(detected_name, name),
+            fuzz.partial_ratio(detected_name.lower(), name.lower()),
+        )
+        if score >= 85 and (best is None or score > best["score"]):
+            best = {"fa_ledger_id": L.get("fa_ledger_id"), "name": name, "score": int(score)}
+    return best
+
+
 # ============================================================ Orchestrator
 async def split_extract_and_match(
     *, pdf_bytes: bytes, additions: List[Dict[str, Any]],
+    run_ledgers: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """High-level entry point used by the controller.
 
@@ -334,9 +362,13 @@ async def split_extract_and_match(
         })
 
     n_pages = len(parsed["page_classifications"]) or len(PdfReader(BytesIO(pdf_bytes)).pages)
+    detected_ledger = detect_fa_ledger_id(parsed["detected_ledger_name"], run_ledgers or [])
     return {
         "page_classifications": parsed["page_classifications"],
         "ledger_pages":         parsed["ledger_pages"],
+        "detected_ledger_name": parsed["detected_ledger_name"],
+        "detected_fa_ledger_id": (detected_ledger or {}).get("fa_ledger_id") or "",
+        "detected_fa_ledger":   detected_ledger,
         "chunks":               chunks,
         "single_invoice":       len(chunks) == 1 and not parsed["ledger_pages"],
         "summary": {

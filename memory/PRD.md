@@ -1,5 +1,42 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Inbox + Multi-PDF + Ledger-aware OCR (2026-04-30 PM-6)
+
+Four user-driven changes shipped together; all backend smoke-tested + frontend Playwright-verified.
+
+### #1 · Ledger-aware target dropdown (P1)
+- New Gemini prompt extracts `detected_ledger_name` from the OCR'd ledger pages (e.g. "Computer GST 18%", "Plant & Machinery GST 12%").
+- New `detect_fa_ledger_id()` in `invoice_ocr.py` fuzzy-matches that against the run's `fa_ledgers.name` (token-set + partial-ratio, ≥85 confidence threshold).
+- The Split-Preview modal carries a new ledger-filter strip with `BookMarked` icon: defaults to the auto-detected ledger (★ marker), but the auditor can pick a different ledger or `All ledgers (N)` to bypass entirely.
+- When a chunk's auto-match falls outside the active ledger filter, the chunk header surfaces a small amber `Match is in another ledger — pick from current filter or switch to "All ledgers"` hint instead of silently failing.
+
+### #2 · Replaced redundant block dropdown with always-visible ledger filter (P0)
+- `AdditionsToolbar.jsx`: removed the redundant block dropdown (the chips strip above already carries that). Replaced with a permanent ledger filter: `All ledgers (N) / <ledger> · <count> rows`. Always visible (even with 1 ledger) so the auditor can see exactly what's in the active block.
+
+### #3 · Default columns slimmed (P0)
+- `additions/utils.js`: `Supplier · Voucher No · Invoice No · Inv Date` are now `default: false`. Auditors who rely on them flip them via the gear icon. Bumped LS key to `fa.additions.colVis.v2` so existing users get the new defaults on next visit.
+
+### #4 · Persistent inbox + multi-PDF upload (P2)
+**Backend — Mongo-backed pending uploads** (replaces the in-memory `_PENDING_UPLOADS` dict):
+- New collection `fa_pending_invoice_uploads` — `{upload_id, run_id, client_id, filename, pdf_size, status, error?, page_classifications, ledger_pages, detected_ledger_name?, detected_fa_ledger_id?, single_invoice, summary, chunks: [{chunk_index, page_range, pdf_size, extraction, match, applied, applied_addition_id?, applied_at?}], created_at, finished_at?}`. Survives restarts indefinitely; auditor controls discards.
+- New collection `fa_pending_chunk_pdfs` — sidecar `{upload_id, chunk_index, content_b64}` (gzipped+base64) per chunk so the parent doc stays well under Mongo's 16 MB cap even for 25 MB combined PDFs with many chunks.
+- `apply_invoice_uploads`: copies chunk bytes into `fa_invoice_attachments` AND marks `chunks.$.applied = true` + `applied_addition_id` on the parent (so the inbox shows "4 of 9 attached"). Discount-credits / merged children remain rejected. The `409` response on apply when status≠done.
+- New endpoints: `GET /runs/{rid}/invoice-inbox` (thin payload — chunk metadata only, no PDF bytes) and `DELETE /runs/{rid}/invoice-inbox/{upload_id}` (drops parent + sidecar PDFs; per-row attachments are NOT touched, so already-applied work survives discard).
+- Cascade — run delete now drops both new collections too.
+- `gemini_extract`: 3× retry with exponential backoff (3s, 8s) on 502/503/504/timeout/rate-limit, eliminating the user's original `BadGatewayError` failure mode.
+- OCR work runs in `asyncio.to_thread(lambda: asyncio.run(...))` so LiteLLM's sync HTTP client doesn't starve the event loop — upload returns in <2 s even for 13-page PDFs.
+
+**Frontend — Multi-file upload + persistent inbox UI**:
+- `<input multiple>` accepts many PDFs at once. All upload requests fire in parallel (`Promise.allSettled`), each kicks off a backend OCR job. **No modal opens automatically** (per user choice (c)) — the auditor reviews from the inbox at their own pace.
+- New `InvoiceInbox.jsx` component sits below the dropzone, lists every pending upload with: filename · size · auto-detected ledger chip · status badge (processing/done/failed) · `<N>/<M> attached` counter · **Resume** button · **Discard** trash icon. Auto-polls every 4 s while any row is `processing`, then stops.
+- The Split-Preview modal now opens via "Resume" on an inbox row. Already-applied chunks render as compact emerald `Already attached → <row description>` strips (read-only); only pending chunks remain editable.
+- Inbox stays expanded by default but is collapsible with a chevron. Counter chips at top: "N uploads · X processing · Y chunks unattached".
+
+### End-to-end verification
+- ✅ Upload of `sample_velav.pdf` returns in 1.75 s; background OCR completes in 32 s; inbox shows the new entry with auto-detected ledger "Plant & Machinery GST 12%" auto-mapped to `fa_ledger_id`.
+- ✅ Frontend Playwright sweep: dropzone present, inbox present, ledger filter present (block dropdown absent), Supplier/Voucher/Inv-No/Inv-Date column headers absent (all `count=0`), Resume button on inbox row opens the preview modal with `detected ledger = Plant & Machinery GST 12%` line visible and modal ledger filter present.
+- ✅ Backend lint clean. Frontend lint clean.
+
 ## Fixed Assets — Phase 1.5: OCR-powered invoice attachment (2026-04-30 PM-5)
 
 **Single biggest UX win on the whole module.** Auditor uploads a PDF — single tax invoice OR a combined ledger + N invoices PDF — and the system:
