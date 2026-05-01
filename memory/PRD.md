@@ -1,5 +1,24 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — PDF block-summary auto-fit (no number wrapping) (2026-05-01 PM-6)
+
+User's screenshot showed `62,42,845.45` (Depn for 15% P&M) and `73,73,996.11` (Total Depn) wrapping onto two lines in the IT Depreciation Schedule PDF. Real-world client books may go up to ₹999 Cr (16 chars including grouping commas) — the table needs to auto-fit so numbers never wrap.
+
+### Implementation (`pdf_export.py`)
+- New `_autofit_summary_geometry(rows, totals, available_width)` helper:
+  1. Pre-measures every cell (header + data + total row) using `reportlab.pdfbase.pdfmetrics.stringWidth`.
+  2. Adds 8 pt horizontal padding (4+4) per column.
+  3. If sum > 180 mm A4 portrait usable width, **shrinks the body font** in 0.5 pt steps from 7.5 pt down to a 6 pt floor.
+  4. As a last resort (still over budget after font shrink), trims the Block-text column (text can wrap onto a 2nd line; numbers cannot) and proportionally rebalances the rest.
+  5. Slack (when total ≤ available) flows to the Block column for visual balance.
+- Column metadata externalised as `_SUMM_COLS` so headers/keys/alignment are declared once.
+- Built paragraph styles dynamically tuned to the chosen body font size (with leading scaled to font + 1.5) so small fonts don't leave awkward vertical gaps.
+
+### Tests
+- `tests/test_fixed_assets_pdf_autofit.py` — 5/5 GREEN: widths sum to AVAILABLE for normal runs · auto-fit shrinks font for ₹999 Cr-class numbers · pdfplumber-extracted text shows the depreciation value on ONE line (no `\n` mid-number) · normal runs keep the comfortable 7.5 pt body · table renders without exception.
+- Production demo run: both circled wrapping values from the user's screenshot (`62,42,845.45` + `73,73,996.11`) now appear on a single line in `/api/fixed-assets/runs/{rid}/export.pdf`.
+- Cumulative regression: **39/39 GREEN** across all FA test modules.
+
 ## Fixed Assets — Cockpit-style audit-flag jumps + blank-on-ingest PTU (2026-05-01 PM-5)
 
 ### #1 — Clickable audit-flag cards turn the Summary tab into a *cockpit*

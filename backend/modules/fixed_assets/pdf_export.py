@@ -19,6 +19,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import (
     BaseDocTemplate, PageTemplate, Frame,
     Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether,
@@ -165,43 +166,155 @@ def _cover_block(*, client_name: str, fy_label: str, fy_start: str, fy_end: str,
 
 
 # ============================ Block summary table =====================
-def _block_summary_table(rows: List[Dict[str, Any]], totals: Dict[str, float]) -> Table:
-    s = _styles()
-    head = [
-        Paragraph("Block", s["summ_th"]),
-        Paragraph("Rate", s["summ_th"]),
-        Paragraph("Opening WDV", s["summ_th"]),
-        Paragraph("Adds ≥ 180d", s["summ_th"]),
-        Paragraph("Adds < 180d", s["summ_th"]),
-        Paragraph("Sales", s["summ_th"]),
-        Paragraph("Depn", s["summ_th"]),
-        Paragraph("Closing WDV", s["summ_th"]),
-    ]
-    data = [head]
-    for r in rows:
-        data.append([
-            Paragraph(r["block_label"], s["summ_l"]),
-            Paragraph(f"{int(round(r['rate']))}%", ParagraphStyle("c", parent=s["summ_l"], alignment=1)),
-            Paragraph(_inr(r["opening_wdv"]), s["summ_r"]),
-            Paragraph(_inr(r["adds_full"]), s["summ_r"]),
-            Paragraph(_inr(r["adds_half"]), s["summ_r"]),
-            Paragraph(_inr(r["deletions"]), s["summ_r"]),
-            Paragraph(_inr(r["depreciation"]), s["summ_b"]),
-            Paragraph(_inr(r["closing_wdv"]), s["summ_b"]),
-        ])
-    data.append([
-        Paragraph("TOTAL", ParagraphStyle("totl", parent=s["summ_l"], textColor=INK, fontName="Helvetica-Bold")),
-        Paragraph("", s["summ_l"]),
-        Paragraph(_inr(totals.get("opening_wdv")), s["summ_b"]),
-        Paragraph(_inr(totals.get("adds_full")), s["summ_b"]),
-        Paragraph(_inr(totals.get("adds_half")), s["summ_b"]),
-        Paragraph(_inr(totals.get("deletions")), s["summ_b"]),
-        Paragraph(_inr(totals.get("depreciation")), s["summ_b"]),
-        Paragraph(_inr(totals.get("closing_wdv")), s["summ_b"]),
-    ])
+# Column metadata: (header label, key for data lookup, data style key, header alignment)
+# `key` of "" means "literal" (used for Block label and Rate which aren't numeric).
+_SUMM_COLS = [
+    {"header": "Block",         "key": "block_label",  "kind": "text",    "align": "left"},
+    {"header": "Rate",          "key": "rate",         "kind": "rate",    "align": "center"},
+    {"header": "Opening WDV",   "key": "opening_wdv",  "kind": "num",     "align": "right"},
+    {"header": "Adds ≥ 180d",   "key": "adds_full",    "kind": "num",     "align": "right"},
+    {"header": "Adds < 180d",   "key": "adds_half",    "kind": "num",     "align": "right"},
+    {"header": "Sales",         "key": "deletions",    "kind": "num",     "align": "right"},
+    {"header": "Depn",          "key": "depreciation", "kind": "num_b",   "align": "right"},
+    {"header": "Closing WDV",   "key": "closing_wdv",  "kind": "num_b",   "align": "right"},
+]
 
-    # Column widths sum = 180mm (A4 portrait usable width = 210 − 2×15 mm)
-    widths = [48 * mm, 10 * mm, 22 * mm, 22 * mm, 22 * mm, 17 * mm, 17 * mm, 22 * mm]
+
+def _autofit_summary_geometry(rows, totals, *, available_width, header_font_size=7.5):
+    """Pre-measure every cell in the block summary and return (col_widths,
+    body_font_size) tuned so that no number ever wraps across two lines —
+    even at ₹999 Cr (16 chars including grouping commas).
+
+    Strategy:
+      1. For each column, compute the widest string at the chosen font.
+      2. Add horizontal padding (8 pt = 4 pt left + 4 pt right).
+      3. If the total exceeds `available_width`, shrink the body font and
+         retry (down to a hard floor of 6 pt).
+      4. If still over budget, shrink the Block (text) column and add the
+         slack back to the numeric columns proportionally — the Block
+         label can wrap onto a 2nd line, the numbers cannot.
+    """
+    HEADER_FONT = "Helvetica-Bold"
+    BODY_FONT = "Helvetica"
+    BODY_BOLD = "Helvetica-Bold"
+    H_PAD = 8  # 4 pt left + 4 pt right per column
+    MIN_BODY_FONT = 6.0
+    BLOCK_MIN_W = 30 * mm  # block label can wrap; cap at 30mm minimum
+    BLOCK_HARD_MAX = 70 * mm  # don't let block label hog the whole page
+
+    def _val_str(col, r):
+        kind = col["kind"]
+        v = r.get(col["key"]) if r else None
+        if kind == "rate":
+            return f"{int(round(float(v or 0)))}%"
+        if kind in ("num", "num_b"):
+            return _inr(v)
+        return str(v or "")
+
+    # Build the data matrix once for measurement
+    body_font_size = header_font_size
+    while True:
+        widths = []
+        for ci, col in enumerate(_SUMM_COLS):
+            font = HEADER_FONT
+            hw = stringWidth(col["header"], font, header_font_size)
+            mx = hw
+            # Body rows
+            for r in rows:
+                f = BODY_BOLD if col["kind"] == "num_b" else BODY_FONT
+                mx = max(mx, stringWidth(_val_str(col, r), f, body_font_size))
+            # Total row uses bold for every numeric / text label
+            tot_str = "TOTAL" if col["key"] == "block_label" else (
+                "" if col["key"] == "rate"
+                else _inr(totals.get(col["key"]))
+            )
+            mx = max(mx, stringWidth(tot_str, BODY_BOLD, body_font_size))
+            widths.append(mx + H_PAD)
+
+        # Cap the Block text column so it doesn't dominate
+        widths[0] = min(widths[0], BLOCK_HARD_MAX)
+
+        total = sum(widths)
+        if total <= available_width:
+            # Distribute the slack back to the Block column for visual balance
+            slack = available_width - total
+            widths[0] += slack
+            return widths, body_font_size
+
+        # Try shrinking the body font first (numbers must stay single-line)
+        if body_font_size > MIN_BODY_FONT:
+            body_font_size = max(MIN_BODY_FONT, body_font_size - 0.5)
+            continue
+
+        # Last resort: trim the Block column (text — can wrap)
+        overflow = total - available_width
+        new_block = max(BLOCK_MIN_W, widths[0] - overflow)
+        widths[0] = new_block
+        # If still over after the block shrink, scale numeric columns
+        # proportionally — accept that the smallest numbers may still
+        # be single-line at the floor font.
+        new_total = sum(widths)
+        if new_total > available_width:
+            extra = new_total - available_width
+            num_total = sum(widths[2:])
+            for i in range(2, len(widths)):
+                widths[i] -= extra * (widths[i] / num_total)
+        return widths, body_font_size
+
+
+def _block_summary_table(rows: List[Dict[str, Any]], totals: Dict[str, float]) -> Table:
+    # A4 portrait usable width = 210 − 2×15 mm = 180 mm
+    AVAILABLE = 180 * mm
+    widths, body_font_size = _autofit_summary_geometry(
+        rows, totals, available_width=AVAILABLE,
+    )
+
+    # Build paragraph styles tuned to the auto-fit body font size so the
+    # leading also scales (avoids awkward gaps when the font is small).
+    leading = body_font_size + 1.5
+    th_style = ParagraphStyle(
+        "th_fit", fontName="Helvetica-Bold", fontSize=7.5,
+        leading=9.5, textColor=HEADER_FG, alignment=1,
+    )
+    body_l = ParagraphStyle("body_l", fontName="Helvetica",
+                            fontSize=body_font_size, leading=leading,
+                            textColor=INK_SOFT)
+    body_r = ParagraphStyle("body_r", parent=body_l, alignment=2)
+    body_c = ParagraphStyle("body_c", parent=body_l, alignment=1)
+    body_b = ParagraphStyle("body_b", fontName="Helvetica-Bold",
+                            fontSize=body_font_size, leading=leading,
+                            textColor=INK, alignment=2)
+    total_lbl = ParagraphStyle("total_lbl", parent=body_l,
+                               textColor=INK, fontName="Helvetica-Bold")
+
+    head = [Paragraph(c["header"], th_style) for c in _SUMM_COLS]
+    data = [head]
+
+    for r in rows:
+        row_cells = []
+        for c in _SUMM_COLS:
+            kind = c["kind"]
+            if kind == "rate":
+                row_cells.append(Paragraph(f"{int(round(r['rate']))}%", body_c))
+            elif kind == "num":
+                row_cells.append(Paragraph(_inr(r[c["key"]]), body_r))
+            elif kind == "num_b":
+                row_cells.append(Paragraph(_inr(r[c["key"]]), body_b))
+            else:
+                row_cells.append(Paragraph(r["block_label"], body_l))
+        data.append(row_cells)
+
+    total_row = []
+    for c in _SUMM_COLS:
+        kind = c["kind"]
+        if c["key"] == "block_label":
+            total_row.append(Paragraph("TOTAL", total_lbl))
+        elif kind == "rate":
+            total_row.append(Paragraph("", body_l))
+        else:
+            total_row.append(Paragraph(_inr(totals.get(c["key"])), body_b))
+    data.append(total_row)
+
     tbl = Table(data, colWidths=widths, repeatRows=1)
     style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
