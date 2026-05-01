@@ -42,6 +42,58 @@ def _autosize(ws, widths: Dict[int, int]):
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
+def _format_inr_indian(v: float) -> str:
+    """Format a number in Indian grouping for *measurement only* — matches
+    what Excel will display under the NUM_FMT format string."""
+    n = float(v or 0)
+    if n == 0:
+        return "-"
+    s = f"{abs(n):,.2f}"
+    intpart, _, dec = s.partition(".")
+    intpart = intpart.replace(",", "")
+    if len(intpart) > 3:
+        last3 = intpart[-3:]
+        rest = intpart[:-3]
+        groups = [rest[max(0, i - 2):i] for i in range(len(rest), 0, -2)][::-1]
+        intpart = ",".join(groups) + "," + last3
+    formatted = f"{intpart}.{dec}"
+    return f"({formatted})" if n < 0 else formatted
+
+
+def _fit_column_widths(ws, *, header_row: int, last_row: int,
+                       num_cols: int, num_col_indexes: set,
+                       text_cap: int = 50, num_cap: int = 22, padding: float = 1.4):
+    """Measure each column's widest content (header + every data cell)
+    and override the explicit column widths so numbers never wrap and
+    text columns shrink to fit. `num_col_indexes` contains 1-based indices
+    of columns formatted as numbers — those are measured via the Indian-
+    grouping string representation. Other columns measure raw `str(value)`.
+
+    `text_cap` limits a runaway text column (e.g. 200-char particulars)
+    so the workbook stays printable; `num_cap` keeps numeric columns
+    sane even if a single cell happens to be very long."""
+    widths: Dict[int, float] = {}
+    for col in range(1, num_cols + 1):
+        max_len = 0
+        for r in range(header_row, last_row + 1):
+            cell = ws.cell(r, col)
+            v = cell.value
+            if v is None or v == "":
+                continue
+            if col in num_col_indexes and isinstance(v, (int, float)):
+                txt = _format_inr_indian(float(v))
+            else:
+                txt = str(v)
+            # Use the longest line if the cell wraps via \n
+            for line in txt.split("\n"):
+                if len(line) > max_len:
+                    max_len = len(line)
+        cap = num_cap if col in num_col_indexes else text_cap
+        # +padding for cell inset (Excel uses ~1 char visual padding)
+        widths[col] = min(max(8.0, max_len + padding), cap)
+    _autosize(ws, widths)
+
+
 def write_block_summary(ws, *, client_name: str, fy_start: str, fy_end: str,
                         rows: List[Dict[str, Any]], totals: Dict[str, float]):
     ws.title = "Block Summary"
@@ -57,20 +109,12 @@ def write_block_summary(ws, *, client_name: str, fy_start: str, fy_end: str,
 
     # Header row (row 4)
     headers = [
-        ("PARTICULARS", 36),
-        ("Rate", 7),
-        ("Opening WDV", 15),
-        ("Adds ≥ 180 days", 17),
-        ("Adds < 180 days", 17),
-        ("Deletions (Sales)", 17),
-        ("Total before Depn", 17),
-        ("Depreciation", 15),
-        ("STCG u/s 50", 13),
-        ("Closing WDV", 16),
+        "PARTICULARS", "Rate", "Opening WDV", "Adds ≥ 180 days",
+        "Adds < 180 days", "Deletions (Sales)", "Total before Depn",
+        "Depreciation", "STCG u/s 50", "Closing WDV",
     ]
-    for i, (h, _w) in enumerate(headers, start=1):
+    for i, h in enumerate(headers, start=1):
         _set(ws.cell(4, i), h, bold=True, fill=HDR_FILL, align="center")
-    _autosize(ws, {i: w for i, (_h, w) in enumerate(headers, start=1)})
 
     # Data rows
     r = 5
@@ -99,22 +143,26 @@ def write_block_summary(ws, *, client_name: str, fy_start: str, fy_end: str,
     _set(ws.cell(r, 9), totals["stcg_sec50"], bold=True, fill=TOT_FILL, num=True, align="right")
     _set(ws.cell(r, 10), totals["closing_wdv"], bold=True, fill=TOT_FILL, num=True, align="right")
 
+    # Auto-fit column widths to widest content (header + body + total).
+    _fit_column_widths(
+        ws, header_row=4, last_row=r,
+        num_cols=10, num_col_indexes={3, 4, 5, 6, 7, 8, 9, 10},
+        # PARTICULARS has long block names — give it more room
+        text_cap=42,
+    )
+
 
 def write_additions(ws, additions: List[Dict[str, Any]]):
     ws.title = "Additions Register"
     headers = [
-        ("Block", 28), ("Voucher No", 16), ("Voucher Type", 14),
-        ("Acc Date", 12), ("Inv Date", 12), ("PTU Date", 12),
-        ("Half Rate?", 11),
-        ("Party", 32), ("Particulars", 40),
-        ("Invoice Cost", 14),
-        ("Discount/Credits", 16), ("Other Expenses", 14), ("ITC Reversed", 13),
-        ("Interest Cap", 13), ("Forex", 11),
-        ("Capitalised Cost", 16), ("Ledger", 30),
+        "Block", "Voucher No", "Voucher Type", "Acc Date", "Inv Date",
+        "PTU Date", "Half Rate?", "Party", "Particulars",
+        "Invoice Cost", "Discount/Credits", "Other Expenses",
+        "ITC Reversed", "Interest Cap", "Forex",
+        "Capitalised Cost", "Ledger",
     ]
-    for i, (h, _w) in enumerate(headers, start=1):
+    for i, h in enumerate(headers, start=1):
         _set(ws.cell(1, i), h, bold=True, fill=HDR_FILL, align="center")
-    _autosize(ws, {i: w for i, (_h, w) in enumerate(headers, start=1)})
 
     from modules.fixed_assets.compute import adjusted_cost
     r = 2
@@ -138,17 +186,22 @@ def write_additions(ws, additions: List[Dict[str, Any]]):
         _set(ws.cell(r, 16), cap, bold=True, num=True, align="right")
         _set(ws.cell(r, 17), a.get("ledger_name", ""))
         r += 1
+    _fit_column_widths(
+        ws, header_row=1, last_row=max(r - 1, 1),
+        num_cols=17, num_col_indexes={10, 11, 12, 13, 14, 15, 16},
+        # Particulars is the runaway column; cap a bit higher than default
+        text_cap=50,
+    )
 
 
 def write_deletions(ws, deletions: List[Dict[str, Any]]):
     ws.title = "Deletions Register"
     headers = [
-        ("Block", 28), ("Voucher No", 16), ("Sale Date", 12), ("Buyer", 32),
-        ("Sale Value", 14), ("Particulars", 40), ("Ledger", 30),
+        "Block", "Voucher No", "Sale Date", "Buyer",
+        "Sale Value", "Particulars", "Ledger",
     ]
-    for i, (h, _w) in enumerate(headers, start=1):
+    for i, h in enumerate(headers, start=1):
         _set(ws.cell(1, i), h, bold=True, fill=HDR_FILL, align="center")
-    _autosize(ws, {i: w for i, (_h, w) in enumerate(headers, start=1)})
     r = 2
     for d in [d for d in deletions if (d.get("classification") or "") == "sale"]:
         _set(ws.cell(r, 1), d.get("block_label", ""))
@@ -159,6 +212,11 @@ def write_deletions(ws, deletions: List[Dict[str, Any]]):
         _set(ws.cell(r, 6), d.get("particulars", "")[:200])
         _set(ws.cell(r, 7), d.get("ledger_name", ""))
         r += 1
+    _fit_column_widths(
+        ws, header_row=1, last_row=max(r - 1, 1),
+        num_cols=7, num_col_indexes={5},
+        text_cap=50,
+    )
 
 
 def write_workings(ws):

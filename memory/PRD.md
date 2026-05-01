@@ -1,5 +1,20 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Excel block-summary auto-fit (no number wrapping) (2026-05-01 PM-7)
+
+Mirror of the PDF auto-fit fix — Excel column widths were hard-coded (15 chars for Opening WDV, 14 chars for Depreciation etc.) which would wrap ₹999 Cr-class numbers in cells. Applied the same content-aware sizing across all 3 data sheets.
+
+### Implementation (`export.py`)
+- New `_format_inr_indian()` helper mirrors the Excel `#,##,##0.00` cell format string in pure Python — used for *measurement only* (Excel renders the actual number itself).
+- New `_fit_column_widths(ws, *, header_row, last_row, num_cols, num_col_indexes, text_cap=50, num_cap=22)` walks every populated cell in the given row range, computes the widest content per column (numbers via the formatted Indian-style string, others via raw `str()`), and overrides the explicit column widths. Caps prevent runaway 200-char Particulars from blowing the column out.
+- `write_block_summary` / `write_additions` / `write_deletions` now call `_fit_column_widths()` after writing all rows; the explicit `(header, width)` tuples were stripped down to plain header strings.
+- Workings sheet keeps a fixed 110-char width (it's an explanatory single-column note, not data).
+
+### Tests
+- `tests/test_fixed_assets_xlsx_autofit.py` — 5/5 GREEN: ₹999.99 Cr renders to 17 chars · normal-run widths fit actual numbers · huge-run (₹11,55,55,55,555.55) widths accommodate 16-char closing WDV · Additions register caps the 250-char particulars at 50 · total-row figures drive widths when larger than any block's value.
+- Demo run actual widths: Block 30.4, numeric cols 13–18 sized to widest formatted value, runaway text capped at 50.
+- Cumulative regression: **60/60 GREEN** across all FA test modules.
+
 ## Fixed Assets — PDF block-summary auto-fit (no number wrapping) (2026-05-01 PM-6)
 
 User's screenshot showed `62,42,845.45` (Depn for 15% P&M) and `73,73,996.11` (Total Depn) wrapping onto two lines in the IT Depreciation Schedule PDF. Real-world client books may go up to ₹999 Cr (16 chars including grouping commas) — the table needs to auto-fit so numbers never wrap.
