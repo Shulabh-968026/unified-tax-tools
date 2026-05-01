@@ -1,5 +1,34 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Compute gate, zero-row skip, A4 PDF (2026-05-01 PM-2)
+
+Three asks landed together:
+
+### #1 — Drift-banner-style 3CD gate (Compute disabled until match or override)
+- Backend `validate-3cd` now persists a compact `prior_3cd_validation` summary on the run: `{ok, mismatch_count, totals, validated_at, filename, acknowledged}` — `acknowledged=ok` so a green validation auto-resolves while a mismatch fires the gate.
+- New endpoint `POST /runs/{rid}/clear-3cd-validation-warning` — auditor-driven "I've reviewed — proceed anyway" override; flips `acknowledged=True`.
+- Every opening-WDV mutator (`POST /block-opening`, `/import.xlsx`, `/apply-prior-3cd`, `/roll-forward`) auto-`$unset`s the prior validation so a stale green can never linger after the auditor edits openings.
+- Frontend `Validation3CDBanner` renders three states: rose blocking banner with override CTA when `ok=false && !acknowledged`; emerald acknowledged strip when `acknowledged=true` (with different copy for "passed" vs "overridden"); nothing when no validation exists.
+- `Compute` button disabled (`cursor-not-allowed` + tooltip) while `computeBlocked` memo is true.
+
+### #2 — Skip zero-only block rows
+- `compute_run` filters every row where opening + adds + dels + depn + closing + STCG are all zero, before sorting + emitting. Excel Block Summary + on-screen result table both consume that filtered list, so the auditor sees only active blocks (5 vs 15 in the demo run).
+
+### #3 — A4 portrait PDF working-paper (`pdf_export.py`)
+- New `GET /runs/{rid}/export.pdf` — reportlab-built, A4 595×842 pt:
+  - Page 1: H1 title + client/FY/run header + 4-card KPI strip (Opening · Adds · Depreciation · Closing) + full Block Summary table with TOTAL row.
+  - Pages 2+: Additions Register, **one card per asset** as the user requested:
+    - Row A (primary scan path): PTU Date · **Particulars** + muted Supplier · Capitalised Cost (right-aligned, bold ₹).
+    - Row B (muted detail strip): Voucher · Inv # · Inv Dt · Block · Ledger, plus a smaller bottom-line breakdown showing Inv Cost ± Other Exp ± ITC Rev ± Int Cap ± Forex ± Disc/Cr.
+- Indian-format (lakh/crore) ₹ helper, slate-100 row alts, sky-100 KPI accent, slate-900 header band, hairline borders. Frame footer carries page number + "MSS × Assure · Audit Working-Paper" + run name.
+- Sort discipline: additions ordered by PTU date → block → supplier so the auditor reads chronologically.
+- New rose `Download PDF` button (testid `fa-export-pdf-btn`, FileText icon) sits right of the existing Excel button.
+
+### Tests
+- `tests/test_fixed_assets_3cd_gate_pdf.py` — 6/6 GREEN: validate persists with acknowledged=False on mismatch / True on match; clear-warning acks; opening-WDV writes auto-invalidate stale gate; compute filters all-zero blocks; export.pdf returns ≥5 KB %PDF.
+- Cumulative regression: 22/22 GREEN across all FA test modules.
+- Frontend Playwright (iteration_14) — 5/5 GREEN: case-A green-gate, case-B mismatch + override, screen zero-row skip (5 blocks shown vs 15 active), Excel zero-row skip, PDF download (27,548 bytes, A4 portrait MediaBox 595.28×841.89, multi-page).
+
 ## Fixed Assets — Opening WDV Excel round-trip + optional 3CD validation (2026-05-01 PM-1)
 
 3CD JSON only carries opening WDV at the **rate level** but the depreciation working needs sub-block resolution (e.g. "15% Block – P&M" ₹25.78L vs "15% Block – Vehicles" ₹0.45L, both at 15%). Auditors now have a clean Excel round-trip for Opening WDV; 3CD becomes an OPTIONAL sanity-check.
