@@ -1,5 +1,24 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Opening WDV Excel round-trip + optional 3CD validation (2026-05-01 PM-1)
+
+3CD JSON only carries opening WDV at the **rate level** but the depreciation working needs sub-block resolution (e.g. "15% Block – P&M" ₹25.78L vs "15% Block – Vehicles" ₹0.45L, both at 15%). Auditors now have a clean Excel round-trip for Opening WDV; 3CD becomes an OPTIONAL sanity-check.
+
+### Backend (`block_opening_xlsx.py` + 3 controller endpoints)
+- `GET /runs/{rid}/block-opening/export.xlsx` — one-sheet workbook with one row per active `block_label` (incl. zero-value rows), pre-populated with the current `fa_block_opening` values. Hidden col-A canonical key + locked Block/Rate cells; only Opening WDV + Note are editable. Live SUM total in row 3.
+- `POST /runs/{rid}/block-opening/import.xlsx` — multipart, parses, upserts each block with `source="manual_xlsx"` + `source_ref=<filename>`. Footer informational rows are silently skipped; rows with bogus block_label surface in `unknown_blocks` for the auditor.
+- `POST /runs/{rid}/block-opening/validate-3cd` — multipart, parses optional 3CD JSON, sums current openings by rate, returns a per-rate diff `{rate, opening_excel, opening_3cd, diff, status: match|mismatch|missing_in_*, blocks: [...]}` + global ok flag (within ±₹1 tolerance). **Read-only** — nothing is written.
+
+### Frontend (`ComputeTab.jsx`)
+- Toolbar reorganised into two rows: primary path = Export/Import Excel + Roll-forward; optional path = Validate/Import 3CD with a dashed top-border separator, an `OPTIONAL` mono pill, and explanatory copy ("only carries rate-level totals — use it to validate sub-block sums").
+- New `Validate3CDModal` shows a per-rate diff table with status pills (match=emerald, mismatch=rose, missing=amber), totals strip, and a clear "Read-only check — adjust the Excel and re-import to fix mismatches" CTA.
+- New `manual_xlsx` source chip (sky-blue "Excel") on the Opening WDV table.
+- Existing `Import from Prior 3CD` flow preserved end-to-end (single-block-per-rate convenience path) — moved into the optional row.
+
+### Tests
+- `tests/test_fixed_assets_block_opening_xlsx.py` — 7/7 GREEN: export shape + hidden-key, round-trip persists with `source="manual_xlsx"`, import rejects non-xlsx, unknown blocks surfaced, validate 3CD match (P&M+Vehicles 15% sum to 3CD ₹26,233,559), validate mismatch surfaces drift, validate rejects non-3CD JSON.
+- Frontend Playwright (iteration_13) — 5/5 GREEN: toolbar 2-row layout, export downloads valid xlsx, hidden inputs in DOM, sky "Excel" source chip on manual_xlsx rows, existing Prior3CDModal flow preserved.
+
 ## Fixed Assets — Discount/Credit row merge into a parent asset (2026-05-01 AM-2)
 
 User screenshot showed that rose-tinted **Discount/Credit rows** in the Additions tab had no 🔗 Merge button, so an auditor couldn't net a debit-note/discount off against a specific asset purchase. Now they can.
