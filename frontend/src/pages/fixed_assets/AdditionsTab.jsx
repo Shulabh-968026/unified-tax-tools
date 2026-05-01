@@ -188,9 +188,12 @@ export default function AdditionsTab({ rid, blocks, auditFilter, onClearAuditFil
       } else if (f === "zero_or_negative_cost") {
         xs = xs.filter(r => Number(r.invoice_cost || 0) <= 0);
       }
+      // Audit filter intentionally bypasses block/ledger scoping — the
+      // auditor wants to see ALL flagged rows across blocks at once.
+    } else {
+      if (activeBlock) xs = xs.filter(r => r.block_label === activeBlock);
+      if (ledgerFilter) xs = xs.filter(r => (r.ledger_name || "(unmapped)") === ledgerFilter);
     }
-    if (activeBlock) xs = xs.filter(r => r.block_label === activeBlock);
-    if (ledgerFilter) xs = xs.filter(r => (r.ledger_name || "(unmapped)") === ledgerFilter);
     const q = search.trim().toLowerCase();
     if (q) xs = xs.filter(r => `${r.description || r.particulars} ${r.party_name} ${r.voucher_no} ${r.invoice_no}`.toLowerCase().includes(q));
     if (!showMerged) xs = xs.filter(r => !r.parent_addition_id);

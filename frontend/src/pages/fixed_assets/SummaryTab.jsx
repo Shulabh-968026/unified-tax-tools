@@ -303,8 +303,8 @@ function AuditFlagsPanel({ flags, openCount, onJumpToFlag }) {
                 <div className="text-[12px] font-semibold truncate">{meta.label}</div>
                 <div className="text-[10.5px] text-slate-500 mt-0.5">{meta.hint}</div>
                 {clickable && (
-                  <div className="text-[10px] font-mono uppercase tracking-wider mt-1 inline-flex items-center gap-0.5 opacity-80">
-                    Open in {meta.jumpsTo} <ChevronRight size={10}/>
+                  <div className="text-[10.5px] mt-1 inline-flex items-center gap-0.5 italic opacity-80">
+                    Open in {meta.jumpsTo} <ChevronRight size={11}/>
                   </div>
                 )}
               </div>

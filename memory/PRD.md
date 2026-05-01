@@ -1,5 +1,26 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Cockpit-style audit-flag jumps + blank-on-ingest PTU (2026-05-01 PM-5)
+
+### #1 — Clickable audit-flag cards turn the Summary tab into a *cockpit*
+- `Landing.jsx` owns an `auditFilter` state + `goToFilteredAdditions(flagKey)` helper.
+  - Routes `discount_pending` to the **Credits tab**; the rest to the **Additions tab** with the filter applied.
+  - Manual tab clicks auto-clear any pending audit filter so the user is never surprised by a stale scope.
+- `SummaryTab.AuditFlagsPanel` accepts an `onJumpToFlag` callback; cards with `count > 0` render as `<button>` (with an italic "Open in Additions →" affordance below the hint), cards with `count == 0` stay as non-interactive `<div>`s.
+- `AdditionsTab` accepts `auditFilter` + `onClearAuditFilter` props and renders an `AuditFilterBanner` above the toolbar (`fa-additions-audit-filter-banner`) showing the active filter name + hint + match count + "Clear filter" link. Predicates: `missing_ptu` (empty PTU), `ptu_after_fy_end` (PTU > fy_end), `missing_party` (empty), `unreviewed` (`!reviewed && !parent_addition_id`), `zero_or_negative_cost`. Synthetic discount-credit pseudo-rows are excluded.
+- When an audit filter is active the block/ledger scope filters are intentionally **bypassed** so the auditor sees ALL flagged rows across blocks at once (also eliminates a transient row-count race during the activeBlock-clear effect).
+
+### #2 — PTU date no longer auto-populated on ingest
+- `service.stage_addition_rows()` now leaves `put_to_use_date` blank — auditor types it manually or uses the existing bulk "Copy PTU = Acc Date" helper.
+- Default `is_more_than_180=True` (full rate) so an un-filled PTU doesn't penalise the auditor's first-pass review.
+- Existing demo run is unaffected (its PTUs were filled long ago); blank-by-default applies to fresh ingests only.
+- Bulk "Copy PTU = Acc Date" + per-row inline edit + Excel round-trip all remain available — just no implicit population.
+
+### Tests
+- `tests/test_fixed_assets_ptu_blank.py` — 1/1 GREEN: ingestion leaves PTU empty + sets default `is_more_than_180=True`.
+- Cumulative regression: 34/34 GREEN across all FA test modules.
+- Frontend Playwright (iteration_16) — **100% in-scope GREEN**: clickable Un-reviewed → Additions cockpit jump verified end-to-end; banner + Clear-filter + auto-clear-on-tab-switch all working; zero-count cards stay non-interactive.
+
 ## Fixed Assets — Summary tab: MIS dashboard + audit command-center + download hub (2026-05-01 PM-4)
 
 A 'feather on the cap' Summary tab that consolidates every MIS + audit-risk insight for one FA run on a single screen, and doubles as the only place from which deliverables (Excel + PDF) are downloaded.
