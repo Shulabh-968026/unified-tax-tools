@@ -169,7 +169,8 @@ async def ingest_statement(
         raise HTTPException(400, f"Invalid JSON: {e}")
 
     try:
-        doc = normalize_final_statement(payload)
+        client_rec = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0})
+        doc = normalize_final_statement(payload, client_record=client_rec)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

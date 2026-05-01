@@ -1,36 +1,42 @@
 # MSS × Assure — Audit Utilities (Merged)
 
-## Financial Statement Designer — Drop 2: JSON → Signature-Ready PDFs (2026-05-01 PM-8)
+## FS Designer — Drop 2b: redesigned to match the client's in-house FS style (2026-05-01 PM-9)
 
-End-to-end pivot: ingest a **pre-aggregated Schedule III FinalStatement JSON** (the standard export from the user's accounting platform — has `balance_sheet_report`, `profit_or_loss_report`, `cash_flow_report.report_data`, `notes_report`, `details_report`, `fixed_asset_report`, `signatory_details`) and render a designer-quality PDF in either **Classic Compliance** (monochrome, CA-review default) or **Modern Boardroom** (slate + sky accents).
+Course-correction after user shared a reference PDF (`V-904_VELAV_…_Final.pdf`). Clarification: each of BS / P&L / CFS must fit on **its own** portrait page (not all three on one page), and **every** statement page must carry the full signatory footer (auditor + client directors with DIN).
 
-### Backend — new files
-- `modules/fin_statement/normalizer.py` — pure function `normalize_final_statement(raw)` that flattens the BS/P&L trees (respecting `children` + `indent`), flattens the CFS `report_data` rows with their styling flags (`header_bold`, `is_bold`, `value_line_top/below`, `blank_row_bottom`), groups `details_report` rows under their parent note, and extracts the PPE schedule + signatory block. Envelope-agnostic (accepts either `{"message": {...}}` or inner dict).
-- `modules/fin_statement/pdf_common.py` — shared ReportLab helpers: Indian-style `inr()` formatter with `(brackets)` for negatives and `—` for zero, two palettes (CLASSIC + BOARDROOM), `mk_styles()` factory (body size → leading), and three flowable builders: `build_statement_table` (BS / P&L with indented labels, Note #, CY/PY), `build_cashflow_table` (honours CFS line-top/below borders + bold flags), `build_note_block` (wraps each Note in a 3-col Particulars/CY/PY table with subtotal border + total row), `build_signatory_block` (two-column auditor/client footer with UDIN, FRN, place, date, roles).
-- `modules/fin_statement/pdf_renderer.py` — `render_pdf(doc, template)` orchestrator:
-  - **Page 1** — A4 landscape, 3 statements side-by-side (BS · P&L · CFS) with body_size 5.8 pt + 0.8 pt padding so all rows fit in the 524 pt usable height.
-  - **Pages 2+** — A4 portrait via `NextPageTemplate`; every Note wrapped in `KeepTogether` so notes never break awkwardly. PPE schedule + 2-column signatory block close the pack.
-  - Header strip on every page (company name UPPER + FY); centred page # + "Financial Statements · FY XXXX-XX" footer.
-- `modules/fin_statement/controller.py` — **pivoted** away from Tally books ingest. New endpoints:
-  - `POST /api/fin-statement/runs` · `GET /runs` · `GET /runs/{rid}` · `DELETE /runs/{rid}` (cascades `fs_books_raw` + `fs_documents`)
-  - `POST /runs/{rid}/ingest` — multipart .json upload; calls normalizer; persists envelope + normalized doc; flips run to `ingested`.
-  - `GET /runs/{rid}/document` — returns normalized doc for frontend preview.
-  - `GET /runs/{rid}/export.pdf?template=classic|boardroom` — renders PDF, flips run to `rendered`, streams bytes with sanitised filename.
+### Normalizer rewritten (`normalizer.py`)
+- `_render_tree()` walks each BS/P&L tree and emits flat rows with:
+  - **numbering prefix** per indent: indent-0 → Roman (I, II), indent-1 → Arabic (1, 2), indent-2 → lowercase `a. b. c.`, indent-3 → uppercase `A. B.` (for Trade-Payables MSE-vs-Other split).
+  - `kind ∈ {header, subhead, leaf, subtotal, total}` — subtotals (`Total(N)`) are synthesized after each indent-1 group closes; `TOTAL (I)` / `TOTAL (II)` are synthesized after each root closes.
+- New period helpers: `current_end_short` (`31/03/2025`), `current_end_long` (`31st March 2025` with ordinal suffix) so the page titles match the reference verbatim.
+- New `_signatory()` helper — converts `authorized_signatory_role` into a `directors: [{name, role, din}]` list, formats `reportDate` as DD-MM-YYYY, accepts an optional `client_record` arg so the controller passes CIN in from the `clients` collection.
+- Cleaner short-address helper returns just the city line ("NALLUR , TIRUPUR") for the page header.
 
-### Frontend — `pages/fin_statement/RunPage.jsx` (fully rewritten)
-- `CompanyCard` — building icon + company name + flattened address + current/previous FY strip.
-- `TemplatePicker` — two cards (Classic monochrome tone, Boardroom sky tone) with LIVE badge, each downloads via blob + Content-Disposition filename parsing.
-- `StatementPanel` — renders BS / P&L with indented labels, Note column, CY/PY right-aligned Indian number formatting (`—` for zero, `(brackets)` for negatives), subtotal + header rows bolded.
-- `CashFlowPanel` — respects `is_header` (slate-50 background), `is_bold`, `line_top` (top border on CY/PY cells), blank CY/PY on header rows.
-- `NotesPanel` — collapsible list; each row expands to show detail breakdown with indent preserved.
+### PDF renderer rewritten (`pdf_renderer.py`)
+- A4 **portrait** throughout. One page per statement:
+  - **Page 1** — Balance Sheet with company header (name / CIN / city) → statement title ("Balance Sheet as at 31st March 2025") → 4-col table (Particulars / Note No. / Rs. Ps. CY / Rs. Ps. PY) → full signatory footer → page number.
+  - **Page 2** — Statement of Profit and Loss (same structure, YE column labels).
+  - **Page 3** — Cash Flow Statement (3-col layout without Note col, serial A/1/2…).
+  - **Page 4+** — Notes, each wrapped in `KeepTogether`.
+- The signatory footer renders in a 2-column layout: **Left** — "For MSS and Co" / "Chartered Accountants" / FRN / partner's name / Partner / Membership No. / Place / Date (+ UDIN when set). **Right** — "For VELAV…" / directors side-by-side with their role and DIN. Preamble lines "The Accompanying Notes form an integral part…" + "Subject to our report of even date" span both columns.
+- Indent-0 section headers are uppercased (`EQUITY AND LIABILITIES`, not `Equity and Liabilities`) to match the reference. Header / subhead rows carry **no** values — values appear only on leaf + synthesized `Total(N)` / `TOTAL (I)` rows. `kind=total` rows get a heavier line-above + line-below + light band background.
+- Column-header rows inside the table (PARTICULARS / Note No. / Rs. Ps.) are `repeatRows` so they re-appear if a statement ever wraps onto a second page.
+- Two palettes (Classic / Boardroom) continue to share identical structure; only accent colours differ.
 
-### Tests
-- `tests/test_fin_statement_pdf.py` — **10/10 GREEN**: normalizer shape · company & period ("VELAV" / "2024-25" / "2023-24") · BS balances (ΣEquity+Liabilities == ΣAssets within ₹1) · CFS has Operating/Investing/Financing sections · Notes carry detail rows (Note 11 Inventories) · signatory block populated · Classic PDF starts `%PDF-` with >5 kB · Boardroom PDF same · Page 1 is **landscape A4 (842×595)** + contains "BALANCE SHEET" + "PROFIT" + "CASH FLOW" (pdfplumber text extract) · Notes pages 2+ are portrait + spot-checks "Note 1:" + "Note 11:" in text.
-- Live API smoke (curl): create run → ingest 613 kB FinalStatement JSON → 23 notes · 80 detail lines ingested · Classic PDF 21,648 bytes · Boardroom PDF 21,691 bytes · bad template → 400 `{"detail": "Unknown template: pink"}`.
-- Frontend Playwright smoke: all 7 test-ids present (`fs-company-card`, `fs-template-picker`, `fs-download-classic`, `fs-download-boardroom`, `fs-panel-balance-sheet`, `fs-panel-cash-flow`, `fs-panel-notes`).
+### Velav seed
+- Seeded `clients.cli_8656f99622ae.cin = U17299TZ2022PTC037953` so the demo run's header matches the reference 1:1.
 
-### What Drop 1 delivered (2026-04-30 PM-9)
-Skeleton scaffolding: module folder + routes CRUD + placeholder Tally-books aggregator + basic BS/P&L preview. All of that has been superseded by Drop 2 (the real ask was rendering a pre-aggregated JSON, not aggregating raw books).
+### Tests — `tests/test_fin_statement_pdf.py` (**9/9 GREEN**, lint clean)
+- Normalizer shape · company+period+CIN · numbering prefixes (I / 1 / a. / Total(1) / TOTAL (I)) · signatory enrichment (2 directors with DINs, date formatted DD-MM-YYYY) · `inr_rupee_paise` formatter (0 → "0.00", negatives → `(…)`, grouping at lakh/crore).
+- PDF structure: ≥4 pages · p1 portrait A4 · p1 contains "BALANCE SHEET AS AT 31ST MARCH 2025" + "EQUITY AND LIABILITIES" + "TOTAL (I)" · p2 P&L · p3 Cash Flow · **all three statement pages carry** MSS AND CO · FRN 001893S · both DINs · Membership No. 207277 · Place Tiruppur · Date 10-07-2025 · portrait dimensions verified.
+- Notes pagination: company header persists, notes titled "Note No : 1" / "Note No : 11" / "Note No : 16" all present.
+- BS balances: TOTAL (I) == TOTAL (II) within ₹1 for both FYs.
+
+### Live end-to-end
+- Re-ingested Velav run `04dd1b84-033f-433d-a4c7-b37b94bd4f73` via live `/api/fin-statement/runs/{rid}/ingest`; both templates downloaded ~49 KB (Classic 49,023 · Boardroom 49,709). 15 pages each (1 BS + 1 P&L + 1 CFS + 12 notes pages).
+
+### Drop 1 (2026-04-30 PM-9) — superseded
+Initial 3-col landscape "all-on-one-page" design based on user's first instruction, replaced by the above redesign once the user clarified the real ask.
 
 ## Fixed Assets — Excel block-summary auto-fit (no number wrapping) (2026-05-01 PM-7)
 
