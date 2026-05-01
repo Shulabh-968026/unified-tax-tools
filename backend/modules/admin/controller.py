@@ -15,6 +15,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.admin.qa_pack import render_qa_pack
 from helpers.email import send_invite_email
 
 router = APIRouter()
@@ -179,3 +180,24 @@ async def cancel_invitation(
     if not res.deleted_count:
         raise HTTPException(status_code=404, detail="Invitation not found")
     return {"cancelled": True, "email": email}
+
+
+@router.get("/admin/qa-pack.pdf")
+async def download_qa_pack(
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Returns a designer A4 QA Test Pack PDF — module-by-module
+    tick-box checklist that the QA team can print or annotate."""
+    from fastapi.responses import Response
+    await get_current_user(request, session_token, authorization)
+    pdf = render_qa_pack()
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition":
+            'attachment; filename="MSS_Assure_QA_Test_Pack_v1.pdf"',
+        },
+    )

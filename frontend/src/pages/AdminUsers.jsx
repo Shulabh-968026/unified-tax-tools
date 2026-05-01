@@ -108,6 +108,30 @@ export default function AdminUsers() {
       />
 
       <div className="px-6 md:px-10 py-8 pb-40 max-w-5xl">
+        {/* QA Test Pack download */}
+        <div className="border border-sky-200 bg-sky-50/60 rounded-sm p-4 mb-6 flex items-center justify-between gap-4">
+          <div>
+            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-sky-800">QA Test Pack</div>
+            <div className="text-[13px] text-slate-700 mt-0.5">
+              Designer A4 PDF with a tick-box checklist for every live module — ready to circulate to your QA team.
+            </div>
+          </div>
+          <a
+            href={`${import.meta?.env?.VITE_API_URL || ""}/api/admin/qa-pack.pdf`}
+            target="_blank"
+            rel="noreferrer"
+            data-testid="qa-pack-download"
+            className="shrink-0 inline-flex items-center gap-2 px-3.5 py-2 bg-sky-800 hover:bg-sky-900 text-white text-[12.5px] rounded-sm"
+            onClick={(e) => {
+              e.preventDefault();
+              const url = `${process.env.REACT_APP_BACKEND_URL || ""}/api/admin/qa-pack.pdf`;
+              window.open(url, "_blank");
+            }}
+          >
+            Download PDF
+          </a>
+        </div>
+
         {/* Invite form */}
         <form onSubmit={onInvite} className="border border-violet-200 bg-violet-50/40 rounded-sm p-5 mb-8" data-testid="invite-form">
           <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-violet-700">Invite Teammate</div>
