@@ -147,17 +147,19 @@ export function AdditionRow({
           >
             {inr(local.invoice_cost)}
           </div>
-          {!locked && (
-            <button
-              type="button"
-              title="Merge this line into another asset (e.g. freight, installation, GST etc.)"
-              onClick={onOpenLink}
-              className="text-slate-400 hover:text-sky-700 p-0.5"
-              data-testid={`fa-add-link-${a.addition_id}`}
-            >
-              <Link2 size={11}/>
-            </button>
-          )}
+          <button
+            type="button"
+            title={locked
+              ? "Net this discount/credit against a specific asset purchase (populates parent's Discounts/Credits column)"
+              : "Merge this line into another asset (e.g. freight, installation, GST etc.)"}
+            onClick={onOpenLink}
+            className={locked
+              ? "text-rose-400 hover:text-rose-700 p-0.5"
+              : "text-slate-400 hover:text-sky-700 p-0.5"}
+            data-testid={`fa-add-link-${a.addition_id}`}
+          >
+            <Link2 size={11}/>
+          </button>
         </div>
       </td>
 

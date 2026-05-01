@@ -3,8 +3,11 @@ import { Search, X } from "lucide-react";
 import { ADJ_LABELS } from "./utils";
 
 export function MergeModal({ child, candidates, onClose, onApply }) {
+  const isDiscount = child.source === "discount_credit";
   const [parentId, setParentId] = useState(child.parent_addition_id || "");
-  const [linkedAs, setLinkedAs] = useState(child.linked_as || "other_expenses");
+  const [linkedAs, setLinkedAs] = useState(
+    child.linked_as || (isDiscount ? "discount_credits" : "other_expenses"),
+  );
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
@@ -22,7 +25,9 @@ export function MergeModal({ child, candidates, onClose, onApply }) {
       <div className="bg-white border border-[#E5E5E0] w-full max-w-3xl max-h-[80vh] flex flex-col">
         <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-[#EDEDE7]">
           <div className="min-w-0">
-            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-600">Merge line item</div>
+            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-600">
+              {isDiscount ? "Net discount / credit" : "Merge line item"}
+            </div>
             <div className="font-heading text-base mt-0.5 truncate">
               {child.description || child.particulars || child.party_name}
             </div>
@@ -30,6 +35,11 @@ export function MergeModal({ child, candidates, onClose, onApply }) {
               ₹ {Math.abs(Number(child.invoice_cost || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })} ·
               Voucher {child.voucher_no} · Block {child.block_label}
             </div>
+            {isDiscount && (
+              <div className="text-[11px] text-rose-700 mt-1 bg-rose-50 border border-rose-200 px-2 py-1 inline-block">
+                Discount/credit — magnitude will reduce the parent asset's capitalised cost.
+              </div>
+            )}
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-900 p-1" data-testid="fa-link-close">
             <X size={16}/>

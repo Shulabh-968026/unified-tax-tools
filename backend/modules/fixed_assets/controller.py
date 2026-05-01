@@ -623,6 +623,8 @@ async def list_additions(
             "reviewed":            True,
             "source":              "discount_credit",
             "credit_id":           c["credit_id"],
+            "parent_addition_id":  c.get("parent_addition_id") or "",
+            "linked_as":           c.get("linked_as") or "",
         })
     rows.extend(discount_rows)
     rows.sort(key=lambda r: ((r.get("block_label") or "~"),
@@ -714,8 +716,41 @@ ADJ_FIELDS_VALID = ("other_expenses", "itc_reversed", "interest_capitalized",
 
 async def _unlink_addition(rid: str, aid: str) -> None:
     """Internal helper — undoes any existing parent linkage on `aid`.
-    Decrements the parent's <linked_as> column by `aid.invoice_cost` and
-    clears the child's parent_addition_id / linked_as fields."""
+    Decrements the parent's <linked_as> column by the linked magnitude and
+    clears the child's parent_addition_id / linked_as fields.
+
+    Handles two flavours of `aid`:
+      * a real addition_id (linkage stored on the addition doc)
+      * `discount-<credit_id>` (linkage stored on the credit doc; magnitude
+        is the absolute credit amount, since we never push a negative value
+        into a parent's adjustment column)
+    """
+    if aid.startswith("discount-"):
+        cid = aid.split("-", 1)[1]
+        cr = await CREDITS.find_one({"credit_id": cid, "run_id": rid}, {"_id": 0})
+        if not cr:
+            return
+        parent_id = cr.get("parent_addition_id") or ""
+        if not parent_id:
+            return
+        col = cr.get("linked_as") or "discount_credits"
+        if col in ADJ_FIELDS_VALID:
+            mag = abs(float(cr.get("amount") or 0))
+            parent = await ADDITIONS.find_one(
+                {"addition_id": parent_id, "run_id": rid}, {"_id": 0},
+            )
+            if parent:
+                new_val = max(0.0, float(parent.get(col, 0)) - mag)
+                await ADDITIONS.update_one(
+                    {"addition_id": parent_id, "run_id": rid},
+                    {"$set": {col: round(new_val, 2)}},
+                )
+        await CREDITS.update_one(
+            {"credit_id": cid, "run_id": rid},
+            {"$set": {"parent_addition_id": "", "linked_as": ""}},
+        )
+        return
+
     add = await ADDITIONS.find_one({"addition_id": aid, "run_id": rid}, {"_id": 0})
     if not add:
         return
@@ -748,10 +783,14 @@ async def link_addition(
 ):
     """Merge `aid` into another addition. The full `aid.invoice_cost` flows
     into the parent's `<linked_as>` column; the child stays in the table but
-    is treated as 'merged' (skipped by compute, rendered compactly in UI)."""
+    is treated as 'merged' (skipped by compute, rendered compactly in UI).
+
+    `aid` may also be `discount-<credit_id>` — a discount-classified credit
+    that the auditor wants to net off against a specific asset purchase.
+    For that case the linkage is persisted on the credit doc (not addition),
+    and the magnitude added to the parent is `abs(credit.amount)` (always
+    positive — the column itself reduces capitalised cost in compute)."""
     await _auth(request, session_token, authorization)
-    if aid.startswith("discount-"):
-        raise HTTPException(400, "Discount rows are managed via Credits tab")
     if not await RUNS.find_one({"id": rid}, {"_id": 0}):
         raise HTTPException(404, "Run not found")
     if payload.linked_as not in ADJ_FIELDS_VALID:
@@ -759,6 +798,53 @@ async def link_addition(
     if payload.parent_addition_id == aid:
         raise HTTPException(400, "Cannot link a row to itself")
 
+    # ---- Discount-credit branch -----------------------------------------
+    if aid.startswith("discount-"):
+        cid = aid.split("-", 1)[1]
+        cr = await CREDITS.find_one({"credit_id": cid, "run_id": rid}, {"_id": 0})
+        if not cr or (cr.get("classification") or "").lower() != "discount":
+            raise HTTPException(404, "Discount credit not found")
+        # Resolve the credit's block via its ledger
+        Ldoc = await LEDGERS.find_one(
+            {"fa_ledger_id": cr.get("fa_ledger_id", ""), "run_id": rid}, {"_id": 0},
+        )
+        cr_block = (Ldoc or {}).get("block_label", "")
+        parent = await ADDITIONS.find_one(
+            {"addition_id": payload.parent_addition_id, "run_id": rid}, {"_id": 0},
+        )
+        if not parent:
+            raise HTTPException(404, "Parent addition not found")
+        if parent.get("parent_addition_id"):
+            raise HTTPException(400, "Cannot link to a row that is itself merged")
+        if cr_block and (parent.get("block_label") or "") and \
+                cr_block != parent["block_label"]:
+            raise HTTPException(400, "Parent and child must belong to the same IT Block")
+
+        # Idempotently undo any prior link
+        await _unlink_addition(rid, aid)
+        # Re-fetch parent post-unlink — its column was just decremented
+        parent = await ADDITIONS.find_one(
+            {"addition_id": payload.parent_addition_id, "run_id": rid}, {"_id": 0},
+        )
+
+        mag = abs(float(cr.get("amount") or 0))
+        new_val = round(float(parent.get(payload.linked_as, 0)) + mag, 2)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await ADDITIONS.update_one(
+            {"addition_id": payload.parent_addition_id, "run_id": rid},
+            {"$set": {payload.linked_as: new_val, "reviewed": True}},
+        )
+        await CREDITS.update_one(
+            {"credit_id": cid, "run_id": rid},
+            {"$set": {
+                "parent_addition_id": payload.parent_addition_id,
+                "linked_as":          payload.linked_as,
+                "last_modified":      now_iso,
+            }},
+        )
+        return {"ok": True}
+
+    # ---- Regular addition branch ----------------------------------------
     add = await ADDITIONS.find_one({"addition_id": aid, "run_id": rid}, {"_id": 0})
     if not add:
         raise HTTPException(404, "Addition not found")
@@ -776,6 +862,11 @@ async def link_addition(
 
     # Idempotently undo any prior link first
     await _unlink_addition(rid, aid)
+    # Re-fetch parent post-unlink — its column was just decremented if the
+    # prior link pointed at the same parent.
+    parent = await ADDITIONS.find_one(
+        {"addition_id": payload.parent_addition_id, "run_id": rid}, {"_id": 0},
+    )
 
     amt = float(add.get("invoice_cost", 0))
     new_val = round(float(parent.get(payload.linked_as, 0)) + amt, 2)
@@ -852,6 +943,12 @@ async def classify_credit(
     if classification not in ("sale", "discount", "pending"):
         raise HTTPException(400, "classification must be 'sale', 'discount', or 'pending'")
     if classification == "sale":
+        # If this credit was previously merged into an asset row, undo the
+        # linkage first so the parent's discount_credits column doesn't keep
+        # a stale value after reclassification.
+        if cr.get("parent_addition_id"):
+            await _unlink_addition(rid, f"discount-{cid}")
+            cr = await CREDITS.find_one({"credit_id": cid, "run_id": rid}, {"_id": 0})
         cr["classification"] = "sale"
         cr["sale_value"] = float(payload.sale_value) if payload.sale_value is not None else cr.get("amount", 0.0)
         cr["sale_date"] = (payload.sale_date or cr.get("sale_date") or "").strip()
@@ -859,6 +956,9 @@ async def classify_credit(
     elif classification == "discount":
         cr["classification"] = "discount"
     else:
+        if cr.get("parent_addition_id"):
+            await _unlink_addition(rid, f"discount-{cid}")
+            cr = await CREDITS.find_one({"credit_id": cid, "run_id": rid}, {"_id": 0})
         cr["classification"] = "pending"
     cr.pop("_id", None)
     await CREDITS.replace_one({"credit_id": cid, "run_id": rid}, cr)
@@ -1569,7 +1669,8 @@ async def _gather_additions_for_xlsx(rid: str) -> Dict[str, List[Dict[str, Any]]
         Ldoc = led_map.get(c.get("fa_ledger_id", ""), {})
         rows.append({
             "addition_id":         f"discount-{c['credit_id']}",
-            "parent_addition_id":  "",
+            "parent_addition_id":  c.get("parent_addition_id") or "",
+            "linked_as":           c.get("linked_as") or "",
             "fa_ledger_id":        c.get("fa_ledger_id", ""),
             "ledger_name":         Ldoc.get("name", ""),
             "block_label":         Ldoc.get("block_label", ""),
@@ -2005,10 +2106,16 @@ async def _gather_compute_inputs(rid: str) -> Dict[str, Any]:
 
     # Discount-classified credits become negative pseudo-additions so they
     # reduce the block's capitalised cost in the depreciation working.
+    # Skip credits that the auditor has merged into a specific asset row —
+    # their magnitude has already been added to the parent's discount_credits
+    # (or other adjustment) column atomically at link time, so surfacing them
+    # again here would double-subtract.
     for c in credits:
         if (c.get("classification") or "").lower() != "discount":
             continue
         if not c.get("block_label"):
+            continue
+        if c.get("parent_addition_id"):
             continue
         additions.append({
             "block_label":         c["block_label"],
