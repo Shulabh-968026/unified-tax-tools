@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend regression of the Compute & Export tab Opening-WDV Excel round-trip + 3CD validation toolbar on run 0e4cc62f-52f9-4668-b598-f60bd0c52803. All 5 requested UI acceptance points PASS end-to-end on the live preview URL with Playwright + qa_test_session_token cookie. Backend testing explicitly skipped per request (already 16/16 green).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/pages/fixed_assets/ComputeTab.jsx"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ComputeTab.jsx — toolbar is correctly restructured into two rows. Row 1 is the primary Excel round-trip path (Export=slate, Import=sky, Roll-forward=emerald) and Row 2 is visually demoted with a dashed top border + uppercase mono 'Optional' pill + explanatory copy ('Prior-year 3CD JSON — only carries rate-level totals…'). Violet Validate and amber Import-from-3CD buttons both render correctly. Good UX separation between the primary and optional flows.",
+    "SOURCE_META.manual_xlsx = {label: 'Excel', cls: 'bg-sky-50 text-sky-800 border-sky-200'} — verified; chip for 15% Block – Vehicles renders sky-blue with visual text EXCEL (the chip's tailwind `uppercase` transform; underlying string is 'Excel').",
+    "Hidden file inputs fa-opening-xlsx-input and fa-3cd-validate-input are correctly display:none — confirmed via getComputedStyle. Visible buttons trigger ref.current?.click() on the hidden inputs; this is the standard pattern and works.",
+    "Import from Prior 3CD button (fa-3cd-import-btn) still renders + remains wired to priorFileRef — existing Prior3CDModal flow is preserved.",
+    "Minor (non-blocking, carried from iteration_11/12): Landing.jsx <select><option> wraps the label text in a <span> due to the emergent dev instrumentation, producing a React hydration warning. Not caused by this change and doesn't affect functionality."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (pre-verified by main agent, 16/16 pytest green)", "frontend": "100% (5/5 acceptance points pass)"},
+  "test_credentials": "session_token=qa_test_session_token_20260430_dev (admin qa-bot@transformautomations.com)",
+  "seed_data_creation": "None. Run state untouched — 15% Block – Vehicles remains ₹450,000 with source=manual_xlsx (sky 'Excel' chip) and 15% Block – Plant & Machinery remains ₹25,783,559, as requested. Also 40% Block – Plant & Machinery=₹485,453 and 10% Block – Furniture=₹2,911,192 noted in place.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Testids in play on Compute & Export tab: fa-tab-compute, fa-opening-export-xlsx (slate Export btn, triggers GET /block-opening/export.xlsx download), fa-opening-import-xlsx (sky btn → opens hidden fa-opening-xlsx-input), fa-opening-xlsx-input (hidden file input → POST /block-opening/import.xlsx), fa-roll-forward-btn (emerald), fa-3cd-validate-btn (violet → opens hidden fa-3cd-validate-input), fa-3cd-validate-input (hidden → POST /block-opening/validate-3cd, read-only), fa-3cd-import-btn (amber, existing Prior3CDModal path), fa-3cd-file-input. Source chips: fa-opening-source-<block_label> e.g. 'fa-opening-source-15% Block – Vehicles'. Block labels contain literal '%', space, and en-dash '–' (U+2013).",
+  "verified_acceptance_points": [
+    "(1) Opening WDV toolbar is a 2-row layout. Row 1 has fa-opening-export-xlsx (Export Opening WDV (Excel), slate), fa-opening-import-xlsx (Import Opening WDV (Excel), sky-bg), fa-roll-forward-btn (emerald, disabled 'no prior FY'). Row 2 is separated by a dashed top border, carries an 'OPTIONAL' mono pill, and shows fa-3cd-validate-btn (Validate against Prior 3CD, violet) + fa-3cd-import-btn (Import from Prior 3CD, amber). All testids count=1.",
+    "(2) Clicking Export Opening WDV (Excel) downloaded OpeningWDV_FY_2024-25_Working_2025-03-31.xlsx, size=6335 bytes (≥ 3 KB threshold). PASS.",
+    "(3) Hidden file inputs exist in DOM with correct testids (fa-opening-xlsx-input, fa-3cd-validate-input) and getComputedStyle(display)=='none'. Visible buttons have correct onClick handlers wired to ref.current?.click().",
+    "(4) Source chip for 15% Block – Vehicles row renders with label 'Excel' (rendered visually as EXCEL via CSS uppercase) and sky background (bg-sky-50 text-sky-800 border-sky-200). Opening WDV value = ₹450,000 per demo state. Same chip style also reflects on other manual_xlsx-stamped rows (3 other Vehicles bands).",
+    "(5) Existing Import-from-Prior-3CD path preserved — fa-3cd-import-btn visible with text 'Import from Prior 3CD', amber styling, wired to priorFileRef. Prior3CDModal flow untouched."
+  ],
+  "rca of the issue": "Not applicable — all acceptance points verified green on first run. No defects to root-cause."
+}

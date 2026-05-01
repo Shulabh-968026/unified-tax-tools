@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2, Calculator, Download, Sparkles, FileUp, RotateCw, X, Check, AlertCircle,
+  FileSpreadsheet, ShieldCheck,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -15,9 +16,10 @@ const inr = (v) => {
 };
 
 const SOURCE_META = {
-  manual:     { label: "Manual",      cls: "bg-slate-100 text-slate-700 border-slate-200" },
-  prior_3cd:  { label: "Prior 3CD",   cls: "bg-amber-50 text-amber-800 border-amber-200" },
-  prior_run:  { label: "Rolled fwd",  cls: "bg-emerald-50 text-emerald-800 border-emerald-200" },
+  manual:       { label: "Manual",      cls: "bg-slate-100 text-slate-700 border-slate-200" },
+  manual_xlsx:  { label: "Excel",       cls: "bg-sky-50 text-sky-800 border-sky-200" },
+  prior_3cd:    { label: "Prior 3CD",   cls: "bg-amber-50 text-amber-800 border-amber-200" },
+  prior_run:    { label: "Rolled fwd",  cls: "bg-emerald-50 text-emerald-800 border-emerald-200" },
 };
 
 export default function ComputeTab({ rid }) {
@@ -36,6 +38,16 @@ export default function ComputeTab({ rid }) {
   const [rollSource, setRollSource] = useState(null); // {ok, src_fy, src_name, src_run_id, items}
   const [rollApplying, setRollApplying] = useState(false);
   const [rollModalOpen, setRollModalOpen] = useState(false);
+
+  // Excel round-trip for Opening WDV (per-block sub-allocation)
+  const xlsxFileRef = useRef(null);
+  const [xlsxExporting, setXlsxExporting] = useState(false);
+  const [xlsxImporting, setXlsxImporting] = useState(false);
+
+  // Optional 3CD validation
+  const validateFileRef = useRef(null);
+  const [validating, setValidating] = useState(false);
+  const [validateModal, setValidateModal] = useState(null); // {ok, rows, totals, filename}
 
   // Drift banner (carried over from Excel re-import on Additions tab)
   const [driftWarning, setDriftWarning] = useState(null);
@@ -150,6 +162,67 @@ export default function ComputeTab({ rid }) {
     } finally { setRollApplying(false); }
   };
 
+  // ---------- Excel round-trip for Opening WDV ----------
+  const exportOpeningXlsx = async () => {
+    setXlsxExporting(true);
+    try {
+      const res = await http.get(`/fixed-assets/runs/${rid}/block-opening/export.xlsx`,
+                                 { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      const cd = res.headers["content-disposition"] || "";
+      const m = /filename="?([^";]+)"?/i.exec(cd);
+      a.href = url;
+      a.download = m?.[1] || "OpeningWDV.xlsx";
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Export failed");
+    } finally { setXlsxExporting(false); }
+  };
+
+  const onOpeningXlsxPick = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    e.target.value = "";
+    setXlsxImporting(true);
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const { data } = await http.post(
+        `/fixed-assets/runs/${rid}/block-opening/import.xlsx`, fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      const unk = (data.unknown_blocks || []).length;
+      toast.success(
+        `Updated ${data.applied} block${data.applied === 1 ? "" : "s"}`
+        + (unk ? ` · ${unk} unknown row${unk === 1 ? "" : "s"} skipped` : ""),
+      );
+      refreshOpening();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Import failed");
+    } finally { setXlsxImporting(false); }
+  };
+
+  // ---------- Optional 3CD validation ----------
+  const onValidate3CDPick = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    e.target.value = "";
+    setValidating(true);
+    const fd = new FormData();
+    fd.append("file", f);
+    try {
+      const { data } = await http.post(
+        `/fixed-assets/runs/${rid}/block-opening/validate-3cd`, fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      setValidateModal({ ...data, filename: data.filename || f.name });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Validation failed");
+    } finally { setValidating(false); }
+  };
+
   const compute = async () => {
     setComputing(true); setResult(null);
     try {
@@ -185,43 +258,97 @@ export default function ComputeTab({ rid }) {
     <div className="space-y-5">
       <DriftBanner warning={driftWarning} onClear={clearDrift} clearing={clearingDrift}/>
 
-      {/* Opening WDV import toolbar (Phase 1D + 1H) */}
-      <div className="bg-[#FAFAF7] border border-[#E5E5E0] p-3 flex flex-wrap items-center gap-2">
-        <div className="flex-1 min-w-[220px] text-[12px] text-[#52524E]">
-          <span className="font-semibold text-slate-800">Import Opening WDV</span>
-          <span className="ml-2 text-slate-500">
-            Start from prior year's 3CD or roll forward last year's closing WDV.
-          </span>
+      {/* Opening WDV import toolbar */}
+      <div className="bg-[#FAFAF7] border border-[#E5E5E0] p-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex-1 min-w-[220px] text-[12px] text-[#52524E]">
+            <span className="font-semibold text-slate-800">Opening WDV</span>
+            <span className="ml-2 text-slate-500">
+              Edit inline below, or use the Excel round-trip to fill values for every sub-block at the same rate.
+            </span>
+          </div>
+          <input
+            ref={xlsxFileRef}
+            type="file"
+            accept=".xlsx"
+            onChange={onOpeningXlsxPick}
+            className="hidden"
+            data-testid="fa-opening-xlsx-input"
+          />
+          <button
+            data-testid="fa-opening-export-xlsx"
+            onClick={exportOpeningXlsx}
+            disabled={xlsxExporting}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-800 text-[12.5px] disabled:opacity-60"
+          >
+            {xlsxExporting ? <Loader2 size={13} className="animate-spin"/> : <Download size={13}/>}
+            Export Opening WDV (Excel)
+          </button>
+          <button
+            data-testid="fa-opening-import-xlsx"
+            onClick={() => xlsxFileRef.current?.click()}
+            disabled={xlsxImporting}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-900 text-[12.5px] disabled:opacity-60"
+          >
+            {xlsxImporting ? <Loader2 size={13} className="animate-spin"/> : <FileSpreadsheet size={13}/>}
+            Import Opening WDV (Excel)
+          </button>
+          <button
+            data-testid="fa-roll-forward-btn"
+            onClick={() => rollAvailable && setRollModalOpen(true)}
+            disabled={!rollAvailable}
+            title={rollAvailable
+              ? `Roll forward closing WDV from FY ${rollSource.src_fy}`
+              : "No prior FY run found for this client"}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[12.5px] disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <RotateCw size={13}/>
+            {rollAvailable ? `Roll forward from FY ${rollSource.src_fy}` : "Roll forward (no prior FY)"}
+          </button>
         </div>
-        <input
-          ref={priorFileRef}
-          type="file"
-          accept=".json,application/json"
-          onChange={on3CDPick}
-          className="hidden"
-          data-testid="fa-3cd-file-input"
-        />
-        <button
-          data-testid="fa-3cd-import-btn"
-          onClick={() => priorFileRef.current?.click()}
-          disabled={priorUploading}
-          className="inline-flex items-center gap-2 px-3 py-1.5 border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-[12.5px] disabled:opacity-60"
-        >
-          {priorUploading ? <Loader2 size={13} className="animate-spin"/> : <FileUp size={13}/>}
-          Import from Prior 3CD
-        </button>
-        <button
-          data-testid="fa-roll-forward-btn"
-          onClick={() => rollAvailable && setRollModalOpen(true)}
-          disabled={!rollAvailable}
-          title={rollAvailable
-            ? `Roll forward closing WDV from FY ${rollSource.src_fy}`
-            : "No prior FY run found for this client"}
-          className="inline-flex items-center gap-2 px-3 py-1.5 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[12.5px] disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <RotateCw size={13}/>
-          {rollAvailable ? `Roll forward from FY ${rollSource.src_fy}` : "Roll forward (no prior FY)"}
-        </button>
+
+        {/* Optional 3CD row — separated so it doesn't read as the primary path */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-dashed border-[#E5E5E0]">
+          <div className="flex-1 min-w-[220px] text-[11.5px] text-[#6B6B66]">
+            <span className="font-mono uppercase tracking-wider text-[10px] mr-2 text-slate-500">Optional</span>
+            Prior-year 3CD JSON — only carries rate-level totals. Use it to validate sub-block sums or seed a single-block-per-rate.
+          </div>
+          <input
+            ref={validateFileRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={onValidate3CDPick}
+            className="hidden"
+            data-testid="fa-3cd-validate-input"
+          />
+          <button
+            data-testid="fa-3cd-validate-btn"
+            onClick={() => validateFileRef.current?.click()}
+            disabled={validating}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-violet-300 bg-violet-50 hover:bg-violet-100 text-violet-900 text-[12px] disabled:opacity-60"
+          >
+            {validating ? <Loader2 size={13} className="animate-spin"/> : <ShieldCheck size={13}/>}
+            Validate against Prior 3CD
+          </button>
+          <input
+            ref={priorFileRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={on3CDPick}
+            className="hidden"
+            data-testid="fa-3cd-file-input"
+          />
+          <button
+            data-testid="fa-3cd-import-btn"
+            onClick={() => priorFileRef.current?.click()}
+            disabled={priorUploading}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-amber-200 bg-white hover:bg-amber-50 text-amber-900 text-[12px] disabled:opacity-60"
+            title="Import 3CD opening WDV by rate (single block per rate). For multi-block rates use the Excel round-trip above."
+          >
+            {priorUploading ? <Loader2 size={13} className="animate-spin"/> : <FileUp size={13}/>}
+            Import from Prior 3CD
+          </button>
+        </div>
       </div>
 
       {/* Opening WDV table */}
@@ -356,6 +483,12 @@ export default function ComputeTab({ rid }) {
           applying={rollApplying}
           onClose={() => setRollModalOpen(false)}
           onApply={applyRollForward}
+        />
+      )}
+      {validateModal && (
+        <Validate3CDModal
+          report={validateModal}
+          onClose={() => setValidateModal(null)}
         />
       )}
     </div>
@@ -577,6 +710,100 @@ function RollForwardModal({ source, applying, onClose, onApply }) {
         >
           {applying ? <Loader2 size={14} className="animate-spin"/> : <RotateCw size={14}/>}
           Roll forward {items.length} block{items.length === 1 ? "" : "s"}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+/* ==================== 3CD validation modal (read-only) ==================== */
+const STATUS_META = {
+  match:           { label: "Match",            cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  mismatch:        { label: "Mismatch",         cls: "bg-rose-50 text-rose-700 border-rose-200" },
+  missing_in_3cd:  { label: "Not in 3CD",       cls: "bg-amber-50 text-amber-700 border-amber-200" },
+  missing_in_excel:{ label: "Not in Opening",   cls: "bg-amber-50 text-amber-700 border-amber-200" },
+};
+
+function Validate3CDModal({ report, onClose }) {
+  const { ok, rows = [], totals, filename, tolerance } = report;
+  const banner = ok
+    ? { cls: "bg-emerald-50 border-emerald-200 text-emerald-800", text: `All rates tie back to 3CD (within ±₹${tolerance}).` }
+    : { cls: "bg-rose-50 border-rose-200 text-rose-800",         text: "One or more rates do not tie back to 3CD. Review the rows below — sub-block opening WDV must sum to the 3CD rate-level closing WDV." };
+  return (
+    <ModalShell
+      title="Validate Opening WDV against Prior 3CD"
+      subtitle={filename}
+      onClose={onClose}
+      maxW="max-w-4xl"
+    >
+      <div className={`px-5 py-3 text-[12.5px] border-b ${banner.cls} flex items-start gap-2`}>
+        {ok ? <Check size={14} className="mt-0.5 shrink-0"/> : <AlertCircle size={14} className="mt-0.5 shrink-0"/>}
+        <div>{banner.text}</div>
+      </div>
+
+      <div className="overflow-x-auto max-h-[55vh]">
+        <table className="w-full text-[12.5px]">
+          <thead className="sticky top-0 bg-[#F9F9F8]">
+            <tr className="text-left text-[10.5px] font-mono uppercase tracking-wider text-slate-600">
+              <th className="px-4 py-2 text-center w-[80px]">Rate</th>
+              <th className="px-3 py-2 text-right w-[160px]">Opening (Excel)</th>
+              <th className="px-3 py-2 text-right w-[160px]">Closing WDV (3CD)</th>
+              <th className="px-3 py-2 text-right w-[140px]">Diff</th>
+              <th className="px-3 py-2 w-[120px]">Status</th>
+              <th className="px-3 py-2">Sub-blocks contributing</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#EDEDE7]">
+            {rows.length === 0 ? (
+              <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                No comparable rate rows — both sources are empty.
+              </td></tr>
+            ) : rows.map(r => {
+              const meta = STATUS_META[r.status] || STATUS_META.match;
+              const driftCls = Math.abs(Number(r.diff || 0)) <= (tolerance || 1)
+                ? "text-slate-600"
+                : "text-rose-700 font-semibold";
+              return (
+                <tr key={r.rate} data-testid={`fa-validate-row-${r.rate}`}
+                    className={r.status === "mismatch" ? "bg-rose-50/40" : ""}>
+                  <td className="px-4 py-1.5 text-center font-mono font-semibold">{r.rate}%</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{inr(r.opening_excel)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{inr(r.opening_3cd)}</td>
+                  <td className={`px-3 py-1.5 text-right font-mono ${driftCls}`}>{inr(r.diff)}</td>
+                  <td className="px-3 py-1.5">
+                    <span className={`inline-block text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 border ${meta.cls}`}>
+                      {meta.label}
+                    </span>
+                  </td>
+                  <td className="px-3 py-1.5 text-[11.5px] text-slate-600">
+                    {(r.blocks || []).length === 0
+                      ? <span className="text-slate-400">—</span>
+                      : (r.blocks || []).join(" · ")}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr className="bg-[#F2F2EE] font-semibold">
+              <td className="px-4 py-2 text-center">TOTAL</td>
+              <td className="px-3 py-2 text-right font-mono">{inr(totals?.opening_excel)}</td>
+              <td className="px-3 py-2 text-right font-mono">{inr(totals?.opening_3cd)}</td>
+              <td className="px-3 py-2 text-right font-mono">{inr(totals?.diff)}</td>
+              <td colSpan={2}/>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="px-5 py-3 border-t border-[#EDEDE7] bg-[#FAFAF7] flex items-center justify-between">
+        <div className="text-[11.5px] text-[#52524E]">
+          Read-only check — nothing is written. Adjust the Excel and re-import to fix mismatches.
+        </div>
+        <button
+          onClick={onClose}
+          data-testid="fa-validate-close"
+          className="px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-[13px]"
+        >
+          Close
         </button>
       </div>
     </ModalShell>

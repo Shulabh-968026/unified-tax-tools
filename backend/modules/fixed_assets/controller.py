@@ -29,6 +29,11 @@ from modules.fixed_assets.additions_xlsx import (
 )
 from modules.fixed_assets.compute import compute_run
 from modules.fixed_assets.export import build_workbook
+from modules.fixed_assets.block_opening_xlsx import (
+    build_workbook as build_block_opening_workbook,
+    parse_workbook as parse_block_opening_workbook,
+    validate_against_3cd as validate_openings_against_3cd,
+)
 from modules.fixed_assets.legal_master import (
     LEGAL_MASTER_COLLECTION,
     get_block_labels_active,
@@ -1887,6 +1892,141 @@ async def upsert_block_opening(
         upsert=True,
     )
     return {"ok": True}
+
+
+# ============================ Block Opening — Excel Round-Trip =============
+@router.get("/runs/{rid}/block-opening/export.xlsx")
+async def block_opening_export_xlsx(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Download an editable workbook with one row per active block_label,
+    pre-populated with the current `fa_block_opening` values (0 when none).
+
+    The hidden first column carries the canonical block_label so cosmetic
+    edits to the visible Block cell don't break the round-trip parser."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    blocks = await get_block_labels_active()
+    saved: Dict[str, Dict[str, Any]] = {}
+    async for b in BLOCK_OPEN.find({"run_id": rid}, {"_id": 0}):
+        saved[b["block_label"]] = b
+    rows = []
+    for b in blocks:
+        s = saved.get(b["block_label"], {})
+        rows.append({
+            "block_label": b["block_label"],
+            "rate":        b["rate"],
+            "opening_wdv": float(s.get("opening_wdv") or 0),
+            "description": s.get("description", ""),
+            "source":      s.get("source", "manual"),
+        })
+    rows.sort(key=lambda r: (-float(r.get("rate") or 0), r["block_label"]))
+
+    xlsx = build_block_opening_workbook(run, rows)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", (run.get("name") or "run"))[:40]
+    fname = f"OpeningWDV_{safe_name}_{run.get('fy_label') or run.get('fy_end','')}.xlsx"
+    return Response(
+        content=xlsx,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/runs/{rid}/block-opening/import.xlsx")
+async def block_opening_import_xlsx(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Re-import the (auditor-edited) Opening WDV workbook. Each parsed row
+    upserts `fa_block_opening` with `source="manual_xlsx"` so the source
+    chip on the UI reflects the round-trip provenance."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    fname = (file.filename or "").lower()
+    if not fname.endswith(".xlsx"):
+        raise HTTPException(400, "Only .xlsx files are accepted")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty file")
+
+    valid_blocks = [b["block_label"] for b in await get_block_labels_active()]
+    parsed = parse_block_opening_workbook(raw, valid_blocks)
+    if parsed["errors"]:
+        raise HTTPException(400, "; ".join(parsed["errors"]))
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    applied = 0
+    for r in parsed["rows"]:
+        await BLOCK_OPEN.update_one(
+            {"run_id": rid, "block_label": r["block_label"]},
+            {"$set": {
+                "run_id":      rid,
+                "block_label": r["block_label"],
+                "opening_wdv": float(r["opening_wdv"]),
+                "source":      "manual_xlsx",
+                "source_ref":  file.filename or "",
+                "description": r.get("description") or "",
+                "updated_at":  now_iso,
+            }},
+            upsert=True,
+        )
+        applied += 1
+    return {
+        "ok":             True,
+        "applied":        applied,
+        "unknown_blocks": parsed["unknown_blocks"],
+    }
+
+
+@router.post("/runs/{rid}/block-opening/validate-3cd")
+async def block_opening_validate_3cd(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Compare the current per-block opening WDV (summed by rate) against
+    a prior-year Form 3CD JSON's per-rate closing WDV. This is an OPTIONAL
+    auditor sanity-check — nothing is written. Returns a per-rate diff
+    table with status flags so the auditor can sign off on "sub-block
+    opening totals tie back to 3CD"."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    raw = await file.read()
+    try:
+        rate_rows = parse_prior_3cd(raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Invalid 3CD JSON: {e}")
+    if not rate_rows:
+        raise HTTPException(400, "No depreciation entries found in 3CD JSON "
+                                 "(expected FORM3CA.F3CA.Form3cdDeprAllw).")
+
+    blocks = await get_block_labels_active()
+    saved: Dict[str, Dict[str, Any]] = {}
+    async for b in BLOCK_OPEN.find({"run_id": rid}, {"_id": 0}):
+        saved[b["block_label"]] = b
+    current = []
+    for b in blocks:
+        s = saved.get(b["block_label"], {})
+        current.append({
+            "block_label": b["block_label"],
+            "rate":        b["rate"],
+            "opening_wdv": float(s.get("opening_wdv") or 0),
+        })
+    result = validate_openings_against_3cd(current, rate_rows)
+    result["filename"] = file.filename or ""
+    return result
 
 
 # ============================ Prior 3CD Import (Phase 1D) ==================
