@@ -2,29 +2,34 @@
 
 Prefix: /fin-statement
 
-Phase 1 scope (this drop): Runs CRUD + JSON upload + Schedule III
-aggregation preview. Drop 2 will land the PDF templates + full notes.
+Accepts a pre-aggregated FinalStatement JSON (Schedule III) and
+produces a signature-ready PDF in one of two designer templates.
 """
 from __future__ import annotations
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core.db import db
 from modules.auth.controller import get_current_user
-from modules.fin_statement.aggregator import aggregate_schedule_iii
+from modules.fin_statement.normalizer import normalize_final_statement
+from modules.fin_statement.pdf_renderer import render_pdf
 
 router = APIRouter(prefix="/fin-statement")
 log = logging.getLogger("fin_statement")
 
 RUNS = db.fs_runs
-BOOKS_RAW = db.fs_books_raw  # Tally JSON snapshot per run (for re-derivation)
-FS_DOC = db.fs_documents     # Aggregated Schedule III document per run
+BOOKS_RAW = db.fs_books_raw           # Raw JSON snapshot per run
+FS_DOC = db.fs_documents              # Normalized FS document per run
+
+TEMPLATES = {"classic", "boardroom"}
 
 
 # ---- Schemas -----------------------------------------------------------
@@ -47,12 +52,16 @@ class FsRunOut(BaseModel):
     created_at: str
     updated_at: str
     books_loaded: bool = False
-    ledger_count: int = 0
-    voucher_count: int = 0
+    note_count:   int = 0
+    detail_count: int = 0
 
 
 async def _auth(request: Request, tok: Optional[str], hdr: Optional[str]):
     return await get_current_user(request, tok, hdr)
+
+
+def _safe_name(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", s or "")[:120] or "statement"
 
 
 # ============================ Runs CRUD ==================================
@@ -82,8 +91,8 @@ async def create_run(
         "created_at": now_iso,
         "updated_at": now_iso,
         "books_loaded":  False,
-        "ledger_count":  0,
-        "voucher_count": 0,
+        "note_count":    0,
+        "detail_count":  0,
     }
     await RUNS.insert_one(run)
     run.pop("_id", None)
@@ -135,16 +144,15 @@ async def delete_run(
 
 # ============================ Ingestion ==================================
 @router.post("/runs/{rid}/ingest")
-async def ingest_books(
+async def ingest_statement(
     rid: str,
     request: Request,
     file: UploadFile = File(...),
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Upload a Tally books JSON export for this run. Parses, runs the
-    Schedule III aggregator, persists the raw JSON (for re-derivation) +
-    the aggregated FS document. Returns the document."""
+    """Upload a pre-aggregated FinalStatement JSON for this run. Parses,
+    normalizes, persists, and returns the normalized preview document."""
     await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
@@ -156,34 +164,27 @@ async def ingest_books(
     if len(raw) > 60 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 60 MB)")
     try:
-        books = json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise HTTPException(400, f"Invalid JSON: {e}")
-    if not isinstance(books, dict) or "ledgers" not in books:
-        raise HTTPException(400, "JSON does not look like a Tally books export "
-                                  "(missing `ledgers`).")
 
-    doc = aggregate_schedule_iii(books)
+    try:
+        doc = normalize_final_statement(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    now_iso = datetime.now(timezone.utc).isoformat()
     doc["run_id"] = rid
     doc["source_filename"] = file.filename or ""
-    doc["ingested_at"] = datetime.now(timezone.utc).isoformat()
+    doc["ingested_at"] = now_iso
 
-    # Store only a minimal snapshot of the raw JSON so re-aggregation stays
-    # cheap. Full vouchers list can balloon past 10 MB — keep it too for
-    # later notes work (Drop 2), but in a dedicated collection.
     await BOOKS_RAW.replace_one(
         {"run_id": rid},
         {
-            "run_id":           rid,
-            "ingested_at":      doc["ingested_at"],
-            "source_filename":  doc["source_filename"],
-            "version":          books.get("version"),
-            "company":          books.get("company", {}),
-            "groups":           books.get("groups", []),
-            "ledgers":          books.get("ledgers", []),
-            "vouchers":         books.get("vouchers", []),
-            "outstandingBills": books.get("outstandingBills", []),
-            "voucherTypes":     books.get("voucherTypes", []),
+            "run_id":          rid,
+            "ingested_at":     now_iso,
+            "source_filename": file.filename or "",
+            "envelope":        payload,
         },
         upsert=True,
     )
@@ -191,11 +192,11 @@ async def ingest_books(
     await RUNS.update_one(
         {"id": rid},
         {"$set": {
-            "status":        "ingested",
-            "books_loaded":  True,
-            "ledger_count":  doc["ledger_count"],
-            "voucher_count": doc["voucher_count"],
-            "updated_at":    doc["ingested_at"],
+            "status":       "ingested",
+            "books_loaded": True,
+            "note_count":   doc.get("counts", {}).get("notes", 0),
+            "detail_count": doc.get("counts", {}).get("details", 0),
+            "updated_at":   now_iso,
         }},
     )
     doc.pop("_id", None)
@@ -209,10 +210,46 @@ async def get_document(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Return the aggregated Schedule III document for this run."""
+    """Return the normalized FS document for this run."""
     await _auth(request, session_token, authorization)
     doc = await FS_DOC.find_one({"run_id": rid}, {"_id": 0})
     if not doc:
-        raise HTTPException(404, "No financial-statement document for this run. "
-                                  "Upload the Tally books JSON first.")
+        raise HTTPException(
+            404, "No financial-statement document for this run. "
+                 "Upload the FinalStatement JSON first.")
     return doc
+
+
+# ============================ Export PDF =================================
+@router.get("/runs/{rid}/export.pdf")
+async def export_pdf(
+    rid: str,
+    request: Request,
+    template: str = "classic",
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    if template not in TEMPLATES:
+        raise HTTPException(400, f"Unknown template: {template}")
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    doc = await FS_DOC.find_one({"run_id": rid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(
+            409, "No financial-statement document yet — upload the JSON first.")
+
+    pdf_bytes = render_pdf(doc, template=template)
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {"status": "rendered",
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    co_name = _safe_name(doc.get("company", {}).get("name", "statement"))
+    fy = _safe_name(doc.get("period", {}).get("fy_current", ""))
+    filename = f"{co_name}_FS_{fy}_{template}.pdf"
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
