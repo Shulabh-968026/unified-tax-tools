@@ -1,5 +1,36 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Summary tab: MIS dashboard + audit command-center + download hub (2026-05-01 PM-4)
+
+A 'feather on the cap' Summary tab that consolidates every MIS + audit-risk insight for one FA run on a single screen, and doubles as the only place from which deliverables (Excel + PDF) are downloaded.
+
+### Scope
+- ✅ Renamed Compute tab button to just **"Compute"**; removed Excel + PDF buttons from there.
+- ✅ New **Summary tab** with KPIs, audit flags, MIS counts, block breakdown, insight cuts, quarterly distribution, and download hub.
+- ✅ Single GET `/runs/{rid}/summary` endpoint — one call, full payload (no waterfall).
+
+### Backend (`summary.py` + 1 endpoint)
+- `build_summary()` — pure aggregator (no DB writes) consuming raw additions, credits, ledgers, compute rows, attached_addition_ids, pending_uploads. Computes:
+  - **KPIs**: opening · adds_full · adds_half · sales · depreciation · closing
+  - **MIS counts** (count + ₹): ledgers (+ classified), additions, additions_merged, discounts (+ merged), sales, bills_attached / bills_unattached, coverage_pct, half_rate_pool
+  - **Audit-risk flags** (count + ₹): missing_ptu, ptu_after_fy_end, missing_party, unreviewed, discount_pending, zero_or_negative_cost; `open_flag_count` is the count of flags with count > 0
+  - **Block-wise breakdown**: per active block — count + capitalised value + depreciation + closing WDV (sorted by descending rate)
+  - **Top 10 additions** by capitalised value with addition_id + description + party + block + PTU + ½-rate flag
+  - **Top 5 suppliers** by capitalised value
+  - **Adjustment-column usage** — touched count + ₹ for each of Other Exp / ITC Rev / Int Cap / Forex / Disc-Cr (latter flagged `reduces_cost=True`)
+  - **Quarterly distribution**: Q1/Q2/Q3/Q4/Outside-FY buckets with count + ₹ (sums must equal active additions count)
+  - **OCR coverage**: uploads_pending, uploads_total, chunks_total, chunks_applied, chunks_remaining
+- New endpoint `GET /runs/{rid}/summary` — pulls raw rows (excluding compute's synthetic discount pseudo-rows so audit stats aren't polluted), assembles the payload, returns the run-level `prior_3cd_validation` flag for the validation card.
+
+### Frontend (`SummaryTab.jsx` + `Landing.jsx`)
+- New tab "Summary" (LayoutGrid icon, testid `fa-tab-summary`) right after Compute.
+- Single-page composition: dark slate-900 header strip · 5-card KPI strip (compact + exact ₹) · two-column row [3CD validation + OCR coverage cards | audit-flags grid] · MIS counts (6-card row) · block breakdown table · two-column [top additions list | top suppliers + adjustments] · quarterly distribution bars · download hub (two large cards: emerald Excel + rose PDF, each with a 3-bullet "what's inside" legend).
+- Compute tab now points users to Summary in the helper copy; Compute button stays.
+
+### Tests
+- `tests/test_fixed_assets_summary.py` — 10/10 GREEN: payload shape, KPIs match `/compute` totals exactly, counts cross-foot to the additions count, audit flag shape + open-flag arithmetic, blocks sorted desc by rate, top additions ≤ 10 sorted desc, top suppliers ≤ 5 sorted desc, adjustments has all 5 keys (`discount_credits.reduces_cost=True`), quarterly counts sum to active additions count, OCR consistency (`chunks_applied ≤ chunks_total`).
+- Frontend Playwright (iteration_15) — **100% GREEN**: tab wiring, Compute tab cleanup (no export buttons), all 24+ Summary testids present, KPI strip values match (Opening ₹3.01 Cr · Adds ₹2.63 Cr · Sales ₹50 k · Depn ₹72.92 L · Closing ₹4.90 Cr), audit-flag panel shows '1 open' (50 unreviewed), MIS counts populate, block breakdown 5 rows sorted desc, top additions 10 rows, top suppliers 5 rows with proportional bars, adjustment usage 5 rows, quarterly 5 bars, Excel download 18,765 bytes + PDF download 25,549 bytes.
+
 ## Fixed Assets — PDF additions register grouped by block (2026-05-01 PM-3)
 
 The A4 PDF working-paper now groups the additions register by **IT block** with sticky-style sub-headers — the user's exact ask: "32 assets · ₹2.34 Cr" pattern.
