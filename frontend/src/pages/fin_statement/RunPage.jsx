@@ -163,6 +163,7 @@ export default function FsRunPage() {
             <StatementPanel title="Statement of Profit & Loss" rows={doc.profit_loss} fy={doc.period}/>
             <CashFlowPanel rows={doc.cash_flow} fy={doc.period}/>
             <NotesPanel notes={doc.notes} fy={doc.period}/>
+            <DetailsPanel details={doc.details} fy={doc.period}/>
           </>
         ) : null}
       </div>
@@ -355,12 +356,12 @@ function NotesPanel({ notes, fy }) {
       <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between">
         <div className="font-heading text-[13px]">Notes ({notes.length})</div>
         <div className="text-[10.5px] font-mono uppercase tracking-wider text-slate-500">
-          Click to expand detail breakdown
+          Click to expand sub-items
         </div>
       </div>
       <div>
         {notes.map(n => {
-          const rows = (n.children && n.children.length) ? n.children : (n.details || []);
+          const rows = n.subitems || [];
           const isOpen = expanded[n.note];
           return (
             <div key={`note-${n.note}`} className="border-b border-slate-100">
@@ -386,9 +387,9 @@ function NotesPanel({ notes, fy }) {
                   <tbody>
                     {rows.map((r, i) => (
                       <tr key={`nr-${n.note}-${i}`} className="border-t border-slate-100">
-                        <td className="px-4 py-1.5"
-                            style={{ paddingLeft: 16 + (r.indent || 0) * 14 }}>
-                          <span className={r.is_subtotal ? "font-semibold text-slate-900" : "text-slate-700"}>
+                        <td className="px-4 py-1.5">
+                          <span className="text-slate-700">
+                            {r.prefix && <span className="font-mono text-slate-500 mr-1.5">{r.prefix}</span>}
                             {r.label}
                           </span>
                         </td>
@@ -402,6 +403,42 @@ function NotesPanel({ notes, fy }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function DetailsPanel({ details, fy }) {
+  if (!details?.length) return null;
+  // Group by note for compact display
+  const byNote = details.reduce((acc, d) => {
+    (acc[d.note] = acc[d.note] || []).push(d);
+    return acc;
+  }, {});
+  return (
+    <div className="mt-5 border border-slate-200 bg-white" data-testid="fs-panel-details">
+      <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between">
+        <div className="font-heading text-[13px]">Details to Financial Statements</div>
+        <div className="text-[10.5px] font-mono uppercase tracking-wider text-slate-500">
+          {details.length} sub-line items
+        </div>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {Object.entries(byNote).map(([note, rows]) => (
+          <div key={`d-${note}`} className="px-4 py-2">
+            <div className="text-[11px] font-mono uppercase tracking-wider text-sky-700 mb-1">
+              Note {note}
+            </div>
+            {rows.map((d, i) => (
+              <div key={`dr-${note}-${i}`} className="flex items-center gap-3 py-1 text-[12.5px]">
+                <span className="font-mono text-slate-500 w-16 text-[11px]">{d.ref}</span>
+                <span className="flex-1 text-slate-800 truncate">{d.title}</span>
+                <span className="font-mono w-[120px] text-right">{inr(d.current)}</span>
+                <span className="font-mono w-[120px] text-right text-slate-500">{inr(d.previous)}</span>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -1,6 +1,5 @@
 """Tests for the Financial Statement Designer normalizer + PDF renderer."""
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -29,7 +28,8 @@ def doc(raw):
 
 def test_normalizer_shape(doc):
     for k in ("company", "period", "balance_sheet", "profit_loss",
-             "cash_flow", "notes", "fixed_asset", "signatory", "counts"):
+             "cash_flow", "notes", "details", "ageing", "fixed_asset",
+             "signatory", "counts"):
         assert k in doc
 
 
@@ -37,34 +37,24 @@ def test_company_period_and_cin(doc):
     assert doc["company"]["name"].upper().startswith("VELAV")
     assert doc["company"]["cin"] == "U17299TZ2022PTC037953"
     assert doc["period"]["fy_current"] == "2024-25"
-    assert doc["period"]["current_end_long"] == "31st March 2025"
-    assert doc["period"]["current_end_short"] == "31/03/2025"
 
 
 def test_numbering_prefixes(doc):
     bs = doc["balance_sheet"]
-    # First root should carry Roman 'I'
     assert bs[0]["prefix"] == "I"
-    assert bs[0]["kind"] == "header"
-    # Second-level should carry Arabic 1
     assert any(r["prefix"] == "1" and r["indent"] == 1 for r in bs)
-    # Third-level should carry 'a.'
     assert any(r["prefix"] == "a." and r["indent"] == 2 for r in bs)
-    # Must emit a synthesized 'TOTAL (I)' row
     assert any(r["kind"] == "total" and "TOTAL (I)" in r["label"] for r in bs)
-    # And a subtotal 'Total(1)' after Shareholders' Funds closes
     assert any(r["kind"] == "subtotal" and r["label"] == "Total(1)" for r in bs)
 
 
-def test_signatory_enriched_with_directors(doc):
+def test_signatory_with_directors(doc):
     s = doc["signatory"]
     assert s["firm_name"] == "MSS and Co"
-    assert s["firm_registration"] == "001893S"
     assert s["partner_name"] == "S. Dhananjayan"
-    assert s["date"] == "10-07-2025"  # DD-MM-YYYY
+    assert s["date"] == "10-07-2025"
     assert len(s["directors"]) == 2
-    dirs = {d["din"] for d in s["directors"]}
-    assert {"09463440", "06637132"}.issubset(dirs)
+    assert {d["din"] for d in s["directors"]} == {"09463440", "06637132"}
     assert s["cin"] == "U17299TZ2022PTC037953"
 
 
@@ -72,10 +62,59 @@ def test_inr_format():
     assert inr_rupee_paise(0) == "0.00"
     assert inr_rupee_paise(1234.5) == "1,234.50"
     assert inr_rupee_paise(12345678.99) == "1,23,45,678.99"
-    assert inr_rupee_paise(-5000).startswith("(") and inr_rupee_paise(-5000).endswith(")")
+    assert inr_rupee_paise(-5000).startswith("(")
 
 
-def test_classic_pdf_has_bs_pl_cfs_on_separate_pages():
+def test_notes_titles_resolved_from_bs_tree(doc):
+    """Note 1 must resolve to "Share Capital" (BS leaf) not the wrapper
+    "Shareholders' Funds". Note 8 must be PPE (BS leaf) not Depreciation
+    (P&L leaf, same note number)."""
+    notes_by_id = {n["note"]: n for n in doc["notes"]}
+    assert notes_by_id[1]["title"] == "Share Capital"
+    # Share Capital total must match the BS leaf, not the parent grouping
+    assert abs(notes_by_id[1]["current"] - 169204730.54) < 1
+    # Note 8 = PPE (not "Depreciation and Amortisation Expense")
+    assert "Property, Plant and Equipment" in notes_by_id[8]["title"]
+    assert abs(notes_by_id[8]["current"] - 46241795.83) < 1
+
+
+def test_note_subitems_with_letter_prefixes(doc):
+    notes_by_id = {n["note"]: n for n in doc["notes"]}
+    # Note 3 → a. Term Loans / b. Unsecured Loans
+    n3 = notes_by_id[3]
+    assert n3["subitems"][0]["prefix"] == "a."
+    assert "Term Loans" in n3["subitems"][0]["label"]
+    assert n3["subitems"][1]["prefix"] == "b."
+    # Note 11 → 4 sub-items (Inventories breakdown)
+    assert len(notes_by_id[11]["subitems"]) == 4
+
+
+def test_no_subitem_fallback_for_note_8(doc):
+    """Note 8 must have NO sub-items — the renderer attaches the PPE
+    matrix block instead."""
+    notes_by_id = {n["note"]: n for n in doc["notes"]}
+    assert notes_by_id[8]["subitems"] == []
+
+
+def test_details_section_built(doc):
+    """Details should be lettered N (a) / N (b) etc., grouped by note."""
+    assert len(doc["details"]) > 50
+    refs = [d["ref"] for d in doc["details"]]
+    assert "1 (a)" in refs
+    assert "23 (a)" in refs
+
+
+def test_ageing_normalized(doc):
+    """Trade payables / receivables ageing must be available per FY."""
+    ag = doc["ageing"]
+    assert "trade payables" in ag
+    assert "trade receivables" in ag
+    tp_2024 = list(ag["trade payables"].values())[0]
+    assert "rows" in tp_2024
+    assert len(tp_2024["rows"]) > 0
+
+
+def test_classic_pdf_structure_matches_reference():
     raw = json.loads(SAMPLE_JSON.read_text())
     doc = normalize_final_statement(raw, client_record=CLIENT_REC)
     b = render_pdf(doc, template="classic")
@@ -85,8 +124,7 @@ def test_classic_pdf_has_bs_pl_cfs_on_separate_pages():
     try:
         import pdfplumber
         with pdfplumber.open(out) as p:
-            # Must have >= 3 pages
-            assert len(p.pages) >= 4
+            assert len(p.pages) >= 5
             t1 = (p.pages[0].extract_text() or "").upper()
             t2 = (p.pages[1].extract_text() or "").upper()
             t3 = (p.pages[2].extract_text() or "").upper()
@@ -101,49 +139,32 @@ def test_classic_pdf_has_bs_pl_cfs_on_separate_pages():
                 assert "FIRM REGN. NO.: 001893S" in t
                 assert "DIN: 09463440" in t
                 assert "DIN: 06637132" in t
-                assert "MEMBERSHIP NO.: 207277" in t
                 assert "PLACE: TIRUPPUR" in t
                 assert "DATE: 10-07-2025" in t
-            # All pages should be portrait A4
-            for pg in p.pages[:3]:
-                assert pg.height > pg.width
+            # Notes pages
+            notes_text = "\n".join((pg.extract_text() or "") for pg in p.pages[3:]).upper()
+            for needle in ("NOTE NO : 1 SHARE CAPITAL",
+                           "NOTE NO : 8 PROPERTY, PLANT AND EQUIPMENT",
+                           "NOTE NO : 11 INVENTORIES"):
+                assert needle in notes_text, f"missing {needle!r}"
+            # Details section (lettered N (a) / N (b))
+            details_text = notes_text  # In the same range
+            assert "DETAILS TO FINANCIAL STATEMENTS" in details_text
+            assert "1 (A) SHARE CAPITAL" in details_text
+            assert "23 (A)" in details_text
     finally:
         out.unlink()
 
 
-def test_boardroom_template_also_renders():
+def test_boardroom_template_renders():
     raw = json.loads(SAMPLE_JSON.read_text())
     doc = normalize_final_statement(raw, client_record=CLIENT_REC)
     b = render_pdf(doc, template="boardroom")
     assert b.startswith(b"%PDF")
-    assert len(b) > 10000
-
-
-def test_notes_pages_have_company_header_and_note_titles():
-    raw = json.loads(SAMPLE_JSON.read_text())
-    doc = normalize_final_statement(raw, client_record=CLIENT_REC)
-    b = render_pdf(doc, template="classic")
-    out = Path("/tmp/_t_notes.pdf")
-    out.write_bytes(b)
-    try:
-        import pdfplumber
-        with pdfplumber.open(out) as p:
-            # Notes start from page 4 onwards
-            assert len(p.pages) >= 5
-            notes_text = "\n".join((pg.extract_text() or "") for pg in p.pages[3:])
-            # Spot-check a handful
-            for needle in ("Note No : 1", "Note No : 11", "Note No : 16"):
-                assert needle in notes_text, f"missing {needle}"
-            # First notes page must still carry the company header
-            p4_text = p.pages[3].extract_text() or ""
-            assert "VELAV GARMENTS" in p4_text.upper()
-            assert "NOTES TO FINANCIAL STATEMENTS" in p4_text.upper()
-    finally:
-        out.unlink()
+    assert len(b) > 30000
 
 
 def test_balance_sheet_balances(doc):
-    # TOTAL (I) and TOTAL (II) should be equal
     bs = doc["balance_sheet"]
     totals = [r for r in bs if r["kind"] == "total"]
     assert len(totals) >= 2

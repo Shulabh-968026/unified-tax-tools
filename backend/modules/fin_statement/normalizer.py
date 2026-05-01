@@ -181,38 +181,235 @@ def _flatten_tree_simple(nodes, depth=0, out=None):
     return out
 
 
-def _notes_with_details(
-    notes: List[Dict[str, Any]],
-    details: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Group detail rows under their parent note."""
-    by_note: Dict[int, List[Dict[str, Any]]] = {}
-    for d in details or []:
-        nn = d.get("note_number")
+def _walk_note_titles(
+    rows: List[Dict[str, Any]],
+    parent_label: str = "",
+    out: Optional[Dict[int, Dict[str, str]]] = None,
+) -> Dict[int, Dict[str, str]]:
+    """Walk a BS/P&L tree and emit a {note_number: {leaf, parent}} map.
+
+    The leaf label is the source-of-truth title for that note (the JSON's
+    ``notes_report.account`` sometimes wrongly carries the parent group
+    label, e.g. note 1 shows up as "Shareholders' Funds" instead of
+    "Share Capital")."""
+    if out is None:
+        out = {}
+    for r in rows or []:
+        nn = r.get("note_number")
         try:
             nn = int(nn) if nn not in (None, "") else None
         except (TypeError, ValueError):
             nn = None
-        if nn is None:
-            continue
-        by_note.setdefault(nn, []).append(d)
+        if nn:
+            out[nn] = {"leaf": str(r.get("account") or ""),
+                       "parent": parent_label}
+        if r.get("children"):
+            _walk_note_titles(r["children"], r.get("account", ""), out)
+    return out
 
+
+def _notes_with_details(
+    notes: List[Dict[str, Any]],
+    details: List[Dict[str, Any]],
+    fa: Optional[Dict[str, Any]] = None,
+    title_map: Optional[Dict[int, Dict[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Build the Notes-to-Financial-Statements block.
+
+    Title-resolution rules (kept aligned with the reference final-statement
+    style):
+      • Use the BS/P&L tree leaf label as the canonical title (the JSON's
+        ``notes_report.account`` is unreliable for some wrapper notes —
+        e.g. Note 1 shows up as "Shareholders' Funds" instead of "Share
+        Capital").
+      • Sub-items come from ``notes_report.children`` (lettered a./b./c.).
+        When a wrapper note carries a single child whose label matches the
+        canonical title, drop one level and surface its grandchildren.
+      • When ``children`` is empty but ``notes_report.account`` differs
+        from the title, the account itself becomes a single sub-item
+        (e.g. Note 6 "Other Current Liabilities" → "a. Statutory Dues
+        Payable").
+      • Synthesize Note 8 (PPE) — it isn't in ``notes_report``, lives in
+        ``fixed_asset_report``.
+    """
+    title_map = title_map or {}
     out: List[Dict[str, Any]] = []
+    have_note_8 = False
+
     for n in notes or []:
         nn = n.get("note_number")
         try:
             nn_int = int(nn) if nn not in (None, "") else None
         except (TypeError, ValueError):
             nn_int = None
-        detail_rows = _flatten_tree_simple(by_note.get(nn_int, []))
+        if nn_int == 8:
+            have_note_8 = True
+
+        canonical_title = (
+            (title_map.get(nn_int) or {}).get("leaf")
+            or str(n.get("account") or "")
+        )
+
+        # Decide sub-items
+        children = n.get("children") or []
+        unwrapped = False
+        # Capture the row used as source-of-truth for the note total —
+        # falls back to the parent unless we drill into a wrapper child.
+        eff_row = n
+        # Wrapper case: 1 child whose label == canonical_title → drill in
+        if (len(children) == 1
+                and str(children[0].get("account") or "").strip().lower()
+                == canonical_title.strip().lower()):
+            eff_row = children[0]
+            children = eff_row.get("children") or []
+            unwrapped = True
+
+        subitems: List[Dict[str, Any]] = []
+        for i, c in enumerate(children):
+            letter = _LETTERS[i] if i < len(_LETTERS) else str(i + 1)
+            subitems.append({
+                "prefix":   f"{letter}.",
+                "label":    str(c.get("account") or ""),
+                "current":  _fmt_float(c.get("total", 0)),
+                "previous": _fmt_float(c.get("previous_total", 0)),
+                "indent":   0,
+                "detail_number": c.get("detail_number") or (i + 1),
+            })
+
+        # Fallback: if no children AND we didn't already unwrap (which
+        # signals a special note like Note 1 Share Capital where the
+        # source data doesn't carry a/b/c lines), and the JSON's account
+        # differs from the canonical title, treat the account as the
+        # single 'a.' sub-item (matches the reference for notes 6/7/10/12
+        # etc.).
+        # Skip the fallback for Note 8 — it's the PPE matrix block which
+        # is rendered separately.
+        if not subitems and not unwrapped and nn_int != 8:
+            jsn_acc = str(n.get("account") or "").strip()
+            if jsn_acc and jsn_acc.lower() != canonical_title.strip().lower():
+                subitems.append({
+                    "prefix":   "a.",
+                    "label":    jsn_acc,
+                    "current":  _fmt_float(n.get("total", 0)),
+                    "previous": _fmt_float(n.get("previous_total", 0)),
+                    "indent":   0,
+                    "detail_number": 1,
+                })
+
+        # Note 8 in notes_report is the P&L Depreciation note. The
+        # reference renders Note 8 as the PPE schedule (BS leaf). Force
+        # the PPE values + clear sub-items so the renderer attaches its
+        # special matrix block.
+        if nn_int == 8 and fa and (fa.get("subheads") or fa.get("total")):
+            ppe_total = _fmt_float((fa.get("total") or {}).get("closing_written_down_value", 0))
+            ppe_prev = _fmt_float((fa.get("prev_total") or {}).get("closing_written_down_value", 0))
+            out.append({
+                "note":     8,
+                "title":    canonical_title or "Property, Plant and Equipment",
+                "current":  ppe_total,
+                "previous": ppe_prev,
+                "subitems": [],
+            })
+            continue
+
         out.append({
             "note":     nn_int,
-            "title":    str(n.get("account") or ""),
-            "current":  _fmt_float(n.get("total", 0)),
-            "previous": _fmt_float(n.get("previous_total", 0)),
-            "details":  detail_rows,
-            "children": _flatten_tree_simple(n.get("children") or []),
+            "title":    canonical_title,
+            "current":  _fmt_float(eff_row.get("total", 0)),
+            "previous": _fmt_float(eff_row.get("previous_total", 0)),
+            "subitems": subitems,
         })
+
+    if not have_note_8 and fa and (fa.get("subheads") or fa.get("total")):
+        ppe_total = _fmt_float((fa.get("total") or {}).get("closing_written_down_value", 0))
+        ppe_prev = _fmt_float((fa.get("prev_total") or {}).get("closing_written_down_value", 0))
+        synth = {
+            "note":     8,
+            "title":    (title_map.get(8) or {}).get("leaf", "Property, Plant and Equipment"),
+            "current":  ppe_total,
+            "previous": ppe_prev,
+            "subitems": [],
+        }
+        idx = next(
+            (i for i, r in enumerate(out)
+             if r.get("note") is not None and r["note"] > 8),
+            len(out),
+        )
+        out.insert(idx, synth)
+    return out
+
+
+def _details_sections(
+    details: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build the "Details to Financial Statements" section.
+
+    Each row in ``details_report`` represents a lettered sub-item under a
+    parent note (e.g. "3 (a) Term Loans from Banks") with its underlying
+    ledger-level leaves.  The output is flat — caller loops through and
+    renders ``N (letter)`` headers followed by the leaf rows.
+    """
+    out: List[Dict[str, Any]] = []
+    for d in details or []:
+        nn = d.get("note_number")
+        dn = d.get("detail_number")
+        try:
+            nn_int = int(nn) if nn not in (None, "") else None
+        except (TypeError, ValueError):
+            nn_int = None
+        try:
+            dn_int = int(dn) if dn not in (None, "") else 1
+        except (TypeError, ValueError):
+            dn_int = 1
+        letter = _LETTERS[dn_int - 1] if 0 < dn_int <= len(_LETTERS) else str(dn_int)
+        leaves = []
+        for c in d.get("children") or []:
+            leaves.append({
+                "label":    str(c.get("account") or ""),
+                "current":  _fmt_float(c.get("total", 0)),
+                "previous": _fmt_float(c.get("previous_total", 0)),
+            })
+        out.append({
+            "note":     nn_int,
+            "detail":   dn_int,
+            "ref":      f"{nn_int} ({letter})" if nn_int is not None else f"({letter})",
+            "title":    str(d.get("account") or ""),
+            "current":  _fmt_float(d.get("total", 0)),
+            "previous": _fmt_float(d.get("previous_total", 0)),
+            "leaves":   leaves,
+        })
+    return out
+
+
+def _normalize_ageing(ageing: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten the ageing_report per FY and per category into renderable
+    rows. Output: {'trade payables': {fy: {rows, buckets}}, ...}."""
+    out: Dict[str, Any] = {}
+    bucket_keys = ("not_due", "less_than_a_year", "one_to_two_years",
+                   "two_to_three_years", "more_than_three_years", "total")
+    for fy, cats in (ageing or {}).items():
+        if not isinstance(cats, dict):
+            continue
+        for cat, blk in cats.items():
+            if not isinstance(blk, dict):
+                continue
+            rows = []
+            for r in blk.get("rows", []) or []:
+                if not isinstance(r, dict):
+                    continue
+                rows.append({
+                    "label": r.get("row_header", ""),
+                    "type":  r.get("row_type", "value_row"),
+                    **{k: _fmt_float(r.get(k, 0)) for k in bucket_keys},
+                })
+            if rows:
+                out.setdefault(cat, {})[fy] = {
+                    "rows":   rows,
+                    "header": (blk.get("meta_data") or {}).get(
+                        "amount_group_header",
+                        "Outstanding for the following periods from the due date for payment",
+                    ),
+                }
     return out
 
 
@@ -382,6 +579,11 @@ def normalize_final_statement(
 
     signatory = (msg.get("signatory_details") or [{}])[0]
     cfs_rows = (msg.get("cash_flow_report") or {}).get("report_data") or []
+    # Build note title map. P&L first, then BS — BS leaf labels take
+    # precedence so that note 8 (shared by PPE & Depreciation) resolves
+    # to "Property, Plant and Equipment" (the canonical BS title).
+    title_map = _walk_note_titles(msg.get("profit_or_loss_report") or [])
+    title_map.update(_walk_note_titles(msg.get("balance_sheet_report") or []))
 
     return {
         "company": {
@@ -407,7 +609,11 @@ def normalize_final_statement(
         "notes":         _notes_with_details(
             msg.get("notes_report") or [],
             msg.get("details_report") or [],
+            fa=_flatten_fa(msg.get("fixed_asset_report") or {}),
+            title_map=title_map,
         ),
+        "details":       _details_sections(msg.get("details_report") or []),
+        "ageing":        _normalize_ageing(msg.get("ageing_report") or {}),
         "fixed_asset":   _flatten_fa(msg.get("fixed_asset_report") or {}),
         "signatory":     _signatory(signatory, client_record),
         "counts": {

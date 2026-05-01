@@ -144,6 +144,24 @@ def _stmt_col_header(col_labels: List[str], styles, palette,
     return _HeaderTable(data, col_widths, palette)
 
 
+def _details_col_header(col_labels: List[str], styles, palette) -> Table:
+    """4-col header used on the 'Details to Financial Statements' pages —
+    Notes column appears on the LEFT of Particulars (per reference)."""
+    data = [[
+        Paragraph("", styles["hdr"]),
+        Paragraph("", styles["hdr"]),
+        Paragraph(col_labels[0], styles["hdr_c"]),
+        Paragraph(col_labels[1], styles["hdr_c"]),
+    ], [
+        Paragraph("<b>Notes</b>", styles["hdr_c"]),
+        Paragraph("<b>PARTICULARS</b>", styles["hdr"]),
+        Paragraph("<b>Rs. Ps.</b>", styles["hdr_c"]),
+        Paragraph("<b>Rs. Ps.</b>", styles["hdr_c"]),
+    ]]
+    col_widths = ("10%", "60%", "15%", "15%")
+    return _HeaderTable(data, col_widths, palette)
+
+
 def _HeaderTable(data, col_widths, palette):
     t = Table(data, colWidths=_resolve_widths(col_widths))
     t.setStyle(TableStyle([
@@ -397,106 +415,280 @@ def _signatory_footer(sig: Dict[str, Any], styles, palette,
     return outer
 
 
-# ---------- Note block -----------------------------------------------
+# ---------- Note block (3-col, no Note No. column) -------------------
 def _note_block(note: Dict[str, Any], styles, palette,
-                content_width: float, col_labels: List[str]) -> List[Any]:
+                content_width: float, ageing: Dict[str, Any] = None,
+                fixed_asset: Dict[str, Any] = None,
+                period: Dict[str, Any] = None) -> List[Any]:
     flow: List[Any] = []
-    title = f"Note No : {note.get('note', '')}  {note.get('title', '')}"
+    nn = note.get("note", "")
+    title = f"Note No : {nn}  {note.get('title', '')}"
     flow.append(Paragraph(f"<b>{title}</b>", styles["note_title"]))
-    flow.append(Spacer(1, 1 * mm))
 
-    rows = note.get("details") or []
-    if not rows:
-        rows = note.get("children") or []
+    subitems = note.get("subitems") or []
 
+    # --- Main note table: 3 cols (Particulars / CY / PY) ---
     data: List[List[Any]] = []
-    for r in rows:
-        indent = max(0, int(r.get("indent", 0)))
-        indent_spaces = "&nbsp;" * (indent * 4)
+    for r in subitems:
+        prefix = r.get("prefix", "") or ""
         label = r.get("label", "") or ""
-        is_sub = r.get("has_children")
-        label_html = f"{indent_spaces}<b>{label}</b>" if is_sub else f"{indent_spaces}{label}"
+        label_html = f"{prefix}&nbsp;&nbsp;{label}" if prefix else label
         data.append([
             Paragraph(label_html, styles["note_body"]),
             Paragraph(inr_rupee_paise(r.get("current", 0)), styles["note_body_r"]),
             Paragraph(inr_rupee_paise(r.get("previous", 0)), styles["note_body_r"]),
         ])
-    # Total row
+    # Total row — show only the underlined number, no "Total" word
     data.append([
-        Paragraph("<b>Total</b>", styles["note_body"]),
-        Paragraph(f"<b>{inr_rupee_paise(note.get('current', 0))}</b>", styles["note_body_r"]),
-        Paragraph(f"<b>{inr_rupee_paise(note.get('previous', 0))}</b>", styles["note_body_r"]),
+        Paragraph("", styles["note_body"]),
+        Paragraph(f"<b>{inr_rupee_paise(note.get('current', 0))}</b>",
+                  styles["note_body_r"]),
+        Paragraph(f"<b>{inr_rupee_paise(note.get('previous', 0))}</b>",
+                  styles["note_body_r"]),
     ])
 
-    t = Table(data, colWidths=_resolve_widths(("70%", "15%", "15%")))
-    t.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.2),
-        ("LINEABOVE", (0, -1), (-1, -1), 0.5, palette["ink"]),
-        ("LINEBELOW", (0, -1), (-1, -1), 0.8, palette["ink"]),
-    ]))
-    flow.append(t)
+    if data:
+        t = Table(data, colWidths=_resolve_widths(("70%", "15%", "15%")))
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.2),
+            ("LINEABOVE", (1, -1), (-1, -1), 0.5, palette["ink"]),
+            ("LINEBELOW", (1, -1), (-1, -1), 0.8, palette["ink"]),
+        ]))
+        flow.append(t)
+
+    # --- Append ageing schedule for trade payables (5) / receivables (12) ---
+    if nn == 5 and ageing and "trade payables" in ageing:
+        flow.append(Spacer(1, 2 * mm))
+        flow.extend(_ageing_table(ageing["trade payables"], "Trade Payables Ageing",
+                                  styles, palette, content_width, period))
+    elif nn == 12 and ageing and "trade receivables" in ageing:
+        flow.append(Spacer(1, 2 * mm))
+        flow.extend(_ageing_table(ageing["trade receivables"], "Trade Receivables Ageing",
+                                  styles, palette, content_width, period,
+                                  receivables=True))
+
+    # --- Note 8 PPE matrix ---
+    if nn == 8 and fixed_asset:
+        flow.append(Spacer(1, 1 * mm))
+        flow.extend(_ppe_matrix(fixed_asset, styles, palette, content_width, period))
+
     return flow
 
 
-# ---------- PPE schedule block --------------------------------------
-def _fa_block(fa: Dict[str, Any], styles, palette, content_width: float) -> List[Any]:
-    if not fa or not fa.get("subheads"):
-        return []
+def _ageing_table(by_fy: Dict[str, Dict[str, Any]], title: str,
+                  styles, palette, content_width: float,
+                  period: Dict[str, Any], receivables: bool = False) -> List[Any]:
+    """Render the trade-payables / trade-receivables ageing schedule as
+    one mini-table per FY (CY first, then PY)."""
     flow: List[Any] = []
-    flow.append(Paragraph("<b>Note No : 8  Property, Plant and Equipment</b>", styles["note_title"]))
-    flow.append(Spacer(1, 1 * mm))
-    head = ["Particulars", "Opening Cost", "Additions", "Deletions",
-            "Closing Cost", "Opening Depn", "Depn / Year",
-            "Closing Depn", "Closing WDV"]
+    bucket_cols = (
+        [("not_due", "Not Due"), ("less_than_a_year", "< 6 Months" if receivables else "< 1 Year")]
+        + ([("six_months_to_one_year", "6 Months to 1 Year")] if receivables else [])
+        + [("one_to_two_years", "1 to 2 years"),
+           ("two_to_three_years", "2 to 3 years"),
+           ("more_than_three_years", "> 3 Years"),
+           ("total", "Total")]
+    )
+    fy_order = []
+    cur_short = period.get("current_end_short", "") if period else ""
+    prev_short = period.get("previous_end_short", "") if period else ""
+    # Match FY-keys 2024-2025 / 2023-2024 in by_fy
+    for fy_label, end_short in (
+        (f"{cur_short[6:]}-{int(cur_short[6:]) + 1}" if cur_short else "", cur_short),
+        (f"{prev_short[6:]}-{int(prev_short[6:]) + 1}" if prev_short else "", prev_short),
+    ):
+        if fy_label and fy_label in by_fy:
+            fy_order.append((fy_label, end_short))
+    if not fy_order:
+        fy_order = [(k, "") for k in sorted(by_fy.keys(), reverse=True)]
+
+    for fy, end_short in fy_order:
+        block = by_fy[fy]
+        flow.append(Paragraph(
+            f"<b>{title} Schedule - As at {end_short or fy}</b>",
+            styles["note_subhead"],
+        ))
+        head = ["Particulars"] + [c[1] for c in bucket_cols]
+        rows = [head]
+        for r in block["rows"]:
+            row = [r["label"]]
+            for k, _ in bucket_cols:
+                row.append(inr_rupee_paise(r.get(k, 0)) if k != "total"
+                           else inr_rupee_paise(r.get("total", 0)))
+            rows.append(row)
+        n_cols = len(bucket_cols) + 1
+        # First col 30%, rest equal
+        first = content_width * 0.30
+        rest = (content_width - first) / (n_cols - 1)
+        col_widths = [first] + [rest] * (n_cols - 1)
+        t = Table(rows, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("FONTSIZE", (0, 0), (-1, -1), 6.8),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (-1, 0), palette["band"]),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOX", (0, 0), (-1, -1), 0.4, palette["hair"]),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.4, palette["hair"]),
+            ("LINEABOVE", (0, -1), (-1, -1), 0.4, palette["ink"]),
+        ]))
+        flow.append(t)
+        flow.append(Spacer(1, 1.5 * mm))
+    return flow
+
+
+def _ppe_matrix(fa: Dict[str, Any], styles, palette,
+                content_width: float, period: Dict[str, Any]) -> List[Any]:
+    """Render the Note 8 PPE matrix in the reference format — columns are
+    asset categories + Total; rows are Gross Block / Depreciation / Net
+    Block sub-sections."""
+    flow: List[Any] = []
+    subs = fa.get("subheads") or []
+    if not subs:
+        return flow
+    prev_subs = fa.get("prev_subheads") or []
+    total = fa.get("total") or {}
+    prev_total = fa.get("prev_total") or {}
+    cur_end_long = (period or {}).get("current_end_long", "")
+    # Hard-code prior-year start as 1st April (Y-1) where Y is current_start year
+    cy_start_year = ""
+    if cur_end_long:
+        try:
+            cy_start_year = str(int(cur_end_long.split()[-1]) - 1)
+        except ValueError:
+            cy_start_year = ""
+    py_start_year = str(int(cy_start_year) - 1) if cy_start_year else ""
+
+    # Header row: empty + asset names + Total
+    asset_names = [s["label"] for s in subs]
+    head = ["Particulars/ Assets"] + asset_names + ["Total"]
     rows = [head]
-    for s in fa.get("subheads", []):
-        rows.append([
-            s.get("label", ""),
-            inr_rupee_paise(s.get("opening_cost", 0)),
-            inr_rupee_paise(s.get("additions", 0)),
-            inr_rupee_paise(s.get("deletions", 0)),
-            inr_rupee_paise(s.get("closing_cost", 0)),
-            inr_rupee_paise(s.get("opening_depreciation", 0)),
-            inr_rupee_paise(s.get("depreciation_for_year", 0)),
-            inr_rupee_paise(s.get("closing_depreciation", 0)),
-            inr_rupee_paise(s.get("closing_written_down_value", 0)),
-        ])
-    tot = fa.get("total", {})
-    rows.append([
-        "Total",
-        inr_rupee_paise(tot.get("opening_cost", 0)),
-        inr_rupee_paise(tot.get("additions", 0)),
-        inr_rupee_paise(tot.get("deletions", 0)),
-        inr_rupee_paise(tot.get("closing_cost", 0)),
-        inr_rupee_paise(tot.get("opening_depreciation", 0)),
-        inr_rupee_paise(tot.get("depreciation_for_year", 0)),
-        inr_rupee_paise(tot.get("closing_depreciation", 0)),
-        inr_rupee_paise(tot.get("closing_written_down_value", 0)),
-    ])
-    col_w = [content_width * 0.22] + [content_width * 0.0975] * 8
-    t = Table(rows, colWidths=col_w, repeatRows=1, hAlign="LEFT")
+
+    def _row_for(label, fields_for_idx, total_field, src_subs, src_total):
+        row = [label]
+        for i, _ in enumerate(asset_names):
+            v = src_subs[i].get(fields_for_idx, 0) if i < len(src_subs) else 0
+            row.append(inr_rupee_paise(v))
+        row.append(inr_rupee_paise(src_total.get(total_field, 0)))
+        return row
+
+    # Gross Block section
+    rows.append(["<b>Gross Block</b>"] + [""] * (len(asset_names) + 1))
+    rows.append(_row_for(f"At 1st April {cy_start_year}", "opening_cost", "opening_cost", subs, total))
+    rows.append(_row_for("Additions", "additions", "additions", subs, total))
+    rows.append(_row_for("Deductions/Adjustments", "deletions", "deletions", subs, total))
+    rows.append(_row_for(f"At 1st April {py_start_year}", "opening_cost", "opening_cost", prev_subs, prev_total))
+    rows.append(_row_for("Additions", "additions", "additions", prev_subs, prev_total))
+    rows.append(_row_for("Deductions/Adjustments", "deletions", "deletions", prev_subs, prev_total))
+    rows.append(_row_for(f"At {cur_end_long}", "closing_cost", "closing_cost", subs, total))
+    rows.append(_row_for(f"At 31st March {cy_start_year}", "closing_cost", "closing_cost", prev_subs, prev_total))
+
+    # Depreciation section
+    rows.append(["<b>Depreciation/ Amortization</b>"] + [""] * (len(asset_names) + 1))
+    rows.append(_row_for(f"At 1st April {cy_start_year}", "opening_depreciation", "opening_depreciation", subs, total))
+    rows.append(_row_for("Additions", "depreciation_for_year", "depreciation_for_year", subs, total))
+    rows.append(_row_for("Deductions/Adjustments", "depreciation_withdrawn", "depreciation_withdrawn", subs, total))
+    rows.append(_row_for(f"At 1st April {py_start_year}", "opening_depreciation", "opening_depreciation", prev_subs, prev_total))
+    rows.append(_row_for("Additions", "depreciation_for_year", "depreciation_for_year", prev_subs, prev_total))
+    rows.append(_row_for("Deductions/Adjustments", "depreciation_withdrawn", "depreciation_withdrawn", prev_subs, prev_total))
+    rows.append(_row_for(f"At {cur_end_long}", "closing_depreciation", "closing_depreciation", subs, total))
+    rows.append(_row_for(f"At 31st March {cy_start_year}", "closing_depreciation", "closing_depreciation", prev_subs, prev_total))
+
+    # Net Block
+    rows.append(["<b>Net Block</b>"] + [""] * (len(asset_names) + 1))
+    rows.append(_row_for(f"At {cur_end_long}", "closing_written_down_value", "closing_written_down_value", subs, total))
+    rows.append(_row_for(f"At 31st March {cy_start_year}", "closing_written_down_value", "closing_written_down_value", prev_subs, prev_total))
+
+    # Convert any HTML in cells into paragraphs
+    p_style = styles["note_body"]
+    p_r = styles["note_body_r"]
+    rows_p = []
+    for ri, r in enumerate(rows):
+        rp = []
+        for ci, cell in enumerate(r):
+            if ci == 0:
+                rp.append(Paragraph(str(cell), p_style))
+            else:
+                rp.append(Paragraph(str(cell), p_r))
+        rows_p.append(rp)
+
+    n_cols = len(asset_names) + 2
+    first = content_width * 0.22
+    rest = (content_width - first) / (n_cols - 1)
+    col_widths = [first] + [rest] * (n_cols - 1)
+    t = Table(rows_p, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
-        ("FONTSIZE",  (0, 0), (-1, -1), 6.8),
-        ("FONTNAME",  (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BACKGROUND",(0, 0), (-1, 0), palette["band"]),
-        ("LINEABOVE", (0, 0), (-1, 0), 0.6, palette["ink"]),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.6, palette["ink"]),
-        ("LINEABOVE", (0, -1), (-1, -1), 0.5, palette["ink"]),
-        ("LINEBELOW", (0, -1), (-1, -1), 0.8, palette["ink"]),
-        ("FONTNAME",  (0, -1), (-1, -1), "Helvetica-Bold"),
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+        ("BACKGROUND", (0, 0), (-1, 0), palette["band"]),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ("TOPPADDING", (0, 0), (-1, -1), 1.2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.2),
+        ("BOX", (0, 0), (-1, -1), 0.4, palette["ink"]),
+        ("INNERGRID", (0, 0), (-1, -1), 0.2, palette["hair"]),
     ]))
     flow.append(t)
-    flow.append(Spacer(1, 4 * mm))
+    flow.append(Spacer(1, 1 * mm))
+    return flow
+
+
+# ---------- Details to Financial Statements section ------------------
+def _details_block(details: List[Dict[str, Any]], styles, palette,
+                   content_width: float) -> List[Any]:
+    """Render the per-ledger drilldown.  Header per row: 'N (letter)
+    <head>' followed by the leaf rows, then a totals line."""
+    if not details:
+        return []
+    flow: List[Any] = []
+    for d in details:
+        block: List[Any] = []
+        ref = d.get("ref", "")
+        title = d.get("title", "")
+        block.append(Paragraph(f"<b>{ref}&nbsp;&nbsp;{title}</b>",
+                               styles["details_head"]))
+        rows = []
+        for leaf in d.get("leaves") or []:
+            rows.append([
+                Paragraph(leaf.get("label", ""), styles["note_body"]),
+                Paragraph(inr_rupee_paise(leaf.get("current", 0), dash_zero=False),
+                          styles["note_body_r"]),
+                Paragraph(inr_rupee_paise(leaf.get("previous", 0), dash_zero=False),
+                          styles["note_body_r"]),
+            ])
+        # Totals row
+        rows.append([
+            Paragraph("", styles["note_body"]),
+            Paragraph(f"<b>{inr_rupee_paise(d.get('current', 0))}</b>",
+                      styles["note_body_r"]),
+            Paragraph(f"<b>{inr_rupee_paise(d.get('previous', 0))}</b>",
+                      styles["note_body_r"]),
+        ])
+        if rows:
+            t = Table(rows, colWidths=_resolve_widths(("70%", "15%", "15%")))
+            t.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                ("LINEABOVE", (1, -1), (-1, -1), 0.4, palette["ink"]),
+                ("LINEBELOW", (1, -1), (-1, -1), 0.6, palette["ink"]),
+            ]))
+            block.append(t)
+        block.append(Spacer(1, 2 * mm))
+        flow.append(KeepTogether(block))
     return flow
 
 
@@ -535,7 +727,13 @@ def _mk_styles(palette, body_size: float = 8.2):
                                    spaceAfter=0),
         "note_title": ParagraphStyle("note_title", fontName="Helvetica-Bold",
                                       fontSize=9, leading=11,
-                                      textColor=palette["ink"], spaceAfter=1),
+                                      textColor=palette["ink"], spaceAfter=2),
+        "note_subhead": ParagraphStyle("note_subhead", fontName="Helvetica-Bold",
+                                       fontSize=8.2, leading=10,
+                                       textColor=palette["ink"], spaceAfter=1),
+        "details_head": ParagraphStyle("details_head", fontName="Helvetica-Bold",
+                                       fontSize=8.4, leading=10,
+                                       textColor=palette["ink"], spaceAfter=1),
         "note_body":  ParagraphStyle("note_body", fontName="Helvetica",
                                       fontSize=8, leading=10,
                                       textColor=palette["ink"]),
@@ -612,20 +810,34 @@ def render_pdf(doc_data: Dict[str, Any], template: str = "classic") -> bytes:
     story.append(PageBreak())
 
     # --- Pages 4+: Notes ---
-    story.extend(_page_header_block(doc_data, palette, styles,
-                                    f"Notes to Financial Statements for the year ended {end_long}"))
+    notes_title = f"Notes to Financial Statements for the year ended {end_long}"
+    story.extend(_page_header_block(doc_data, palette, styles, notes_title))
+    # 3-col header for notes section (no Note No. column)
+    notes_hdr = _stmt_col_header([cur_label, prev_label], styles, palette,
+                                 note_col=False)
+    story.append(notes_hdr)
+    story.append(Spacer(1, 1 * mm))
+    fa = doc_data.get("fixed_asset") or {}
+    ageing = doc_data.get("ageing") or {}
     for note in doc_data.get("notes", []):
         block = _note_block(note, styles, palette, content_w,
-                            [cur_label, prev_label])
+                            ageing=ageing, fixed_asset=fa, period=period)
         block.append(Spacer(1, 3 * mm))
         story.append(KeepTogether(block))
 
-    # --- PPE schedule (long table; allowed to span pages naturally) ---
-    fa_block_flow = _fa_block(doc_data.get("fixed_asset") or {}, styles,
-                              palette, content_w)
-    if fa_block_flow:
-        story.append(Spacer(1, 3 * mm))
-        story.extend(fa_block_flow)
+    # --- Details to Financial Statements ---
+    details = doc_data.get("details") or []
+    if details:
+        story.append(PageBreak())
+        story.extend(_page_header_block(
+            doc_data, palette, styles,
+            f"Details to Financial Statements for the year ended {end_long}",
+        ))
+        # Details section header has the "Notes" column (4 cols)
+        details_hdr = _details_col_header([cur_label, prev_label], styles, palette)
+        story.append(details_hdr)
+        story.append(Spacer(1, 1 * mm))
+        story.extend(_details_block(details, styles, palette, content_w))
 
     doc.build(story)
     return buf.getvalue()

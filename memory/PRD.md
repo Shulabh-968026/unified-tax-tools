@@ -1,6 +1,53 @@
 # MSS × Assure — Audit Utilities (Merged)
 
-## FS Designer — Drop 2b: redesigned to match the client's in-house FS style (2026-05-01 PM-9)
+## FS Designer — Drop 2c: structural alignment with the in-house FS reference (2026-05-01 PM-10)
+
+After comparing my Drop-2b output against the user's V-904 reference PDF, several **structural** mismatches surfaced. RCA + fixes:
+
+### RCA — what was wrong
+1. **Notes section was using `details_report`** (ledger-level drill-down) as the body of each note — should have been using `notes_report.children` (the Schedule III a./b./c. sub-items). The ledger-level data belongs in a **separate** "Details to Financial Statements" section.
+2. **Note 1 title** showed "Shareholders' Funds" — that's the BS-grouping label, not the note title. The JSON's `notes_report` carries this incorrectly because Note 1 is a wrapper.
+3. **Note 8** was rendering as "Depreciation and Amortisation Expense" (P&L leaf) — should be "Property, Plant and Equipment" (BS leaf). Note 8 is shared between BS+PL because the matrix block accommodates both views.
+4. **No PPE matrix**, **no ageing schedules**, **no Details section** — all in the reference but missing in my output.
+5. **3-col vs 4-col headers** — Notes pages have a 3-col header (no Note No. column); Details pages have a 4-col header with "Notes" column on the left.
+
+### Fixes shipped
+
+#### Normalizer (`normalizer.py`)
+- New `_walk_note_titles()` — builds a `{note_number: {leaf, parent}}` map from the BS+PL trees. **BS leaf labels are the canonical title source** (PL trees walked first so BS overrides any ambiguity for shared notes like 8).
+- `_notes_with_details()` rewritten:
+  - Title from BS title-map (falls back to `notes_report.account`).
+  - Sub-items lettered a./b./c. from `notes_report.children`.
+  - **Wrapper unwrap** — when a note has 1 child whose label matches the canonical title (e.g. "Share Capital" inside "Shareholders' Funds"), drill in: the unwrapped child's total becomes the note total, its grandchildren become sub-items.
+  - **Empty-children fallback** — when a note has no `children` and the JSON's account differs from the canonical title (e.g. "Other Current Liabilities" wrapping a single "Statutory Dues Payable" leaf), surface the account as the lone "a." sub-item.
+  - **Note 8 special-case** — clears sub-items and forces values from `fixed_asset_report` so the renderer attaches the PPE matrix block. Synthesizes a Note 8 entry if absent in `notes_report`.
+- New `_details_sections()` — flattens `details_report` rows into ledger-level blocks with `N (letter)` references (e.g. "1 (a)", "23 (b)").
+- New `_normalize_ageing()` — maps `ageing_report` per FY × category into renderable rows for trade payables / receivables.
+
+#### PDF renderer (`pdf_renderer.py`)
+- New `_details_col_header()` — 4-col header (Notes / PARTICULARS / Rs. Ps. / Rs. Ps.) for the Details section.
+- `_note_block()` rewritten — 3-col (no Note No. col), letter-prefixed sub-items, total row showing only the underlined number (no "Total" word).
+- New `_ageing_table()` — appends the Trade Payables Ageing schedule under Note 5 and the Trade Receivables schedule under Note 12 (one mini-table per FY with bucket columns Not Due / <1Y / 1–2Y / 2–3Y / >3Y / Total).
+- New `_ppe_matrix()` — Note 8 PPE matrix in the reference's exact shape: rows are Gross Block / Depreciation / Net Block sub-sections (CY + PY), columns are asset categories + Total. Uppercase section bands.
+- New `_details_block()` — renders each lettered sub-item as a block with leaf rows + total, wrapped in `KeepTogether` so a sub-item never breaks across pages.
+- Removed the obsolete generic `_fa_block` — Note 8 PPE is now the primary surface for FA data.
+- Old `pdf_common.py` deleted (consolidated into the renderer).
+
+#### Frontend (`RunPage.jsx`)
+- `NotesPanel` updated to read the new `subitems` schema with letter prefixes.
+- New `DetailsPanel` — groups ledger-level entries by parent note with `N (letter) <head>` references, rendered as a compact list with `data-testid="fs-panel-details"`.
+
+### Tests — `tests/test_fin_statement_pdf.py` (**13/13 GREEN**, lint clean)
+- Title resolution: Note 1 = "Share Capital" (₹16,92,04,730.54), Note 8 = "Property, Plant and Equipment" (₹4,62,41,795.83).
+- Letter prefixes: Note 3 has a./b. for Term Loans / Unsecured Loans; Note 11 has 4 sub-items.
+- Note 8 has no sub-items (matrix block handles it).
+- Details section: ≥50 lettered entries including "1 (a)" and "23 (a)".
+- Ageing normalized for trade payables AND trade receivables.
+- BS balances: TOTAL (I) ≡ TOTAL (II) within ₹1.
+- PDF integrity: ≥5 pages, all 3 statement pages carry the full signatory footer (MSS AND CO, FRN 001893S, both DINs, Membership 207277, Place Tiruppur, Date 10-07-2025); notes pages spot-check "NOTE NO : 1 SHARE CAPITAL", "NOTE NO : 8 PROPERTY, PLANT AND EQUIPMENT", "NOTE NO : 11 INVENTORIES"; Details section contains "1 (A) SHARE CAPITAL" + "23 (A)".
+
+### Live end-to-end
+Re-ingested Velav run via live API — Notes 24 · Details 80 · Note 1 title "Share Capital" · Classic 61,274 B · Boardroom 62,474 B · 20 pages each (1 BS + 1 P&L + 1 CFS + 4 notes + 13 details).
 
 Course-correction after user shared a reference PDF (`V-904_VELAV_…_Final.pdf`). Clarification: each of BS / P&L / CFS must fit on **its own** portrait page (not all three on one page), and **every** statement page must carry the full signatory footer (auditor + client directors with DIN).
 
