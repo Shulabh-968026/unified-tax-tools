@@ -26,7 +26,6 @@ export default function ComputeTab({ rid }) {
   const [openings, setOpenings] = useState([]);
   const [busy, setBusy] = useState(false);
   const [computing, setComputing] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [result, setResult] = useState(null);
 
   // Phase 1D — Prior 3CD Import
@@ -56,9 +55,6 @@ export default function ComputeTab({ rid }) {
   // Prior-3CD validation gate
   const [validationGate, setValidationGate] = useState(null);  // {ok, mismatch_count, totals, validated_at, filename, acknowledged}
   const [overriding, setOverriding] = useState(false);
-
-  // PDF download
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const refreshRun = useCallback(async () => {
     if (!rid) return;
@@ -250,22 +246,7 @@ export default function ComputeTab({ rid }) {
   };
 
   // ---------- PDF working-paper ----------
-  const downloadPdf = async () => {
-    setDownloadingPdf(true);
-    try {
-      const res = await http.get(`/fixed-assets/runs/${rid}/export.pdf`, { responseType: "blob" });
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
-      const a = document.createElement("a");
-      const cd = res.headers["content-disposition"] || "";
-      const m = /filename="?([^";]+)"?/i.exec(cd);
-      a.href = url;
-      a.download = m?.[1] || "IT_Depreciation.pdf";
-      document.body.appendChild(a); a.click(); a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "PDF download failed");
-    } finally { setDownloadingPdf(false); }
-  };
+  // Excel + PDF downloads moved to the Summary tab.
 
   const compute = async () => {
     setComputing(true); setResult(null);
@@ -276,23 +257,6 @@ export default function ComputeTab({ rid }) {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Compute failed");
     } finally { setComputing(false); }
-  };
-
-  const download = async () => {
-    setDownloading(true);
-    try {
-      const res = await http.get(`/fixed-assets/runs/${rid}/export.xlsx`, { responseType: "blob" });
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const a = document.createElement("a");
-      const cd = res.headers["content-disposition"] || "";
-      const m = /filename="?([^";]+)"?/i.exec(cd);
-      a.href = url;
-      a.download = m?.[1] || `IT_Depreciation.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Download failed");
-    } finally { setDownloading(false); }
   };
 
   const totalOpening = useMemo(() => openings.reduce((s, r) => s + Number(r.opening_wdv || 0), 0), [openings]);
@@ -433,13 +397,14 @@ export default function ComputeTab({ rid }) {
         overriding={overriding}
       />
 
-      {/* Compute & download */}
+      {/* Compute */}
       <div className="bg-white border border-[#E5E5E0] p-4 flex items-center justify-between gap-3">
         <div>
           <div className="font-heading text-base">Run Computation</div>
           <p className="text-[12px] text-[#52524E] mt-0.5 max-w-3xl">
             Aggregates Opening WDV + every confirmed addition (with adjustment columns) − every credit marked
             as Sale, applies the 180-day half-rate rule, and produces the IT Depreciation Schedule.
+            Excel + PDF deliverables are downloadable from the <strong>Summary</strong> tab.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -454,24 +419,6 @@ export default function ComputeTab({ rid }) {
           >
             {computing ? <Loader2 size={14} className="animate-spin"/> : <Calculator size={14}/>}
             Compute
-          </button>
-          <button
-            data-testid="fa-export-btn"
-            onClick={download}
-            disabled={downloading}
-            className="inline-flex items-center gap-2 px-3.5 py-2 border border-slate-300 hover:bg-slate-100 text-[13px] disabled:opacity-60"
-          >
-            {downloading ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
-            Download Excel
-          </button>
-          <button
-            data-testid="fa-export-pdf-btn"
-            onClick={downloadPdf}
-            disabled={downloadingPdf}
-            className="inline-flex items-center gap-2 px-3.5 py-2 border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-900 text-[13px] disabled:opacity-60"
-          >
-            {downloadingPdf ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
-            Download PDF
           </button>
         </div>
       </div>

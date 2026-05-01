@@ -8,12 +8,13 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator } from "lucide-react";
+import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator, LayoutGrid } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import AdditionsTab from "@/pages/fixed_assets/AdditionsTab";
 import CreditsTab from "@/pages/fixed_assets/CreditsTab";
 import ComputeTab from "@/pages/fixed_assets/ComputeTab";
+import SummaryTab from "@/pages/fixed_assets/SummaryTab";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -275,10 +276,11 @@ export default function FixedAssetsLanding() {
         {/* Tab bar */}
         <div className="flex items-center gap-1 mb-4 border-b border-[#E5E5E0]">
           {[
-            ["ledgers",   "Ledgers",          BookOpen,    summary.total_ledgers || 0],
-            ["credits",   "Credits",          ArrowDown,   summary.credits || 0],
-            ["additions", "Additions",        FileText,    summary.additions || 0],
-            ["compute",   "Compute & Export", Calculator,  null],
+            ["ledgers",   "Ledgers",     BookOpen,    summary.total_ledgers || 0],
+            ["credits",   "Credits",     ArrowDown,   summary.credits || 0],
+            ["additions", "Additions",   FileText,    summary.additions || 0],
+            ["compute",   "Compute",     Calculator,  null],
+            ["summary",   "Summary",     LayoutGrid,  null],
           ].map(([id, label, Icon, count]) => (
             <button
               key={id}
@@ -380,6 +382,7 @@ export default function FixedAssetsLanding() {
         {tab === "additions" && <AdditionsTab rid={rid} blocks={blocks}/>}
         {tab === "credits"   && <CreditsTab rid={rid}/>}
         {tab === "compute"   && <ComputeTab rid={rid}/>}
+        {tab === "summary"   && <SummaryTab rid={rid}/>}
       </div>
     </div>
   );

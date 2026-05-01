@@ -1,0 +1,50 @@
+{
+  "summary": "Frontend-only regression on FA Summary tab (run 0e4cc62f-52f9-4668-b598-f60bd0c52803 / cli_7f0b86b1ab0b). All acceptance items pass: tab wiring, Compute tab cleanup, Summary render, KPI strip, validation/OCR cards, audit-flag grid, MIS counts, block breakdown, top 10 additions, top 5 suppliers, adjustment strip, quarterly chart, and Excel + PDF downloads.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "FA Landing — Ledgers workbench filter (pre-existing, NOT in scope of this change)", "issues": ["React hydration warning: '<span> cannot be a child of <option>' on fa-filter select — caused by visual-editor instrumentation wrapping option labels in <span>. Cosmetic console warning only; no functional impact. Worth noting for a later cleanup."]}
+    ]
+  },
+  "verified": {
+    "tab_wiring": "fa-tab-compute label='Compute', fa-tab-summary present (LayoutGrid icon) immediately after Compute.",
+    "compute_tab_cleanup": "fa-compute-btn present; fa-export-btn ABSENT; fa-export-pdf-btn ABSENT; copy mentions 'Summary' tab 2x.",
+    "summary_tab_testids_found": [
+      "fa-summary-tab", "fa-summary-kpis", "fa-summary-validation", "fa-summary-ocr",
+      "fa-summary-flags", "fa-flag-missing_ptu", "fa-flag-ptu_after_fy_end",
+      "fa-flag-zero_or_negative_cost", "fa-flag-missing_party", "fa-flag-unreviewed",
+      "fa-flag-discount_pending", "fa-summary-counts", "fa-mis-addn", "fa-mis-merged",
+      "fa-mis-disc", "fa-mis-sales", "fa-mis-halfrate", "fa-summary-blocks",
+      "fa-summary-top-additions", "fa-summary-top-suppliers", "fa-summary-adjustments",
+      "fa-summary-quarterly", "fa-summary-downloads", "fa-summary-download-xlsx",
+      "fa-summary-download-pdf"
+    ],
+    "kpi_tiles": "5 tiles rendered (Opening WDV ₹3.01 Cr, Capitalised Adds ₹2.63 Cr, Sales ₹50 k, Depreciation ₹72.92 L, Closing WDV ₹4.90 Cr) with both compact and exact ₹ values.",
+    "validation_card": "Shows 'No validation run yet' italic copy — matches expected (no validation persisted).",
+    "ocr_card": "29.5% · 28 of 95 additions linked · Attached ₹36,75,991.17 / Unattached ₹2,37,24,554.39 · '4 uploads pending — 27 chunks unapplied'. Rose progress bar (<50%).",
+    "audit_flags": "Header shows '1 open'. Only 'Un-reviewed additions' has count 50 (amber); all 5 others count 0 (slate). Matches spec.",
+    "mis_counts": "6 stat cards — 21 Active Ledgers · 95 Capitalised Additions (₹2,74,00,545.56) · 6 Merged · 3 Discount lines · 1 Sale (₹50k) · 40 Half-rate pool (₹1,63,29,402.25).",
+    "block_breakdown": "5 rows sorted desc by rate (40% Computers, 40% P&M, 15% P&M, 15% Vehicles, 10% Furniture).",
+    "top_additions": "10 rows, rank + desc + supplier + block + PTU + '½ rate' flag where applicable + compact ₹.",
+    "top_suppliers": "5 suppliers with bar proportional to value (Alpine Knits ₹2.03 Cr dominant).",
+    "adjustments": "5 rows (Other Expenses 4/₹1.85L, ITC Reversed 2/₹57.5k, Interest Capitalised 1/₹18.3k, Forex 0, Discounts/Credits 0 with '−' badge).",
+    "quarterly": "5 bars rendered (screenshot confirms chart present at bottom).",
+    "downloads": "Excel = IT_Depreciation_Allman_Knitwear_FY2024-25.xlsx, 18,765 bytes (>5KB). PDF = IT_Depreciation_Allman_Knitwear_FY2024-25.pdf, 25,549 bytes (>5KB). Both trigger browser download via blob."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: Pre-existing hydration warning on fa-filter <select> options (visual-editor wrapping with <span>) — unrelated to this change but flagged for future cleanup.",
+    "SummaryTab.jsx imports `useMemo` used only in QuarterlyChart (fine); no other code smells spotted. Component stays at 578 lines — still readable but approaching split threshold.",
+    "Single GET /summary call on tab mount is snappy and avoids waterfall calls — good pattern."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (per request)", "frontend": "100%"},
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin). Valid.",
+  "seed_data_creation": "None — used the existing demo run as instructed; state left untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "FA Summary tab fully wired and passing end-to-end on the demo run. Excel/PDF downloads now live only on Summary tab. Compute tab has only Compute button (no export CTAs). One pre-existing hydration warning in Ledgers workbench <select> options is unrelated."
+}

@@ -30,6 +30,7 @@ from modules.fixed_assets.additions_xlsx import (
 from modules.fixed_assets.compute import compute_run
 from modules.fixed_assets.export import build_workbook
 from modules.fixed_assets.pdf_export import build_pdf as build_fa_pdf
+from modules.fixed_assets.summary import build_summary as build_fa_summary
 from modules.fixed_assets.block_opening_xlsx import (
     build_workbook as build_block_opening_workbook,
     parse_workbook as parse_block_opening_workbook,
@@ -2440,6 +2441,62 @@ async def export_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{pdf_filename}"'},
+    )
+
+
+@router.get("/runs/{rid}/summary")
+async def run_summary(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Comprehensive MIS + audit-risk dashboard for the Summary tab.
+    Single endpoint so the FE doesn't have to fan out 8 calls."""
+    await _auth(request, session_token, authorization)
+    inputs = await _gather_compute_inputs(rid)
+    rows, totals = compute_run(
+        openings=inputs["openings"],
+        blocks_meta=inputs["blocks_meta"],
+        additions=inputs["additions"],
+        deletions=inputs["credits"],
+    )
+    # Pull raw addition rows (without the synthetic discount pseudo-rows
+    # that compute requires) so the audit-flag stats don't include them.
+    raw_additions = await ADDITIONS.find({"run_id": rid}, {"_id": 0}).to_list(10000)
+    led_map: Dict[str, Dict[str, Any]] = {}
+    async for L in LEDGERS.find(
+        {"run_id": rid},
+        {"_id": 0, "fa_ledger_id": 1, "name": 1, "block_label": 1},
+    ):
+        led_map[L["fa_ledger_id"]] = L
+    for a in raw_additions:
+        Ldoc = led_map.get(a.get("fa_ledger_id", ""), {})
+        a.setdefault("ledger_name", Ldoc.get("name", ""))
+        a.setdefault("block_label", Ldoc.get("block_label", ""))
+    ledgers = list(led_map.values())
+    # OCR attachment coverage
+    attached_ids = set()
+    async for x in INVOICE_ATTACH.find({"run_id": rid},
+                                        {"_id": 0, "addition_id": 1}):
+        if x.get("addition_id"):
+            attached_ids.add(x["addition_id"])
+    pending_uploads = await PENDING_UPLOADS_COL.find(
+        {"run_id": rid},
+        {"_id": 0, "upload_id": 1, "status": 1, "chunks": 1,
+         "applied_chunk_indexes": 1},
+    ).to_list(2000)
+    run_doc = await RUNS.find_one({"id": rid}, {"_id": 0}) or inputs["run"]
+    return build_fa_summary(
+        run=run_doc,
+        ledgers=ledgers,
+        additions=raw_additions,
+        credits=inputs["credits"],
+        blocks_meta=inputs["blocks_meta"],
+        compute_rows=rows,
+        compute_totals=totals,
+        attached_addition_ids=attached_ids,
+        pending_uploads=pending_uploads,
     )
 
 
