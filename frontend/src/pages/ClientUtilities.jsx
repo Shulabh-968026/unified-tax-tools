@@ -30,6 +30,8 @@ export default function ClientUtilities() {
       navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation`);
     } else if (u.id === "fixed-assets") {
       navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets`);
+    } else if (u.id === "fin-statement") {
+      navigate(`/dashboard/clients/${clientId}/utilities/fin-statement`);
     }
   };
 

@@ -18,6 +18,8 @@ import GstReconLanding from "@/pages/gst_recon/Landing";
 import BcLanding from "@/pages/balance_confirmation/Landing";
 import BcConfirmPage from "@/pages/balance_confirmation/ConfirmPage";
 import FixedAssetsLanding from "@/pages/fixed_assets/Landing";
+import FsDesignerLanding from "@/pages/fin_statement/Landing";
+import FsRunPage from "@/pages/fin_statement/RunPage";
 
 function AppRouter() {
   const location = useLocation();
@@ -42,6 +44,8 @@ function AppRouter() {
       <Route path="/dashboard/clients/:clientId/utilities/balance-confirmation/runs/:rid" element={<ProtectedRoute><BcLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/fixed-assets" element={<ProtectedRoute><FixedAssetsLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/fixed-assets/runs/:rid" element={<ProtectedRoute><FixedAssetsLanding/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/fin-statement" element={<ProtectedRoute><FsDesignerLanding/></ProtectedRoute>}/>
+      <Route path="/dashboard/clients/:clientId/utilities/fin-statement/runs/:rid" element={<ProtectedRoute><FsRunPage/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><MappingDashboard/></ProtectedRoute>}/>
       <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><ReportDashboard/></ProtectedRoute>}/>
       <Route path="*" element={<Navigate to="/dashboard" replace/>}/>

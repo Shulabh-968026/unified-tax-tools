@@ -1,13 +1,13 @@
-import { ArrowRight, Lock, FileText, Receipt, Scales, Buildings, FileMagnifyingGlass, Wrench, Handshake, CurrencyCircleDollar, ArrowsLeftRight } from "@phosphor-icons/react";
+import { ArrowRight, Lock, FileText, Scales, Buildings, FileMagnifyingGlass, Wrench, Handshake, CurrencyCircleDollar, ArrowsLeftRight, ChartLine } from "@phosphor-icons/react";
 import { ACCENTS } from "@/lib/colors";
 
 // id matches a route under /dashboard/clients/:clientId/utilities/<id>
 export const UTILITIES = [
   { id: "gst-turnover-recon", title: "GST Turnover Recon", description: "Reconcile turnover declared in books against GSTR-1, GSTR-3B and GSTR-9.", icon: ArrowsLeftRight, status: "active", accent: "indigo" },
-  { id: "tds-disallowance",   title: "TDS Disallowance & Recon", description: "Identify Section 40(a)(ia) disallowances; reconcile TDS deducted vs deposited.", icon: Scales, status: "soon", accent: "teal" },
+  { id: "tds-recon",          title: "TDS Reconciliation", description: "Section 40(a)(ia) disallowance, TDS deducted vs deposited, and Clause 34 — 3CD disclosure under one roof.", icon: Scales, status: "soon", accent: "teal" },
   { id: "msme-43bh",          title: "43BH MSME Disallowance", description: "Section 43B(h) disallowance for delayed payments to MSME suppliers.", icon: Buildings, status: "active", accent: "amber" },
   { id: "clause-44",          title: "Clause 44 — 3CD", description: "Expenditure schedule with ITC + exclusion mapping, drill-down and Excel breakup.", icon: FileText, status: "active", accent: "emerald" },
-  { id: "clause-34",          title: "TDS Clause 34 — 3CD", description: "Tax deducted/collected at source disclosure with section-wise summary.", icon: Receipt, status: "soon", accent: "sky" },
+  { id: "fin-statement",      title: "Financial Statement Designer", description: "Tally JSON → Schedule III Balance Sheet, P&L, Cash Flow & Notes — rendered as a signature-ready PDF in two designer templates.", icon: ChartLine, status: "active", accent: "sky" },
   { id: "ais-tis-26as",       title: "AIS / TIS / 26AS Recon", description: "Cross-walk income reported to books across AIS, TIS and Form 26AS.", icon: FileMagnifyingGlass, status: "soon", accent: "violet" },
   { id: "fixed-assets",       title: "Fixed Assets", description: "Income-tax depreciation: block register, additions, deletions, FY continuity.", icon: Wrench, status: "active", accent: "slate" },
   { id: "balance-confirmation", title: "Balance Confirmation", description: "Generate and track third-party balance confirmation requests.", icon: Handshake, status: "active", accent: "rose" },
