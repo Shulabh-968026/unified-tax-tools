@@ -1,5 +1,33 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — PDF additions register grouped by block (2026-05-01 PM-3)
+
+The A4 PDF working-paper now groups the additions register by **IT block** with sticky-style sub-headers — the user's exact ask: "32 assets · ₹2.34 Cr" pattern.
+
+### Implementation (`pdf_export.py`)
+- New `_block_header_strip(block_label, rate, count, total, widths)` — slate-900 strip spanning the full table width: left = bold white block label + yellow rate pill; right = muted "<N> assets · ₹<total>" summary.
+- New `_column_header_strip(widths)` — slate-50 sub-header (PTU DATE · PARTICULARS / SUPPLIER · CAPITALISED COST) repeated under each block strip so the columns stay self-documenting.
+- `_asset_card(a, widths)` extracted as a helper; the block_label was removed from Row B's metadata strip since the block name is already shouted at the top of the group.
+- `_additions_section(additions, block_meta)` groups by `block_label`, orders groups by descending rate, sorts cards within a group by PTU date, and uses `KeepTogether` on `[block_strip + column_header + first_card]` so a sub-header is never orphaned at the bottom of a page.
+- `build_pdf` accepts an optional `block_meta` arg; the controller passes `inputs["blocks_meta"]` so the rate pill is correct even for blocks that have no current-year activity.
+
+### Layout polish
+- Block summary table column widths recalibrated to **180 mm** total (was overflowing): 48+10+22+22+22+17+17+22 = 180. Dedicated `summ_th/summ_l/summ_r/summ_b` paragraph styles at 7.5 pt to keep all 8-digit ₹ values single-line in a 22-mm column.
+
+### Tests
+- `tests/test_fixed_assets_3cd_gate_pdf.py::test_export_pdf_groups_additions_by_block` — extracts text via pdfplumber and asserts the three active block sub-headers + asset-count strings + new "grouped by IT Block" copy. GREEN.
+- Cumulative regression: **23/23 GREEN** across all FA test modules. Demo run state preserved (5 active blocks, 98 capitalised assets).
+
+### What the auditor sees
+On page 2+ of the PDF the additions are now organised as:
+
+1. `Additions Register · 98 asset(s) capitalised in this run, grouped by IT Block.`
+2. **40% Block – Computers**  40%  →  9 assets · ₹4,31,500 (slate strip)
+   - cards in PTU-date order …
+3. **40% Block – Plant & Machinery**  40%  →  N assets · ₹X
+4. **15% Block – Plant & Machinery**  15%  →  49 assets · ₹2,26,81,637.92
+5. … and so on, descending rate.
+
 ## Fixed Assets — Compute gate, zero-row skip, A4 PDF (2026-05-01 PM-2)
 
 Three asks landed together:

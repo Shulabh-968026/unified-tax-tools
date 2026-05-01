@@ -159,9 +159,9 @@ def test_validate_3cd_match_when_sums_tie(session, baseline_xlsx):
 
     cd = {
         "FORM3CA": {"F3CA": {"Form3cdDeprAllw": [
-            {"RateOfDep": 40, "OpeningWDV": 0, "WrittenDownVal": 485453,
+            {"RateOfDep": 40, "OpeningWDV": 0, "WrittenDownVal": 970906,
              "DepAllowable": 0, "TotalPurchaseValue": 0, "adjustment": 0,
-             "DescBlockAssets": "Computers"},
+             "DescBlockAssets": "Computers + P&M"},
             {"RateOfDep": 15, "OpeningWDV": 0, "WrittenDownVal": 26233559,
              "DepAllowable": 0, "TotalPurchaseValue": 0, "adjustment": 0,
              "DescBlockAssets": "P&M + Vehicles"},

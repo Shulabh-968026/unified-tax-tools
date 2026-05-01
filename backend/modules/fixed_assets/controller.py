@@ -2432,6 +2432,7 @@ async def export_pdf(
         rows=rows,
         totals=totals,
         additions=inputs["additions"],
+        block_meta=inputs["blocks_meta"],
     )
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (client_name or "client"))[:40]
     pdf_filename = f"IT_Depreciation_{safe}_FY{fy_label}.pdf"

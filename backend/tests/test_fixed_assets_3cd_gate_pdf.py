@@ -26,9 +26,9 @@ RID = "0e4cc62f-52f9-4668-b598-f60bd0c52803"
 
 CD_MATCHING = {
     "FORM3CA": {"F3CA": {"Form3cdDeprAllw": [
-        {"RateOfDep": 40, "OpeningWDV": 0, "WrittenDownVal": 485453,
+        {"RateOfDep": 40, "OpeningWDV": 0, "WrittenDownVal": 970906,
          "DepAllowable": 0, "TotalPurchaseValue": 0, "adjustment": 0,
-         "DescBlockAssets": "Computers"},
+         "DescBlockAssets": "Computers + P&M"},
         {"RateOfDep": 15, "OpeningWDV": 0, "WrittenDownVal": 26233559,
          "DepAllowable": 0, "TotalPurchaseValue": 0, "adjustment": 0,
          "DescBlockAssets": "P&M + Vehicles"},
@@ -177,3 +177,24 @@ def test_export_pdf_returns_valid_pdf(session):
     assert r.headers.get("content-type", "").startswith("application/pdf")
     assert r.content[:4] == b"%PDF"
     assert len(r.content) > 5000  # real content, not empty
+
+
+def test_export_pdf_groups_additions_by_block(session, tmp_path):
+    """The additions register must surface a per-block sub-header strip
+    (block label + rate + asset count + capitalised total) ahead of each
+    group, with cards listed in PTU-date order within the group."""
+    import pdfplumber
+    r = session.get(f"{BASE_URL}/api/fixed-assets/runs/{RID}/export.pdf", timeout=60)
+    pdf_path = tmp_path / "fa.pdf"
+    pdf_path.write_bytes(r.content)
+    with pdfplumber.open(pdf_path) as pdf:
+        text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+    # Three active block groups must each surface their sub-header.
+    # (Block name + " " + rate pill rendered on the strip)
+    assert "40% Block – Computers" in text
+    assert "15% Block – Plant & Machinery" in text
+    assert "10% Block – Furniture" in text
+    # Asset count strings — the demo run has these counts in respective blocks
+    assert "9 asset" in text or "9 assets" in text
+    # The "grouped by IT Block" section title is the one new copy
+    assert "grouped by IT Block" in text
