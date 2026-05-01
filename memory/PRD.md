@@ -1,5 +1,24 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — Discount/Credit row merge into a parent asset (2026-05-01 AM-2)
+
+User screenshot showed that rose-tinted **Discount/Credit rows** in the Additions tab had no 🔗 Merge button, so an auditor couldn't net a debit-note/discount off against a specific asset purchase. Now they can.
+
+### Backend (`controller.py`)
+- `_unlink_addition()` branches on `aid.startswith("discount-")` — for discount aids it looks up the credit doc, decrements the parent's `<linked_as>` column by `abs(credit.amount)`, and clears `parent_addition_id` + `linked_as` on the credit (linkage is persisted on `fa_credits`, not `fa_additions`).
+- `link_addition()` has a dedicated discount-credit branch: validates the credit exists and is classified as `discount`, resolves the credit's block via `fa_ledgers`, enforces same-block coherence with the parent, and persists the linkage on the credit doc. Re-fetches the parent **after** the idempotent `_unlink_addition` call so re-linking the same credit no longer double-counts (also fixed for the regular-addition branch).
+- `classify_credit()` auto-unlinks before transitioning out of `discount` (sale or pending), so the parent's adjustment column doesn't keep a stale value after reclassification.
+- `GET /runs/{rid}/additions` and the xlsx export now propagate `parent_addition_id` + `linked_as` from the credit doc onto the synthetic `discount-<credit_id>` row, so the UI's existing `MergedRow` component renders it as a compact "↳ Merged" strip without changes.
+- `_gather_compute_inputs()` skips discount credits with `parent_addition_id` to avoid double-subtract — the magnitude is already netted into the parent's `discount_credits` (or other) column at link time.
+
+### Frontend
+- `AdditionRow.jsx` — link button now renders on locked discount rows too (rose hover, distinct tooltip).
+- `MergeModal.jsx` — when `child.source==='discount_credit'`: header reads "Net discount / credit", a rose-tinted hint banner appears, and `linked_as` defaults to `discount_credits` (instead of `other_expenses`).
+
+### Tests
+- New `tests/test_fixed_assets_discount_merge.py` — 9/9 GREEN: link routes magnitude into chosen column, idempotent re-link does NOT double, switching `linked_as` moves cleanly between columns, unlink restores parent + clears credit, compute totals are invariant under link/unlink (₹6,226,269.16 baseline preserved), self-link rejected (400), unknown parent (404), bogus column (400), reclassify discount→sale auto-clears the linkage.
+- Frontend (Playwright iteration_12) — 4/4 acceptance points GREEN: link button visible on discount rows, modal opens with new header + Discounts/Credits pre-selected, merge writes "↳ Merged · ₹7,582.00 · as Discounts/Credits" strip, unlink reverts cleanly. Final cleanup + compute re-baselined.
+
 ## Fixed Assets — One-click bulk attach + GST-aware matcher (2026-05-01 AM-1)
 
 Three closely-linked changes that together turn the OCR pipeline from "review every chunk" into "trust + verify".
