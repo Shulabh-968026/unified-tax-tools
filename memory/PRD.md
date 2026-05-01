@@ -1,5 +1,42 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Fixed Assets — One-click bulk attach + GST-aware matcher (2026-05-01 AM-1)
+
+Three closely-linked changes that together turn the OCR pipeline from "review every chunk" into "trust + verify".
+
+### #1 — GST-aware matcher (the real unlock)
+Watching the user's video revealed the matcher's blind spot: **Tally books fixed assets NET of input GST** (the GST goes to a separate ITC ledger), but Gemini extracts the **gross** total from the invoice. So `invoice_cost = ₹63,600` and `total_value = ₹75,048` with a 18% GST gap that pass-2 was rejecting.
+
+The matcher now compares against BOTH `total_value` AND `taxable_value` (the OCR already extracts the taxable line). If either matches the addition's `invoice_cost` within tolerance — same row wins. Tested on `COMPUTER_GST_18.pdf`: was 0 / 9 auto-matches → now **8 / 9 high-confidence**, with the 9th genuinely having no Tally row.
+
+### #2 — Confidence tiers
+Every match now carries `confidence: "high" | "medium" | "low"` instead of just a score:
+| Trigger | Confidence |
+|---|---|
+| Exact normalised invoice number match | high |
+| Total/taxable within ±₹1 + GSTIN match | high |
+| Total/taxable within ±₹1 + party fuzzy ≥85 | high |
+| Total/taxable within ±0.5% + party ≥80 | medium |
+| Fuzzy invoice number (≥85) + party ≥70 | low |
+
+Inline backfill on every read (`_infer_confidence_from_method`) means chunks stored before this change still get the new UI. The matcher returns `best_high` first, falls back to `best_medium` only if pass-3 fuzzy doesn't beat it.
+
+### #3 — One-click apply (two trigger points)
+**Backend** — `POST /runs/{rid}/apply-all-high-confidence` sweeps every `done` pending upload, attaches every chunk with `confidence: "high"` (skipping already-applied), overwrites each target row's description, and returns `{total_attached, total_descriptions, uploads_processed, per_upload: [...]}`. Single transaction, single HTTP call.
+
+`GET /runs/{rid}/invoice-inbox` now also returns `total_high_conf_pending` at the top level + `high_conf_pending` per row for badge rendering.
+
+**Frontend — two trigger points:**
+1. **Inside the modal** (when reviewing one PDF) — emerald banner above the chunk list: `⚡ N high-confidence matches found — pre-selected with description overwrite` and `[⚡ Apply all N]` button. Confirm dialog before commit.
+2. **On the inbox panel** (sweep all pending uploads) — `[⚡ Auto-apply N]` button next to the refresh icon, only visible when `total_high_conf_pending > 0`. Confirm dialog: *"Across X inbox uploads: Y high-confidence matches will be attached and Y asset descriptions overwritten."*
+
+Per-chunk confidence pills (`★ High` emerald, `medium` amber, `low` slate) render inside each chunk card so the auditor can always see which matches were trusted.
+
+### End-to-end verified
+- Backend smoke: upload `COMPUTER_GST_18.pdf` → 8 high-conf matches detected → sweep returns `{total_attached: 8, total_descriptions: 8}` → 8 rows now carry audit-grade descriptions like "Dell Monitor", "HP LaserJet Pro", "Processor i3 12th Gen, Motherboard, RAM, SSD, HDD, Monitor".
+- Frontend Playwright (Resume + sweep): inbox sweep button shows `Auto-apply 8`, modal banner shows `[⚡ Apply all 8]`, 8/9 chunks carry the green `★ High` confidence pill.
+- Backend lint clean. Frontend lint clean.
+
 ## Fixed Assets — Inbox + Multi-PDF + Ledger-aware OCR (2026-04-30 PM-6)
 
 Four user-driven changes shipped together; all backend smoke-tested + frontend Playwright-verified.

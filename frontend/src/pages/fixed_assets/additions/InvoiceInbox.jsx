@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Inbox, Loader2, FileScan, AlertCircle, CheckCircle2, Trash2,
-  RotateCw, ChevronDown, ChevronRight, BookMarked,
+  RotateCw, ChevronDown, ChevronRight, BookMarked, Zap,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -18,17 +18,19 @@ import { toast } from "sonner";
  */
 export function InvoiceInbox({ rid, refreshKey, onResume, refreshAdditions }) {
   const [rows, setRows] = useState([]);
+  const [totalHighConfPending, setTotalHighConfPending] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [sweeping, setSweeping] = useState(false);
 
   const refresh = async () => {
     if (!rid) return;
     try {
       const { data } = await http.get(`/fixed-assets/runs/${rid}/invoice-inbox`);
       setRows(data?.rows || []);
+      setTotalHighConfPending(data?.total_high_conf_pending || 0);
     } catch (e) {
-      // Silent — inbox is non-critical UI; surface only if explicitly missing.
       if (e?.response?.status && e.response.status !== 404) {
         toast.error(e?.response?.data?.detail || "Could not load invoice inbox");
       }
@@ -67,20 +69,42 @@ export function InvoiceInbox({ rid, refreshKey, onResume, refreshAdditions }) {
     } finally { setBusyId(null); }
   };
 
+  const sweepAll = async () => {
+    if (!totalHighConfPending) return;
+    const uploadCount = rows.filter(r => r.high_conf_pending > 0).length;
+    const confirmMsg =
+      `Across ${uploadCount} inbox upload${uploadCount === 1 ? "" : "s"}: `
+      + `${totalHighConfPending} high-confidence match${totalHighConfPending === 1 ? "" : "es"} `
+      + `will be attached and ${totalHighConfPending} asset description${totalHighConfPending === 1 ? "" : "s"} overwritten.\n\nApply all?`;
+    if (!window.confirm(confirmMsg)) return;
+    setSweeping(true);
+    try {
+      const { data } = await http.post(`/fixed-assets/runs/${rid}/apply-all-high-confidence`);
+      toast.success(
+        `${data.total_attached} attached · ${data.total_descriptions} descriptions updated `
+        + `across ${data.uploads_processed} upload${data.uploads_processed === 1 ? "" : "s"}`,
+      );
+      refresh();
+      refreshAdditions?.();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Sweep apply failed");
+    } finally { setSweeping(false); }
+  };
+
   return (
     <div className="border border-[#E5E5E0] bg-white" data-testid="fa-invoice-inbox">
-      <button
-        type="button"
-        onClick={() => setCollapsed(c => !c)}
-        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-[#FAFAF7] text-left"
-        data-testid="fa-invoice-inbox-toggle"
-      >
-        <div className="flex items-center gap-2 text-[12.5px]">
+      <div className="w-full flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-[#FAFAF7]">
+        <button
+          type="button"
+          onClick={() => setCollapsed(c => !c)}
+          className="flex items-center gap-2 text-[12.5px] flex-1 min-w-0 text-left"
+          data-testid="fa-invoice-inbox-toggle"
+        >
           {collapsed ? <ChevronRight size={13} className="text-slate-500"/> : <ChevronDown size={13} className="text-slate-500"/>}
           <Inbox size={14} className="text-sky-700"/>
           <span className="font-semibold text-slate-800">Invoice Inbox</span>
           <span className="text-slate-500">·</span>
-          <span className="font-mono text-[11px] text-slate-600">
+          <span className="font-mono text-[11px] text-slate-600 truncate">
             {total} upload{total === 1 ? "" : "s"}
             {proc > 0 && (
               <span className="ml-2 text-amber-700">
@@ -93,17 +117,38 @@ export function InvoiceInbox({ rid, refreshKey, onResume, refreshAdditions }) {
                 {pending} chunk{pending === 1 ? "" : "s"} unattached
               </span>
             )}
+            {totalHighConfPending > 0 && (
+              <span className="ml-2 text-emerald-800">
+                <Zap size={10} className="inline mr-0.5"/>
+                {totalHighConfPending} high-conf
+              </span>
+            )}
           </span>
-        </div>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); refresh(); }}
-          className="text-slate-400 hover:text-slate-700 p-1"
-          title="Refresh"
-        >
-          <RotateCw size={11}/>
         </button>
-      </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {totalHighConfPending > 0 && (
+            <button
+              type="button"
+              onClick={sweepAll}
+              disabled={sweeping}
+              data-testid="fa-invoice-sweep-btn"
+              title={`Auto-apply ${totalHighConfPending} high-confidence matches across all inbox uploads`}
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11.5px] bg-emerald-700 hover:bg-emerald-800 text-white disabled:opacity-50"
+            >
+              {sweeping ? <Loader2 size={11} className="animate-spin"/> : <Zap size={11}/>}
+              Auto-apply {totalHighConfPending}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={refresh}
+            className="text-slate-400 hover:text-slate-700 p-1"
+            title="Refresh"
+          >
+            <RotateCw size={11}/>
+          </button>
+        </div>
+      </div>
 
       {!collapsed && (
         <div className="border-t border-[#EDEDE7]">
@@ -152,6 +197,12 @@ export function InvoiceInbox({ rid, refreshKey, onResume, refreshAdditions }) {
                         )}
                         {r.pending > 0 && (
                           <span className="text-rose-700">{r.pending} pending</span>
+                        )}
+                        {r.high_conf_pending > 0 && (
+                          <span className="text-emerald-800 font-semibold">
+                            <Zap size={10} className="inline mr-0.5"/>
+                            {r.high_conf_pending} high-conf
+                          </span>
                         )}
                       </>
                     )}

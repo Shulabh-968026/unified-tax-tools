@@ -902,13 +902,18 @@ async def _fetch_chunk_pdf(upload_id: str, chunk_index: int) -> Optional[str]:
 
 
 def _strip_chunk_for_payload(c: Dict[str, Any]) -> Dict[str, Any]:
-    """Drop heavy fields from a stored chunk before shipping to the browser."""
+    """Drop heavy fields from a stored chunk before shipping to the browser.
+    Stamps an inferred `confidence` on the match so older chunks (stored
+    before the matcher recorded one) still get the new high/medium/low UI."""
+    m = c.get("match")
+    if m and "confidence" not in m:
+        m = {**m, "confidence": _infer_confidence_from_method(m)}
     return {
         "chunk_index":         c.get("chunk_index"),
         "page_range":          c.get("page_range"),
         "pdf_size":            c.get("pdf_size"),
         "extraction":          c.get("extraction"),
-        "match":               c.get("match"),
+        "match":               m,
         "applied":             bool(c.get("applied")),
         "applied_addition_id": c.get("applied_addition_id"),
         "applied_at":          c.get("applied_at"),
@@ -1235,6 +1240,28 @@ async def apply_invoice_uploads(
     return {"ok": True, "attached": saved, "descriptions_updated": descriptions_updated}
 
 
+def _infer_confidence_from_method(match: Optional[Dict[str, Any]]) -> str:
+    """Backwards-compat: derive a confidence tier for chunks stored before
+    the matcher started recording one explicitly."""
+    if not match:
+        return "none"
+    if match.get("confidence") in ("high", "medium", "low"):
+        return match["confidence"]
+    method = match.get("method") or ""
+    score  = match.get("score") or 0
+    if method == "exact_inv_no":
+        return "high"
+    if method == "gstin_plus_total" and score >= 90:
+        return "high"
+    if method == "party_plus_total" and score >= 90:
+        return "high"
+    if method in ("gstin_plus_total", "party_plus_total"):
+        return "medium"
+    if method == "fuzzy_inv_no":
+        return "low"
+    return "low"
+
+
 @router.get("/runs/{rid}/invoice-inbox")
 async def invoice_inbox(
     rid: str,
@@ -1254,9 +1281,17 @@ async def invoice_inbox(
     ).sort([("created_at", -1)]).to_list(500)
 
     out = []
+    total_high_conf_pending = 0
     for r in rows:
         chunks = r.get("chunks") or []
         applied = sum(1 for c in chunks if c.get("applied"))
+        # High-confidence chunks that are still PENDING (not already attached)
+        high_conf_pending = sum(
+            1 for c in chunks
+            if not c.get("applied")
+            and _infer_confidence_from_method(c.get("match")) == "high"
+        )
+        total_high_conf_pending += high_conf_pending
         out.append({
             "upload_id":    r["upload_id"],
             "filename":     r.get("filename", ""),
@@ -1271,8 +1306,113 @@ async def invoice_inbox(
             "total_chunks": len(chunks),
             "applied":      applied,
             "pending":      len(chunks) - applied,
+            "high_conf_pending": high_conf_pending,
         })
-    return {"rows": out}
+    return {"rows": out, "total_high_conf_pending": total_high_conf_pending}
+
+
+@router.post("/runs/{rid}/apply-all-high-confidence")
+async def apply_all_high_confidence(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Sweep every `done` pending upload, attach every chunk whose match
+    confidence is 'high' (and isn't already applied), and overwrite each
+    target row's description with the OCR-extracted asset line.
+
+    Returns a per-upload summary so the UI can show
+    "Across 3 uploads: 8 invoices attached · 8 descriptions updated".
+    """
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+
+    pendings = await PENDING_UPLOADS_COL.find(
+        {"run_id": rid, "status": "done"}, {"_id": 0},
+    ).to_list(500)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    total_attached = 0
+    total_descriptions = 0
+    per_upload: List[Dict[str, Any]] = []
+
+    for pending in pendings:
+        upload_id = pending["upload_id"]
+        filename  = pending.get("filename", "")
+        u_attached = 0
+        u_descs    = 0
+        for chunk in (pending.get("chunks") or []):
+            if chunk.get("applied"):
+                continue
+            m = chunk.get("match") or {}
+            if _infer_confidence_from_method(m) != "high":
+                continue
+            aid = m.get("addition_id")
+            if not aid:
+                continue
+            add = await ADDITIONS.find_one(
+                {"run_id": rid, "addition_id": aid}, {"_id": 0, "addition_id": 1},
+            )
+            if not add:
+                continue
+            ci = int(chunk["chunk_index"])
+            chunk_pdf_b64 = await _fetch_chunk_pdf(upload_id, ci)
+            if not chunk_pdf_b64:
+                continue
+            ext = chunk.get("extraction") or {}
+            await INVOICE_ATTACH.replace_one(
+                {"run_id": rid, "addition_id": aid},
+                {
+                    "run_id":         rid,
+                    "addition_id":    aid,
+                    "filename":       filename,
+                    "page_range":     chunk.get("page_range"),
+                    "pdf_size":       chunk.get("pdf_size"),
+                    "content_b64":    chunk_pdf_b64,
+                    "ocr_extraction": ext,
+                    "uploaded_at":    now_iso,
+                    "from_upload_id": upload_id,
+                },
+                upsert=True,
+            )
+            await PENDING_UPLOADS_COL.update_one(
+                {"upload_id": upload_id, "chunks.chunk_index": ci},
+                {"$set": {
+                    "chunks.$.applied":             True,
+                    "chunks.$.applied_addition_id": aid,
+                    "chunks.$.applied_at":          now_iso,
+                }},
+            )
+            u_attached += 1
+            if ext.get("description"):
+                await ADDITIONS.update_one(
+                    {"run_id": rid, "addition_id": aid},
+                    {"$set": {
+                        "description":   ext["description"][:500],
+                        "reviewed":      True,
+                        "last_modified": now_iso,
+                    }},
+                )
+                u_descs += 1
+        total_attached     += u_attached
+        total_descriptions += u_descs
+        per_upload.append({
+            "upload_id":              upload_id,
+            "filename":               filename,
+            "attached":               u_attached,
+            "descriptions_updated":   u_descs,
+        })
+
+    if total_attached > 0:
+        await _refresh_run_summary(rid)
+    return {
+        "ok":                   True,
+        "total_attached":       total_attached,
+        "total_descriptions":   total_descriptions,
+        "uploads_processed":    len([p for p in per_upload if p["attached"] > 0]),
+        "per_upload":           per_upload,
+    }
 
 
 @router.delete("/runs/{rid}/invoice-inbox/{upload_id}")

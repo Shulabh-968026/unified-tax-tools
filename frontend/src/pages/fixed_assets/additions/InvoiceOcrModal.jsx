@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, CheckCircle2, FileScan, Loader2,
-  Paperclip, Sparkles, X, BookMarked,
+  Paperclip, Sparkles, X, BookMarked, Zap,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -39,6 +39,40 @@ export function InvoiceUploadPreviewModal({
   );
 
   const update = (idx, patch) => setDraft(d => d.map((r, i) => i === idx ? { ...r, ...patch } : r));
+
+  // High-confidence pending chunks — eligible for one-click bulk apply.
+  const highConfChunks = useMemo(
+    () => (preview?.chunks || []).filter(c =>
+      !c.applied
+      && c.match?.confidence === "high"
+      && c.match?.addition_id,
+    ),
+    [preview?.chunks],
+  );
+
+  const applyAllHighConf = async () => {
+    if (!highConfChunks.length) return;
+    const ledgerLabel = detectedLedgerName ? ` across ${detectedLedgerName} ledger` : "";
+    const confirmMsg =
+      `${highConfChunks.length} high-confidence match${highConfChunks.length === 1 ? "" : "es"} will be attached and `
+      + `${highConfChunks.length} asset description${highConfChunks.length === 1 ? "" : "s"} overwritten${ledgerLabel}.\n\nApply all?`;
+    if (!window.confirm(confirmMsg)) return;
+    const selections = highConfChunks.map(c => ({
+      chunk_index:       c.chunk_index,
+      addition_id:       c.match.addition_id,
+      apply_description: !!c.extraction?.description,
+    }));
+    try {
+      const { data } = await http.post(
+        `/fixed-assets/runs/${rid}/apply-invoice-uploads`,
+        { upload_id: preview.upload_id, selections },
+      );
+      toast.success(`${data.attached} attached · ${data.descriptions_updated} descriptions updated`);
+      onApplied?.();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Apply failed");
+    }
+  };
 
   // Build the list of additions the dropdown shows — filter by ledger if set.
   const eligibleAdditions = useMemo(() => {
@@ -146,6 +180,32 @@ export function InvoiceUploadPreviewModal({
           </div>
         )}
 
+        {highConfChunks.length > 0 && (
+          <div
+            className="px-4 py-2.5 bg-emerald-50 border-b border-emerald-300 flex items-center gap-3 text-[12.5px] text-emerald-900"
+            data-testid="fa-invoice-highconf-banner"
+          >
+            <Zap size={14} className="text-emerald-700 shrink-0"/>
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold">
+                {highConfChunks.length} high-confidence match{highConfChunks.length === 1 ? "" : "es"} found
+              </span>
+              <span className="text-emerald-800 ml-2">
+                · pre-selected with description overwrite. Click below to apply all in one go.
+              </span>
+            </div>
+            <button
+              onClick={applyAllHighConf}
+              disabled={applying}
+              data-testid="fa-invoice-apply-highconf-btn"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-[12px] disabled:opacity-50 shrink-0"
+            >
+              {applying ? <Loader2 size={12} className="animate-spin"/> : <Zap size={12}/>}
+              Apply all {highConfChunks.length}
+            </button>
+          </div>
+        )}
+
         <div className="overflow-y-auto p-4 space-y-3 flex-1">
           {chunks.length === 0 ? (
             <div className="border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2">
@@ -249,6 +309,21 @@ function ChunkCard({ chunk, draft, onUpdate, additions, allAdditions, restrictLe
           <span className={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 border ${matched ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-amber-100 text-amber-800 border-amber-200"}`}>
             {matched ? `Matched · ${m.method}` : "Needs review"}
           </span>
+          {m?.confidence && (
+            <span
+              className={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 border ${
+                m.confidence === "high"
+                  ? "bg-emerald-700 text-white border-emerald-700"
+                  : m.confidence === "medium"
+                    ? "bg-amber-100 text-amber-800 border-amber-300"
+                    : "bg-slate-100 text-slate-600 border-slate-200"
+              }`}
+              data-testid={`fa-invoice-conf-${chunk.chunk_index}`}
+              title={`Match confidence: ${m.confidence}`}
+            >
+              {m.confidence === "high" ? "★ High" : m.confidence}
+            </span>
+          )}
           {matchOutOfFilter && (
             <span className="text-[10px] text-amber-700">
               <AlertCircle size={9} className="inline mr-0.5"/>

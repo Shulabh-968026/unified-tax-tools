@@ -19,7 +19,7 @@ import os
 import re
 import tempfile
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from emergentintegrations.llm.chat import (
     FileContentWithMimeType, LlmChat, UserMessage,
@@ -221,8 +221,19 @@ def match_invoice_to_addition(
 ) -> Optional[Dict[str, Any]]:
     """3-pass match: exact inv-no → GSTIN+total ± ₹1 → fuzzy inv-no.
 
+    Returns {addition_id, score, method, why, confidence} or None.
+
+    `confidence` tiers:
+      - "high"   — virtually certain. Pre-selected, overwrite-description
+                    pre-ticked, eligible for one-click bulk apply.
+                    Triggered by: exact normalised invoice-no match,
+                    GSTIN-equality + total within ±₹1, OR party fuzzy ≥85
+                    AND total within ±₹1.
+      - "medium" — likely match but worth a glance. Pre-selected but EXCLUDED
+                    from one-click bulk apply.
+      - "low"    — only fuzzy similarity. Not pre-selected for bulk apply.
+
     Skips additions that are merged children or discount-credit pseudo-rows.
-    Returns {addition_id, score, method, why} or None.
     """
     eligible = [
         a for a in additions
@@ -235,57 +246,109 @@ def match_invoice_to_addition(
     inv_no_n  = _norm_invno(invoice.get("invoice_no"))
     gstin     = invoice.get("supplier_gstin") or ""
     total     = float(invoice.get("total_value") or 0)
+    taxable   = float(invoice.get("taxable_value") or 0)
     sup_name  = invoice.get("supplier_name") or ""
 
-    # Pass 1 — exact normalised invoice number match
+    # The OCR extracts the gross total (incl. GST) from the invoice, but in
+    # Tally the fixed asset is usually booked NET of input GST (the GST is
+    # claimed as ITC against a separate ledger). Both shapes are valid match
+    # candidates — we try whichever is closer to the addition's invoice_cost.
+    #
+    # Returns the candidate values in priority order:  the closest match wins.
+    candidates_amount: List[Tuple[float, str]] = []
+    if total > 0:
+        candidates_amount.append((total, "total"))
+    if taxable > 0 and abs(taxable - total) > 1:
+        candidates_amount.append((taxable, "taxable"))
+
+    # Pass 1 — exact normalised invoice number match (highest confidence)
     if inv_no_n:
         for a in eligible:
             if _norm_invno(a.get("invoice_no")) == inv_no_n:
-                return {"addition_id": a["addition_id"], "score": 100, "method": "exact_inv_no",
-                        "why": f"invoice_no '{a.get('invoice_no')}' matches"}
+                return {
+                    "addition_id": a["addition_id"], "score": 100,
+                    "method": "exact_inv_no", "confidence": "high",
+                    "why": f"invoice_no '{a.get('invoice_no')}' matches",
+                }
 
-    # Pass 2 — GSTIN + total ±tolerance (or party_name + total when GSTIN missing)
-    if total > 0:
-        tol = max(tol_rupees, total * tol_pct)
-        for a in eligible:
-            a_total = float(a.get("invoice_cost") or 0)
-            if abs(a_total - total) > tol:
-                continue
-            # Prefer GSTIN match where available
-            if gstin and (a.get("party_gstin") or "").upper() == gstin:
-                return {"addition_id": a["addition_id"], "score": 95,
-                        "method": "gstin_plus_total",
-                        "why": f"₹{a_total} ≈ ₹{total} & GSTIN {gstin}"}
-            # Fallback to party_name fuzzy + total
-            if sup_name and a.get("party_name"):
-                ratio = fuzz.token_set_ratio(sup_name, a["party_name"])
-                if ratio >= 80:
-                    return {"addition_id": a["addition_id"], "score": 90,
-                            "method": "party_plus_total",
-                            "why": f"₹{a_total} ≈ ₹{total} & party '{a['party_name']}' ({ratio})"}
+    # Pass 2 — total/taxable ± tolerance (with GSTIN/party as the supporting
+    # signal). For each amount candidate (gross + net-of-GST) we run the
+    # same buckets: strict (±₹1) → high; loose (≤0.5%) → medium.
+    if candidates_amount:
+        strict_tol = max(tol_rupees, 1.0)
+        best_high: Optional[Dict[str, Any]] = None
+        best_medium: Optional[Dict[str, Any]] = None
+        for amt, amt_kind in candidates_amount:
+            loose_tol = max(tol_rupees, amt * tol_pct)
+            for a in eligible:
+                a_total = float(a.get("invoice_cost") or 0)
+                diff = abs(a_total - amt)
+                if diff > loose_tol:
+                    continue
+                gstin_match = bool(gstin) and (a.get("party_gstin") or "").upper() == gstin
+                party_score = (
+                    fuzz.token_set_ratio(sup_name, a.get("party_name") or "")
+                    if sup_name and a.get("party_name") else 0
+                )
+                within_strict = diff <= strict_tol
+                amt_label = "gross" if amt_kind == "total" else "net-of-GST"
+                if within_strict and (gstin_match or party_score >= 85):
+                    cand = {
+                        "addition_id": a["addition_id"],
+                        "score": 95 if gstin_match else 92,
+                        "method": "gstin_plus_total" if gstin_match else "party_plus_total",
+                        "confidence": "high",
+                        "why": (f"₹{a_total} = ₹{amt} ({amt_label}) & GSTIN {gstin}" if gstin_match
+                                else f"₹{a_total} = ₹{amt} ({amt_label}) & party '{a['party_name']}' fuzz={party_score}"),
+                    }
+                    if not best_high or cand["score"] > best_high["score"]:
+                        best_high = cand
+                elif party_score >= 80 or gstin_match:
+                    cand = {
+                        "addition_id": a["addition_id"],
+                        "score": 80,
+                        "method": "gstin_plus_total" if gstin_match else "party_plus_total",
+                        "confidence": "medium",
+                        "why": (f"₹{a_total} ≈ ₹{amt} ({amt_label}) & GSTIN {gstin}" if gstin_match
+                                else f"₹{a_total} ≈ ₹{amt} ({amt_label}) & party '{a['party_name']}' fuzz={party_score}"),
+                    }
+                    if not best_medium or cand["score"] > best_medium["score"]:
+                        best_medium = cand
+        if best_high:
+            return best_high
+        if best_medium:
+            pass3 = _fuzzy_inv_no_pass(inv_no_n, sup_name, eligible)
+            if pass3 and pass3["score"] > best_medium["score"]:
+                return pass3
+            return best_medium
 
-    # Pass 3 — fuzzy invoice number within same supplier (party fuzzy ≥80)
-    if inv_no_n and sup_name:
-        best = None
-        for a in eligible:
-            a_inv_n = _norm_invno(a.get("invoice_no"))
-            if not a_inv_n:
-                continue
-            inv_score = fuzz.ratio(inv_no_n, a_inv_n)
-            if inv_score < 85:
-                continue
-            party_score = fuzz.token_set_ratio(sup_name, a.get("party_name") or "") if a.get("party_name") else 0
-            if party_score < 70:
-                continue
-            score = (inv_score + party_score) / 2
-            if not best or score > best["score"]:
-                best = {"addition_id": a["addition_id"], "score": int(score),
-                        "method": "fuzzy_inv_no",
-                        "why": f"inv-no fuzz {inv_score} & party fuzz {party_score}"}
-        if best:
-            return best
+    # Pass 3 — fuzzy invoice number within same supplier
+    return _fuzzy_inv_no_pass(inv_no_n, sup_name, eligible)
 
-    return None
+
+def _fuzzy_inv_no_pass(inv_no_n: str, sup_name: str,
+                       eligible: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not inv_no_n or not sup_name:
+        return None
+    best = None
+    for a in eligible:
+        a_inv_n = _norm_invno(a.get("invoice_no"))
+        if not a_inv_n:
+            continue
+        inv_score = fuzz.ratio(inv_no_n, a_inv_n)
+        if inv_score < 85:
+            continue
+        party_score = fuzz.token_set_ratio(sup_name, a.get("party_name") or "") if a.get("party_name") else 0
+        if party_score < 70:
+            continue
+        score = (inv_score + party_score) / 2
+        if not best or score > best["score"]:
+            best = {
+                "addition_id": a["addition_id"], "score": int(score),
+                "method": "fuzzy_inv_no", "confidence": "low",
+                "why": f"inv-no fuzz {inv_score} & party fuzz {party_score}",
+            }
+    return best
 
 
 def detect_fa_ledger_id(detected_name: str, run_ledgers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -343,6 +406,7 @@ async def split_extract_and_match(
 
     chunks: List[Dict[str, Any]] = []
     matched = 0
+    high_conf = 0
     for idx, inv in enumerate(invoices):
         try:
             chunk_pdf = slice_pdf(pdf_bytes, inv["page_range"])
@@ -352,6 +416,8 @@ async def split_extract_and_match(
         match = match_invoice_to_addition(inv, additions)
         if match:
             matched += 1
+            if match.get("confidence") == "high":
+                high_conf += 1
         chunks.append({
             "chunk_index": idx,
             "page_range":  inv["page_range"],
@@ -372,9 +438,10 @@ async def split_extract_and_match(
         "chunks":               chunks,
         "single_invoice":       len(chunks) == 1 and not parsed["ledger_pages"],
         "summary": {
-            "pages_total":       n_pages,
-            "invoices_detected": len(invoices),
-            "matched":           matched,
-            "unmatched":         len(chunks) - matched,
+            "pages_total":          n_pages,
+            "invoices_detected":    len(invoices),
+            "matched":              matched,
+            "high_confidence":      high_conf,
+            "unmatched":            len(chunks) - matched,
         },
     }
