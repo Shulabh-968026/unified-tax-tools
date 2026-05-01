@@ -266,12 +266,16 @@ def stage_addition_rows(lines: List[Dict[str, Any]],
                         ledger_id_by_name: Dict[str, str],
                         run_id: str,
                         fy_end: str) -> List[Dict[str, Any]]:
-    """Convert debit lines → addition records. PTU defaults to invoice_date."""
+    """Convert debit lines → addition records. PTU starts blank — the
+    auditor fills it via inline edit or the bulk Copy-PTU=Acc-Date helper."""
     out: List[Dict[str, Any]] = []
     for r in lines:
         if not r["is_debit"]:
             continue
-        ptu = r["invoice_date"] or r["accounting_date"]
+        # PTU is intentionally left blank on ingest. The auditor copies it
+        # over (or types it manually) on the Additions tab. Until then we
+        # treat the addition as full-rate so an un-filled PTU doesn't
+        # penalise the auditor's first-pass review.
         out.append({
             "run_id":               run_id,
             "fa_ledger_id":         ledger_id_by_name.get(r["ledger_name"], ""),
@@ -283,7 +287,7 @@ def stage_addition_rows(lines: List[Dict[str, Any]],
             "invoice_date":         r["invoice_date"],
             "invoice_date_source":  r["invoice_date_source"],
             "invoice_no":           detect_invoice_no(r.get("narration", "")),
-            "put_to_use_date":      ptu,
+            "put_to_use_date":      "",
             "party_name":           r["party_name"],
             "particulars":          r["particulars"],
             "description":          r["particulars"],
@@ -293,8 +297,8 @@ def stage_addition_rows(lines: List[Dict[str, Any]],
             "itc_reversed":         0.0,
             "interest_capitalized": 0.0,
             "forex_fluctuations":   0.0,
-            "is_more_than_180":     is_more_than_180(ptu, fy_end),
-            "half_rate":            not is_more_than_180(ptu, fy_end),
+            "is_more_than_180":     True,
+            "half_rate":            False,
             "reviewed":             False,
             "source":               "addition",
             "parent_addition_id":   "",

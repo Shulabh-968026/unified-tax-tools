@@ -27,7 +27,7 @@ const lsGet = (k, fb) => {
 };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* noop */ } };
 
-export default function AdditionsTab({ rid, blocks }) {
+export default function AdditionsTab({ rid, blocks, auditFilter, onClearAuditFilter }) {
   const [rows, setRows] = useState([]);
   const [progress, setProgress] = useState({ rows: [], summary: {} });
   const [busy, setBusy] = useState(false);
@@ -38,6 +38,9 @@ export default function AdditionsTab({ rid, blocks }) {
   const [pageSize, setPageSize] = useState(() => Number(lsGet(LS_PAGE_SIZE, 10)) || 10);
   const [showMerged, setShowMerged] = useState(true);
   const [colVis, setColVis] = useState(() => ({ ...DEFAULT_COL_VIS, ...lsGet(LS_COL_VIS, {}) }));
+
+  // FY end is needed to evaluate the ptu_after_fy_end flag client-side
+  const [fyEnd, setFyEnd] = useState("");
 
   const [bulkMode, setBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -79,6 +82,7 @@ export default function AdditionsTab({ rid, blocks }) {
       setRows(r.data?.rows || []);
       setProgress(p.data || { rows: [], summary: {} });
       setDriftWarning(runRes.data?.excel_drift_warning || null);
+      setFyEnd(runRes.data?.fy_end || "");
       const map = {};
       for (const a of (atts.data?.rows || [])) map[a.addition_id] = a;
       setAttachments(map);
@@ -154,8 +158,37 @@ export default function AdditionsTab({ rid, blocks }) {
   // Reset ledger filter when active block changes
   useEffect(() => { setLedgerFilter(""); setPage(1); }, [activeBlock]);
 
+  // When an audit-flag link sets the filter, clear the block scope so the
+  // user sees ALL flagged rows across blocks at once.
+  useEffect(() => {
+    if (auditFilter) {
+      setActiveBlock("");
+      setLedgerFilter("");
+      setSearch("");
+      setShowMerged(true);
+      setPage(1);
+    }
+  }, [auditFilter]);
+
   const filtered = useMemo(() => {
     let xs = rows;
+    if (auditFilter) {
+      // Hide synthetic discount-credit pseudo-rows from audit lists; the
+      // discount_pending flag explicitly redirects to the Credits tab.
+      xs = xs.filter(r => r.source !== "discount_credit");
+      const f = auditFilter;
+      if (f === "missing_ptu") {
+        xs = xs.filter(r => !(r.put_to_use_date || "").trim());
+      } else if (f === "ptu_after_fy_end") {
+        xs = xs.filter(r => (r.put_to_use_date || "") > (fyEnd || ""));
+      } else if (f === "missing_party") {
+        xs = xs.filter(r => !(r.party_name || "").trim());
+      } else if (f === "unreviewed") {
+        xs = xs.filter(r => !r.reviewed && !r.parent_addition_id);
+      } else if (f === "zero_or_negative_cost") {
+        xs = xs.filter(r => Number(r.invoice_cost || 0) <= 0);
+      }
+    }
     if (activeBlock) xs = xs.filter(r => r.block_label === activeBlock);
     if (ledgerFilter) xs = xs.filter(r => (r.ledger_name || "(unmapped)") === ledgerFilter);
     const q = search.trim().toLowerCase();
@@ -184,7 +217,7 @@ export default function AdditionsTab({ rid, blocks }) {
     }
     for (const r of xs) if (!seen.has(r.addition_id)) ordered.push(r);
     return ordered;
-  }, [rows, activeBlock, ledgerFilter, search, showMerged]);
+  }, [rows, activeBlock, ledgerFilter, search, showMerged, auditFilter, fyEnd]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   useEffect(() => { if (page > totalPages) setPage(1); }, [totalPages, page]);
@@ -369,6 +402,11 @@ export default function AdditionsTab({ rid, blocks }) {
 
   return (
     <div className="space-y-3">
+      <AuditFilterBanner
+        filter={auditFilter}
+        count={filtered.length}
+        onClear={onClearAuditFilter}
+      />
       <DriftBanner warning={driftWarning} onClear={clearDrift} clearing={clearingDrift}/>
 
       <InvoiceUploadDropZone
@@ -522,6 +560,46 @@ export default function AdditionsTab({ rid, blocks }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/* ==================== Audit-flag filter banner ==================== */
+const AUDIT_FILTER_META = {
+  missing_ptu:           { label: "Missing PTU date",        hint: "Auditor must fill the PTU date so the half-rate (180-day) check can run.",          tone: "rose" },
+  ptu_after_fy_end:      { label: "PTU after FY end",        hint: "These additions can't be capitalised in this FY — review and correct or defer.",   tone: "rose" },
+  missing_party:         { label: "Missing party / vendor",  hint: "The supplier name is blank — required for vendor concentration & 26AS tie-up.",     tone: "amber" },
+  unreviewed:            { label: "Un-reviewed additions",   hint: "Auditor hasn't ticked the Reviewed box — work through the list to clear.",         tone: "amber" },
+  zero_or_negative_cost: { label: "Zero or negative cost",   hint: "Likely an entry error — review the source voucher and adjust.",                    tone: "rose" },
+};
+function AuditFilterBanner({ filter, count, onClear }) {
+  if (!filter) return null;
+  const meta = AUDIT_FILTER_META[filter];
+  if (!meta) return null;
+  const tone = meta.tone === "rose"
+    ? "bg-rose-50 border-rose-200 text-rose-900"
+    : "bg-amber-50 border-amber-200 text-amber-900";
+  return (
+    <div
+      data-testid="fa-additions-audit-filter-banner"
+      className={`border ${tone} px-4 py-2.5 flex flex-wrap items-center gap-3`}
+    >
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] opacity-70">
+        Audit filter
+      </span>
+      <span className="text-[12.5px] font-semibold">{meta.label}</span>
+      <span className="text-[11.5px] opacity-80">{meta.hint}</span>
+      <span className="ml-auto font-mono text-[11px]">
+        {count} match{count === 1 ? "" : "es"}
+      </span>
+      <button
+        type="button"
+        onClick={onClear}
+        data-testid="fa-additions-audit-filter-clear"
+        className="text-[11.5px] underline underline-offset-2 hover:opacity-80"
+      >
+        Clear filter
+      </button>
     </div>
   );
 }

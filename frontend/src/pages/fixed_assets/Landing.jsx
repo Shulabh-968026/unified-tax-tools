@@ -35,8 +35,21 @@ export default function FixedAssetsLanding() {
   const [savingFor, setSavingFor] = useState(null); // ledger_id when saving
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all | unclassified | classified
-  const [tab, setTab] = useState("ledgers"); // ledgers | additions | credits | compute
+  const [tab, setTab] = useState("ledgers"); // ledgers | additions | credits | compute | summary
+  const [auditFilter, setAuditFilter] = useState(null); // optional audit-flag filter passed to AdditionsTab
   const dropRef = useRef(null);
+
+  // Cross-tab navigation helper invoked by Summary's audit-flag cards.
+  const goToFilteredAdditions = (flagKey) => {
+    if (flagKey === "discount_pending") {
+      // Discount pending lives on the Credits tab (different shape)
+      setAuditFilter(null);
+      setTab("credits");
+      return;
+    }
+    setAuditFilter(flagKey);
+    setTab("additions");
+  };
 
   /* --- Initial loads --- */
   useEffect(() => {
@@ -285,7 +298,7 @@ export default function FixedAssetsLanding() {
             <button
               key={id}
               data-testid={`fa-tab-${id}`}
-              onClick={() => setTab(id)}
+              onClick={() => { setAuditFilter(null); setTab(id); }}
               className={`inline-flex items-center gap-1.5 px-3 py-2 text-[12.5px] -mb-px border-b-2 ${
                 tab === id ? "border-slate-900 text-slate-900 font-semibold" : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
@@ -379,10 +392,19 @@ export default function FixedAssetsLanding() {
         </div>
         )}
 
-        {tab === "additions" && <AdditionsTab rid={rid} blocks={blocks}/>}
+        {tab === "additions" && (
+          <AdditionsTab
+            rid={rid}
+            blocks={blocks}
+            auditFilter={auditFilter}
+            onClearAuditFilter={() => setAuditFilter(null)}
+          />
+        )}
         {tab === "credits"   && <CreditsTab rid={rid}/>}
         {tab === "compute"   && <ComputeTab rid={rid}/>}
-        {tab === "summary"   && <SummaryTab rid={rid}/>}
+        {tab === "summary"   && (
+          <SummaryTab rid={rid} onJumpToFlag={goToFilteredAdditions}/>
+        )}
       </div>
     </div>
   );

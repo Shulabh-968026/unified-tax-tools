@@ -28,7 +28,7 @@ const inrCompact = (v) => {
   return `₹ ${n.toFixed(0)}`;
 };
 
-export default function SummaryTab({ rid }) {
+export default function SummaryTab({ rid, onJumpToFlag }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloadingXlsx, setDownloadingXlsx] = useState(false);
@@ -91,7 +91,11 @@ export default function SummaryTab({ rid }) {
           <OcrCoverageCard counts={data.counts} ocr={data.ocr}/>
         </div>
         <div className="lg:col-span-2">
-          <AuditFlagsPanel flags={data.audit_flags} openCount={data.open_flag_count}/>
+          <AuditFlagsPanel
+            flags={data.audit_flags}
+            openCount={data.open_flag_count}
+            onJumpToFlag={onJumpToFlag}
+          />
         </div>
       </div>
 
@@ -254,14 +258,14 @@ function OcrCoverageCard({ counts, ocr }) {
 
 /* ==================== Audit flags panel ==================== */
 const FLAG_META = {
-  missing_ptu:           { label: "Missing PTU date",        hint: "Half-rate decision needs Put-To-Use date",         tone: "rose" },
-  ptu_after_fy_end:      { label: "PTU after FY end",        hint: "Asset can't be capitalised in this FY",            tone: "rose" },
-  zero_or_negative_cost: { label: "Zero / negative cost",    hint: "Likely an entry error — review",                   tone: "rose" },
-  missing_party:         { label: "Missing party / vendor",  hint: "Vendor field is blank",                            tone: "amber" },
-  unreviewed:            { label: "Un-reviewed additions",   hint: "Auditor hasn't ticked the Reviewed box",           tone: "amber" },
-  discount_pending:      { label: "Discount classification pending", hint: "Credit row not classified Sale/Discount", tone: "amber" },
+  missing_ptu:           { label: "Missing PTU date",        hint: "Half-rate decision needs Put-To-Use date",         tone: "rose",  jumpsTo: "Additions" },
+  ptu_after_fy_end:      { label: "PTU after FY end",        hint: "Asset can't be capitalised in this FY",            tone: "rose",  jumpsTo: "Additions" },
+  zero_or_negative_cost: { label: "Zero / negative cost",    hint: "Likely an entry error — review",                   tone: "rose",  jumpsTo: "Additions" },
+  missing_party:         { label: "Missing party / vendor",  hint: "Vendor field is blank",                            tone: "amber", jumpsTo: "Additions" },
+  unreviewed:            { label: "Un-reviewed additions",   hint: "Auditor hasn't ticked the Reviewed box",           tone: "amber", jumpsTo: "Additions" },
+  discount_pending:      { label: "Discount classification pending", hint: "Credit row not classified Sale/Discount", tone: "amber", jumpsTo: "Credits" },
 };
-function AuditFlagsPanel({ flags, openCount }) {
+function AuditFlagsPanel({ flags, openCount, onJumpToFlag }) {
   const sorted = Object.entries(flags).sort(([, a], [, b]) => b.count - a.count);
   return (
     <CardShell
@@ -278,20 +282,31 @@ function AuditFlagsPanel({ flags, openCount }) {
         {sorted.map(([k, f]) => {
           const meta = FLAG_META[k] || { label: k, hint: "", tone: "slate" };
           const isOpen = f.count > 0;
+          const clickable = isOpen && typeof onJumpToFlag === "function";
           const toneCls = !isOpen
             ? "bg-slate-50 border-slate-200 text-slate-500"
             : meta.tone === "rose"
-              ? "bg-rose-50 border-rose-200 text-rose-900"
-              : "bg-amber-50 border-amber-200 text-amber-900";
+              ? "bg-rose-50 border-rose-200 text-rose-900 hover:border-rose-400"
+              : "bg-amber-50 border-amber-200 text-amber-900 hover:border-amber-400";
+          const Tag = clickable ? "button" : "div";
           return (
-            <div
+            <Tag
               key={k}
+              type={clickable ? "button" : undefined}
+              onClick={clickable ? () => onJumpToFlag(k) : undefined}
               data-testid={`fa-flag-${k}`}
-              className={`border ${toneCls} px-3 py-2 flex items-start justify-between gap-3`}
+              className={`text-left w-full border ${toneCls} px-3 py-2 flex items-start justify-between gap-3 transition-colors ${
+                clickable ? "cursor-pointer" : ""
+              }`}
             >
               <div className="min-w-0 flex-1">
                 <div className="text-[12px] font-semibold truncate">{meta.label}</div>
                 <div className="text-[10.5px] text-slate-500 mt-0.5">{meta.hint}</div>
+                {clickable && (
+                  <div className="text-[10px] font-mono uppercase tracking-wider mt-1 inline-flex items-center gap-0.5 opacity-80">
+                    Open in {meta.jumpsTo} <ChevronRight size={10}/>
+                  </div>
+                )}
               </div>
               <div className="text-right shrink-0">
                 <div className={`text-[16px] font-heading leading-none ${isOpen ? "" : "text-slate-400"}`}>
@@ -301,7 +316,7 @@ function AuditFlagsPanel({ flags, openCount }) {
                   ₹ {inr(f.value)}
                 </div>
               </div>
-            </div>
+            </Tag>
           );
         })}
       </div>

@@ -1,0 +1,39 @@
+{
+  "summary": "Frontend-only regression on FA Summary cockpit-jump feature (run 0e4cc62f-52f9-4668-b598-f60bd0c52803). All 4 in-scope acceptance items pass: (a) Un-reviewed flag card is a clickable BUTTON with 'Open in Additions' label, (b) clicking it activates the Additions tab AND renders the audit-filter banner with the right copy + matches count + Clear-filter link, (c) Clear filter and manual tab-switch both reset the filter, (d) all 5 zero-count flag cards stay non-interactive <div>s with no 'Open in' label. discount_pending live-flip case skipped per request. One discrepancy worth a quick check: Summary card shows count=50 but Additions banner reports 30 matches — caused by AdditionsTab predicate excluding discount_credit + merged children that Summary's flag count appears to still include. Functional, but counts differ from the spec's '50 matches' wording.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Un-reviewed flag jump", "issue": "Summary card shows '50' (open count) but the resulting Additions banner reports '30 matches'. Likely cause: SummaryTab's audit_flags.unreviewed.count comes from the backend and counts all unreviewed rows incl. merged children + discount_credit synthetic rows, whereas AdditionsTab.unreviewed predicate excludes parent_addition_id and source==discount_credit. Either align the counter, or add a one-line clarifier in the banner ('30 of 50 visible — 20 are merged children / discount-credit rows handled in Credits tab').", "affected_selectors": ["fa-flag-unreviewed", "fa-additions-audit-filter-banner"]}
+    ],
+    "design_issues": [
+      {"screen": "Audit Risk Flags", "issues": ["Hover affordance is reasonable but the 'OPEN IN ADDITIONS ›' label is rendered in tracking-wider mono uppercase — may read as a section label rather than a hint. Consider lowercase or sentence-case for stronger 'click me' affordance."]}
+    ]
+  },
+  "verified": {
+    "card_tag": "fa-flag-unreviewed renders as <button> when count>0",
+    "click_jump": "Click → fa-tab-additions activates (border-slate-900 class present) and fa-additions-audit-filter-banner appears",
+    "banner_copy": "AUDIT FILTER · Un-reviewed additions · <hint> · N matches · Clear filter — all parts present",
+    "banner_clear": "fa-additions-audit-filter-clear removes the banner and restores full row list",
+    "manual_tab_clears_filter": "Switching to Ledgers and back to Additions auto-clears the audit filter (banner gone)",
+    "zero_count_non_interactive": "fa-flag-missing_ptu / ptu_after_fy_end / zero_or_negative_cost / missing_party / discount_pending all <div> tags with no 'Open in' label and slate styling",
+    "matches_count_observed": 30
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Reconcile the unreviewed count between Summary card (50) and Additions banner (30). Either filter Summary's count to match Additions' predicate (drop merged-children + synthetic discount_credit rows) or add a one-liner in the banner explaining the gap.",
+    "Optional copy tweak: soften 'OPEN IN ADDITIONS' inline label to lowercase / sentence-case for clearer click affordance."
+  ],
+  "critical_code_review_comments": [
+    "AdditionsTab.AuditFilterBanner is co-located in AdditionsTab.jsx — clean. AUDIT_FILTER_META is duplicated logic (label+hint live both in SummaryTab.FLAG_META and AdditionsTab.AUDIT_FILTER_META). Worth extracting to a shared constants file for parity if labels diverge.",
+    "Landing.goToFilteredAdditions resets auditFilter on every manual tab click via setTab handler — correct & simple.",
+    "discount_pending → Credits tab: confirmed by code path (Landing line 44-49). Live-data verification skipped per request as demo run has count=0."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (per request)", "frontend": "100% (all 5 in-scope checks pass; one minor count-mismatch observation)"},
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin). Valid.",
+  "seed_data_creation": "None — used the existing demo run; state left untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Cockpit jump from Summary → Additions works end-to-end with banner, clear, and auto-clear-on-tab-switch. The only behavioral gap to address is the 50-vs-30 count mismatch between the Summary flag card and the resulting AdditionsTab banner. discount_pending→Credits jump path was not exercised live (no pending rows in demo run); code path is wired in Landing.goToFilteredAdditions."
+}
