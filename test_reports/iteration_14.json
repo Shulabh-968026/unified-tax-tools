@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend regression of Compute & Export tab on run 0e4cc62f-52f9-4668-b598-f60bd0c52803 — 3CD-gate enforcement (match/mismatch/override), zero-row skip in compute output (screen + Excel), and A4 PDF download. All 5 acceptance points verified GREEN end-to-end on the live preview URL with Playwright + qa_test_session cookie. Backend testing skipped per request.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/pages/fixed_assets/ComputeTab.jsx"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Validation3CDBanner correctly renders mutually-exclusive states keyed off gate.ok && gate.acknowledged: rose blocking banner (testid fa-3cd-gate-banner-block) when ok=false && !acknowledged with override CTA (testid fa-3cd-gate-override) + drift amount; emerald 'overridden by auditor' strip and emerald 'validation passed' strip both mapped to fa-3cd-gate-banner-ack — same testid is reused for both ack states which is acceptable because the wording differs ('passed' vs 'overridden by auditor — Compute re-enabled').",
+    "computeBlocked memo = !!(validationGate && !validationGate.ok && !validationGate.acknowledged) — correct. Compute btn disabled flag is `computing || computeBlocked` and class adds `cursor-not-allowed` when blocked. title attribute also explains the block reason. Good UX.",
+    "Compute result table correctly suppresses all-zero rows (Buildings, 20% Ships, 25% Intangibles, 30%/40%/45% Vehicles, Renewable Energy etc.). Header reads '5 blocks active · Depreciation ₹72,91,532.55 · Closing WDV ₹4,90,46,070.76' — 5 active blocks rendered (40% Computers, 40% P&M, 15% P&M, 15% Vehicles, 10% Furniture). Excel Block Summary sheet mirrors the same 5-row output with TOTAL row — zero rows correctly suppressed.",
+    "PDF export verified: filename 'IT_Depreciation_Allman_Knitwear_FY2024-25.pdf', 27,548 bytes (>5KB threshold), magic header %PDF-1.4, MediaBox 595.28×841.89 (true A4 portrait W<H), 12 internal /Type/Page entries → multi-page output as designed (cover+KPI+block summary on p1, additions register cards on subsequent pages).",
+    "Excel export still includes all 4 sheets: Block Summary (5 active blocks, no zeros), Additions Register (98 rows), Deletions Register (1 row), Workings (Sec 32 method notes).",
+    "Carried over (non-blocking, pre-existing): Landing.jsx <select><option> emergent dev instrumentation injects a <span> inside <option> causing a React hydration warning. Not in scope of this iteration."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (pre-verified by main agent at 22/22 pytest green)", "frontend": "100% (5/5 acceptance points pass)"},
+  "test_credentials": "session_token=qa_test_session_token_20260430_dev (admin qa-bot@transformautomations.com)",
+  "seed_data_creation": "None new. Demo state preserved as requested: 15% Vehicles=₹4,50,000 + 15% P&M=₹2,57,83,559 + 40% P&M=₹4,85,453 + 40% Computers=₹4,85,453 + 10% Furniture=₹29,11,192 (5 active blocks). Note: the demo state actually carries 40% Block – Computers=₹4,85,453 IN ADDITION to the values listed in the user's request — the user-provided 'matching' 3CD JSON (40% closing=₹4,85,453) is therefore actually a MISMATCH against the demo (40% sum=₹9,70,906). This was used as Case-B (mismatch). A truly matching 3CD with 40%=₹9,70,906 / 15%=₹2,62,33,559 / 10%=₹29,11,192 was constructed inside the test for Case-A. prior_3cd_validation cleared to None at end of run; gate state is fresh.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Testids in play: fa-3cd-validate-btn, fa-3cd-validate-input (hidden), fa-3cd-gate-banner-ack (emerald — also used for 'overridden by auditor' state), fa-3cd-gate-banner-block (rose), fa-3cd-gate-override, fa-compute-btn, fa-export-btn (Excel, slate), fa-export-pdf-btn (rose, FileText icon). Use page.set_input_files on hidden 3CD input to upload JSON. Override button clicks call POST /clear-3cd-validation-warning. Note for next agent: the demo-state run has 40% Block – Computers=₹485,453 (in addition to the user-listed 4 blocks), so a true-match 3CD must have 40%=₹970,906.",
+  "verified_acceptance_points": [
+    "(1) Case A — match: uploaded /tmp/true_match.json with 40%=970906/15%=26233559/10%=2911192. Validate3CDModal opened with emerald 'All rates tie back to 3CD (within ±₹1)' banner + 3 MATCH rows. After Close → fa-3cd-gate-banner-ack visible with text '3CD validation passed against true_match.json'. fa-compute-btn remained ENABLED (disabled=false). PASS.",
+    "(2) Case B — mismatch + override: uploaded user's match_3cd.json (40%=485453, missing the Computers leg). Validate3CDModal showed rose mismatch banner + 1 MISMATCH (40% diff ₹4,85,453.00) + 2 MATCH rows. After Close → fa-3cd-gate-banner-block rendered with text 'Prior-3CD validation found 1 mismatch ... Total drift ₹ 4,85,453.00 · I've reviewed — proceed anyway' and fa-3cd-gate-override button visible. fa-compute-btn DISABLED (disabled=true) and class includes 'cursor-not-allowed'. Clicked override → block-banner removed, fa-3cd-gate-banner-ack appeared with text '3CD mismatch overridden by auditor (match_3cd.json) — Compute re-enabled' + an 'Override applied — Compute re-enabled' toast. fa-compute-btn re-ENABLED. PASS.",
+    "(3) Zero-row skip on screen: clicked Compute, Depreciation Schedule rendered with header '5 blocks active · Depreciation ₹72,91,532.55 · Closing WDV ₹4,90,46,070.76'. Result table contains EXACTLY 5 non-zero rows (40% Computers, 40% P&M, 15% P&M, 15% Vehicles, 10% Furniture) + TOTAL. No '5%/10%/40% Block – Buildings', '20% Block – Ships', '25% Block – Intangibles', '30%/40%/45% Block – Vehicles', '40% Block – Renewable Energy' rows. PASS.",
+    "(4) PDF download: clicked fa-export-pdf-btn (rose, FileText icon). Downloaded 'IT_Depreciation_Allman_Knitwear_FY2024-25.pdf' (27,548 bytes, magic %PDF-1.4, MediaBox 595.28×841.89 = A4 portrait, 12 /Type/Page entries → multi-page). PASS.",
+    "(5) Excel zero-row skip: clicked fa-export-btn. Downloaded 'IT_Depreciation_Allman_Knitwear_FY2024-25.xlsx' (18,764 bytes). Sheets: Block Summary / Additions Register / Deletions Register / Workings. Block Summary contains 5 active block rows + TOTAL — no zero-only block rows. PASS."
+  ],
+  "rca of the issue": "Not applicable — all acceptance points verified green. No defects to root-cause."
+}

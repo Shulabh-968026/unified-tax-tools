@@ -29,6 +29,7 @@ from modules.fixed_assets.additions_xlsx import (
 )
 from modules.fixed_assets.compute import compute_run
 from modules.fixed_assets.export import build_workbook
+from modules.fixed_assets.pdf_export import build_pdf as build_fa_pdf
 from modules.fixed_assets.block_opening_xlsx import (
     build_workbook as build_block_opening_workbook,
     parse_workbook as parse_block_opening_workbook,
@@ -1891,6 +1892,11 @@ async def upsert_block_opening(
         }},
         upsert=True,
     )
+    # Any change to opening WDV makes a prior 3CD validation stale.
+    await RUNS.update_one(
+        {"id": rid, "prior_3cd_validation": {"$exists": True}},
+        {"$unset": {"prior_3cd_validation": ""}},
+    )
     return {"ok": True}
 
 
@@ -1980,6 +1986,11 @@ async def block_opening_import_xlsx(
             upsert=True,
         )
         applied += 1
+    # Any change to opening WDV makes a prior 3CD validation stale.
+    await RUNS.update_one(
+        {"id": rid, "prior_3cd_validation": {"$exists": True}},
+        {"$unset": {"prior_3cd_validation": ""}},
+    )
     return {
         "ok":             True,
         "applied":        applied,
@@ -2026,7 +2037,40 @@ async def block_opening_validate_3cd(
         })
     result = validate_openings_against_3cd(current, rate_rows)
     result["filename"] = file.filename or ""
+    # Persist a compact summary on the run so the Compute tab can render a
+    # drift-banner-style warning until the auditor re-validates with a
+    # green file or explicitly overrides via /clear-3cd-validation-warning.
+    mismatch_count = sum(1 for r in result["rows"] if r["status"] == "mismatch")
+    summary = {
+        "ok":              bool(result["ok"]),
+        "filename":        result["filename"],
+        "validated_at":    datetime.now(timezone.utc).isoformat(),
+        "totals":          result["totals"],
+        "mismatch_count":  mismatch_count,
+        "acknowledged":    bool(result["ok"]),  # green ⇒ no override needed
+    }
+    await RUNS.update_one({"id": rid}, {"$set": {"prior_3cd_validation": summary}})
     return result
+
+
+@router.post("/runs/{rid}/clear-3cd-validation-warning")
+async def clear_3cd_validation_warning(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Auditor-driven 'I've reviewed — proceed anyway' override. Marks the
+    persisted 3CD validation summary as acknowledged so the Compute button
+    re-enables. Idempotent: safe to call when no warning is set."""
+    await _auth(request, session_token, authorization)
+    if not await RUNS.find_one({"id": rid}, {"_id": 0}):
+        raise HTTPException(404, "Run not found")
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {"prior_3cd_validation.acknowledged": True}},
+    )
+    return {"ok": True}
 
 
 # ============================ Prior 3CD Import (Phase 1D) ==================
@@ -2125,6 +2169,11 @@ async def apply_prior_3cd(
             upsert=True,
         )
         applied += 1
+    # Any change to opening WDV makes a prior 3CD validation stale.
+    await RUNS.update_one(
+        {"id": rid, "prior_3cd_validation": {"$exists": True}},
+        {"$unset": {"prior_3cd_validation": ""}},
+    )
     return {"ok": True, "applied": applied}
 
 
@@ -2213,7 +2262,8 @@ async def roll_forward_endpoint(
             upsert=True,
         )
         applied += 1
-    await RUNS.update_one({"id": rid}, {"$set": {"rolled_from_run_id": src_run_id}})
+    await RUNS.update_one({"id": rid}, {"$set": {"rolled_from_run_id": src_run_id},
+                                          "$unset": {"prior_3cd_validation": ""}})
     return {"ok": True, "applied": applied, "src_fy": src_fy, "src_run_id": src_run_id}
 
 
@@ -2346,6 +2396,49 @@ async def export_xlsx(
         content=blob,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{rid}/export.pdf")
+async def export_pdf(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Signature-ready A4 portrait PDF: cover + block summary + KPI strip
+    on page 1, additions register (PTU · Particulars · Supplier · Cap Cost
+    primary line, voucher/invoice/breakdown muted secondary line) on
+    pages 2+."""
+    await _auth(request, session_token, authorization)
+    inputs = await _gather_compute_inputs(rid)
+    rows, totals = compute_run(
+        openings=inputs["openings"],
+        blocks_meta=inputs["blocks_meta"],
+        additions=inputs["additions"],
+        deletions=inputs["credits"],
+    )
+    client = await db.clients.find_one(
+        {"client_id": inputs["run"]["client_id"]}, {"_id": 0, "name": 1},
+    )
+    client_name = (client or {}).get("name") or inputs["run"].get("name") or ""
+    fy_label = inputs["run"].get("fy_label") or inputs["run"].get("fy") or ""
+    pdf_bytes = build_fa_pdf(
+        client_name=client_name,
+        fy_label=fy_label,
+        fy_start=inputs["run"].get("fy_start") or "",
+        fy_end=inputs["run"].get("fy_end") or "",
+        run_name=inputs["run"].get("name") or "",
+        rows=rows,
+        totals=totals,
+        additions=inputs["additions"],
+    )
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (client_name or "client"))[:40]
+    pdf_filename = f"IT_Depreciation_{safe}_FY{fy_label}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{pdf_filename}"'},
     )
 
 

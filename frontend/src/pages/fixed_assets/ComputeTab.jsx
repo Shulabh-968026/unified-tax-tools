@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2, Calculator, Download, Sparkles, FileUp, RotateCw, X, Check, AlertCircle,
-  FileSpreadsheet, ShieldCheck,
+  FileSpreadsheet, ShieldCheck, FileText, ShieldAlert,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -53,11 +53,19 @@ export default function ComputeTab({ rid }) {
   const [driftWarning, setDriftWarning] = useState(null);
   const [clearingDrift, setClearingDrift] = useState(false);
 
+  // Prior-3CD validation gate
+  const [validationGate, setValidationGate] = useState(null);  // {ok, mismatch_count, totals, validated_at, filename, acknowledged}
+  const [overriding, setOverriding] = useState(false);
+
+  // PDF download
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
   const refreshRun = useCallback(async () => {
     if (!rid) return;
     try {
       const { data } = await http.get(`/fixed-assets/runs/${rid}`);
       setDriftWarning(data?.excel_drift_warning || null);
+      setValidationGate(data?.prior_3cd_validation || null);
     } catch { /* swallow */ }
   }, [rid]);
 
@@ -105,6 +113,7 @@ export default function ComputeTab({ rid }) {
         opening_wdv: parseFloat(opening_wdv || 0),
         description: description || "",
       });
+      refreshRun();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Save failed");
       refreshOpening();
@@ -144,6 +153,7 @@ export default function ComputeTab({ rid }) {
       toast.success(`Opening WDV applied for ${data.applied} block${data.applied === 1 ? "" : "s"}`);
       setPriorModal(null);
       refreshOpening();
+      refreshRun();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Apply failed");
     }
@@ -157,6 +167,7 @@ export default function ComputeTab({ rid }) {
       toast.success(`Rolled forward ${data.applied} block${data.applied === 1 ? "" : "s"} from FY ${data.src_fy}`);
       setRollModalOpen(false);
       refreshOpening();
+      refreshRun();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Roll-forward failed");
     } finally { setRollApplying(false); }
@@ -199,6 +210,7 @@ export default function ComputeTab({ rid }) {
         + (unk ? ` · ${unk} unknown row${unk === 1 ? "" : "s"} skipped` : ""),
       );
       refreshOpening();
+      refreshRun();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Import failed");
     } finally { setXlsxImporting(false); }
@@ -218,9 +230,41 @@ export default function ComputeTab({ rid }) {
         { headers: { "Content-Type": "multipart/form-data" } },
       );
       setValidateModal({ ...data, filename: data.filename || f.name });
+      // The server persists a compact summary on the run — refresh the
+      // gate state so the Compute button enables/disables accordingly.
+      refreshRun();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Validation failed");
     } finally { setValidating(false); }
+  };
+
+  const overrideValidation = async () => {
+    setOverriding(true);
+    try {
+      await http.post(`/fixed-assets/runs/${rid}/clear-3cd-validation-warning`);
+      toast.success("Override applied — Compute re-enabled");
+      refreshRun();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Override failed");
+    } finally { setOverriding(false); }
+  };
+
+  // ---------- PDF working-paper ----------
+  const downloadPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      const res = await http.get(`/fixed-assets/runs/${rid}/export.pdf`, { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      const cd = res.headers["content-disposition"] || "";
+      const m = /filename="?([^";]+)"?/i.exec(cd);
+      a.href = url;
+      a.download = m?.[1] || "IT_Depreciation.pdf";
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "PDF download failed");
+    } finally { setDownloadingPdf(false); }
   };
 
   const compute = async () => {
@@ -253,6 +297,9 @@ export default function ComputeTab({ rid }) {
 
   const totalOpening = useMemo(() => openings.reduce((s, r) => s + Number(r.opening_wdv || 0), 0), [openings]);
   const rollAvailable = rollSource?.ok && (rollSource.items || []).length > 0;
+  // Compute is blocked while a prior-3CD validation flagged a mismatch
+  // and the auditor hasn't explicitly overridden it.
+  const computeBlocked = !!(validationGate && !validationGate.ok && !validationGate.acknowledged);
 
   return (
     <div className="space-y-5">
@@ -379,6 +426,13 @@ export default function ComputeTab({ rid }) {
         </div>
       </div>
 
+      {/* 3CD validation gate (drift-banner-style) */}
+      <Validation3CDBanner
+        gate={validationGate}
+        onOverride={overrideValidation}
+        overriding={overriding}
+      />
+
       {/* Compute & download */}
       <div className="bg-white border border-[#E5E5E0] p-4 flex items-center justify-between gap-3">
         <div>
@@ -392,8 +446,11 @@ export default function ComputeTab({ rid }) {
           <button
             data-testid="fa-compute-btn"
             onClick={compute}
-            disabled={computing}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-slate-900 text-white text-[13px] hover:bg-slate-800 disabled:opacity-60"
+            disabled={computing || computeBlocked}
+            title={computeBlocked
+              ? "3CD validation found mismatches — review the banner above or click 'Proceed anyway'."
+              : "Run the computation"}
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-slate-900 text-white text-[13px] hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {computing ? <Loader2 size={14} className="animate-spin"/> : <Calculator size={14}/>}
             Compute
@@ -406,6 +463,15 @@ export default function ComputeTab({ rid }) {
           >
             {downloading ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
             Download Excel
+          </button>
+          <button
+            data-testid="fa-export-pdf-btn"
+            onClick={downloadPdf}
+            disabled={downloadingPdf}
+            className="inline-flex items-center gap-2 px-3.5 py-2 border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-900 text-[13px] disabled:opacity-60"
+          >
+            {downloadingPdf ? <Loader2 size={14} className="animate-spin"/> : <FileText size={14}/>}
+            Download PDF
           </button>
         </div>
       </div>
@@ -495,8 +561,58 @@ export default function ComputeTab({ rid }) {
   );
 }
 
-function OpeningRow({ row, onSave }) {
-  const [v, setV] = useState(row.opening_wdv || 0);
+/* ==================== 3CD validation gate banner ==================== */
+function Validation3CDBanner({ gate, onOverride, overriding }) {
+  if (!gate) return null;
+  // Acknowledged or green ⇒ render a quiet emerald confirmation strip.
+  if (gate.acknowledged) {
+    const label = gate.ok
+      ? `3CD validation passed${gate.filename ? ` against ${gate.filename}` : ""}.`
+      : `3CD mismatch overridden by auditor${gate.filename ? ` (${gate.filename})` : ""} — Compute re-enabled.`;
+    return (
+      <div
+        data-testid="fa-3cd-gate-banner-ack"
+        className="bg-emerald-50 border border-emerald-200 text-emerald-900 px-4 py-2 text-[12px] flex items-center gap-2"
+      >
+        <Check size={13} className="text-emerald-700 shrink-0"/>
+        <span>{label}</span>
+        {gate.validated_at && (
+          <span className="text-emerald-700/70 font-mono ml-auto text-[10.5px]">
+            {gate.validated_at.slice(0, 10)} {gate.validated_at.slice(11, 16)} UTC
+          </span>
+        )}
+      </div>
+    );
+  }
+  // Mismatch and not acknowledged ⇒ rose blocking banner.
+  return (
+    <div
+      data-testid="fa-3cd-gate-banner-block"
+      className="bg-rose-50 border border-rose-300 text-rose-900 px-4 py-3 flex flex-wrap items-center gap-3"
+    >
+      <ShieldAlert size={16} className="text-rose-700 shrink-0"/>
+      <div className="text-[12.5px] flex-1 min-w-[260px]">
+        <strong>Prior-3CD validation found {gate.mismatch_count} mismatch{gate.mismatch_count === 1 ? "" : "es"}.</strong>{" "}
+        Sub-block opening totals don't tie back to {gate.filename || "the uploaded 3CD"}.
+        Adjust the Opening WDV and re-validate, or proceed anyway.
+      </div>
+      <div className="text-[10.5px] font-mono text-rose-700/70 mr-auto">
+        Total drift ₹ {Math.abs(Number(gate.totals?.diff || 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+      </div>
+      <button
+        data-testid="fa-3cd-gate-override"
+        onClick={onOverride}
+        disabled={overriding}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white text-[12px] disabled:opacity-60"
+      >
+        {overriding ? <Loader2 size={12} className="animate-spin"/> : <Check size={12}/>}
+        I've reviewed — proceed anyway
+      </button>
+    </div>
+  );
+}
+
+function OpeningRow({ row, onSave }) {  const [v, setV] = useState(row.opening_wdv || 0);
   const [n, setN] = useState(row.description || "");
   useEffect(() => { setV(row.opening_wdv || 0); setN(row.description || ""); }, [row.block_label, row.opening_wdv, row.description]);
   const meta = SOURCE_META[row.source] || SOURCE_META.manual;

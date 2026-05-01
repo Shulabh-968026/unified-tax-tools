@@ -133,6 +133,18 @@ def compute_run(*,
             additions=payload["adds"],
             deletions=payload["dels"],
         ))
+
+    # Drop blocks where every numeric is zero — they add visual noise to
+    # the on-screen schedule and the Excel/PDF export without conveying
+    # any audit information. (Kept inputs intact for the reconciliation
+    # workings.)
+    def _all_zero(r: Dict[str, Any]) -> bool:
+        return all(
+            float(r.get(k) or 0) == 0 for k in
+            ("opening_wdv", "adds_full", "adds_half", "deletions",
+             "depreciation", "closing_wdv", "stcg_sec50")
+        )
+    rows = [r for r in rows if not _all_zero(r)]
     rows.sort(key=lambda r: (-(r["rate"] or 0), r["block_label"]))
 
     totals = {
