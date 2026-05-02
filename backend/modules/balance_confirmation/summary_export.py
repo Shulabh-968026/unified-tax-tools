@@ -38,6 +38,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.platypus import (
     PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
@@ -663,9 +664,9 @@ def _hero_strip(overall: Dict[str, Any], S):
     cov = overall["coverage"]
     cells = [
         _kpi_card(overall["count"],            "TOTAL PARTIES",    colors.HexColor("#F3F4F6"), INK, S),
-        _kpi_card(f"{_inr(overall['amount'])}", "TOTAL EXPOSURE (₹)", colors.HexColor("#ECFDF5"), GREEN, S),
-        _kpi_card(f"{cov['audit_count_pct']}%", "AUDIT COVERAGE (BY COUNT)", colors.HexColor("#E0F2FE"), colors.HexColor("#075985"), S),
-        _kpi_card(f"{cov['audit_amount_pct']}%", "AUDIT COVERAGE (BY ₹)",    colors.HexColor("#D1FAE5"), OK_FG, S),
+        _kpi_card(_inr_short(overall['amount']), "TOTAL EXPOSURE", colors.HexColor("#ECFDF5"), GREEN, S),
+        _kpi_card(f"{cov['audit_count_pct']}%", "COVERAGE · BY COUNT", colors.HexColor("#E0F2FE"), colors.HexColor("#075985"), S),
+        _kpi_card(f"{cov['audit_amount_pct']}%", "COVERAGE · BY ₹",    colors.HexColor("#D1FAE5"), OK_FG, S),
     ]
     grid = Table([cells], colWidths=[45 * mm] * 4, hAlign="LEFT")
     grid.setStyle(TableStyle([
@@ -685,114 +686,123 @@ _STATUS_TEXT_HEX = {
     "not_sent":   "4B5563",
 }
 
+# Solid-colour palette for the stacked bar & legend swatches (one tone richer
+# than the tint used for text — gives the bar actual visual punch on paper).
+_STATUS_SOLID = {
+    "confirmed":  colors.HexColor("#10B981"),
+    "reconciled": colors.HexColor("#06B6D4"),
+    "disputed":   colors.HexColor("#F59E0B"),
+    "in_flight":  colors.HexColor("#3B82F6"),
+    "failed":     colors.HexColor("#EF4444"),
+    "not_sent":   colors.HexColor("#9CA3AF"),
+}
 
-def _status_bar(bucket: Dict[str, Any], S, width_mm: float = 82.0):
-    """Horizontal stacked bar — amount-weighted — with per-status coloured cells.
-    Falls back to a single muted cell when the category has zero amount."""
+
+def _status_bar(bucket: Dict[str, Any], S, width_mm: float = 82.0,
+                height_mm: float = 6.0):
+    """₹-weighted stacked bar drawn as a single Drawing with filled Rect's.
+    Using reportlab.graphics guarantees the bar renders as a solid coloured
+    strip regardless of nested-table padding quirks."""
+    W = width_mm * mm
+    H = height_mm * mm
+    d = Drawing(W, H)
+
     total = bucket["amount"] or 0.0
-    if total <= 0.0001:
-        t = Table([[Paragraph("<font size=7 color='#9CA3AF'>No exposure</font>", S["small"])]],
-                  colWidths=[width_mm * mm], rowHeights=[4.5 * mm])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F3F4F6")),
-            ("BOX", (0, 0), (-1, -1), 0.3, BORDER),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        return t
+    # Outline
+    d.add(Rect(0, 0, W, H, strokeColor=BORDER, strokeWidth=0.4,
+               fillColor=colors.HexColor("#F3F4F6")))
 
-    # Build up column widths based on each status share of total amount
-    weights = []
-    row_cells = []
-    style = [
+    if total <= 0.0001:
+        d.add(String(W / 2, H / 2 - 2.4, "No exposure",
+                     fontName="Helvetica", fontSize=6.5,
+                     fillColor=colors.HexColor("#9CA3AF"),
+                     textAnchor="middle"))
+        return d
+
+    x = 0.0
+    for st in ("confirmed", "reconciled", "disputed", "in_flight", "failed", "not_sent"):
+        a = bucket["by_status"][st]["amount"]
+        if a <= 0:
+            continue
+        w = (a / total) * W
+        d.add(Rect(x, 0, w, H, strokeColor=None, strokeWidth=0,
+                   fillColor=_STATUS_SOLID[st]))
+        pct = a / total * 100.0
+        if pct >= 14 and w >= 8 * mm:
+            d.add(String(x + w / 2, H / 2 - 2.2, f"{pct:.0f}%",
+                         fontName="Helvetica-Bold", fontSize=6.5,
+                         fillColor=colors.white, textAnchor="middle"))
+        x += w
+
+    # Redraw outer stroke on top for crisp edge
+    d.add(Rect(0, 0, W, H, strokeColor=BORDER, strokeWidth=0.4,
+               fillColor=None))
+    return d
+
+
+def _legend_swatch(st: str, count: int, S):
+    """Small filled colour square + label + count as a single Drawing — avoids
+    the Helvetica ■ tofu issue we had with Paragraph-based legends."""
+    w = 38 * mm
+    h = 4.5 * mm
+    d = Drawing(w, h)
+    d.add(Rect(0, (h - 2.6 * mm) / 2, 2.6 * mm, 2.6 * mm,
+               strokeColor=None, fillColor=_STATUS_SOLID[st]))
+    d.add(String(4 * mm, h / 2 - 2.3, _STATUS_LABEL[st],
+                 fontName="Helvetica", fontSize=7.5,
+                 fillColor=INK_SOFT))
+    # Count at right end
+    d.add(String(w - 1, h / 2 - 2.3, str(count),
+                 fontName="Helvetica-Bold", fontSize=7.5,
+                 fillColor=INK, textAnchor="end"))
+    return d
+
+
+def _category_card(cat: Dict[str, Any], S):
+    cov = cat["coverage"]
+    # Header row: label (left) + parties & ₹ (right)
+    head = Table([[
+        Paragraph(f"<b>{cat['label']}</b>", S["body"]),
+        Paragraph(f"<font color='#6B7280'>{cat['count']} parties · "
+                  f"{_inr_short(cat['amount'])}</font>", S["small"]),
+    ]], colWidths=[34 * mm, 48 * mm])
+    head.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOX", (0, 0), (-1, -1), 0.3, BORDER),
-    ]
-    col = 0
-    for st in ("confirmed", "reconciled", "disputed", "in_flight", "failed", "not_sent"):
-        a = bucket["by_status"][st]["amount"]
-        if a <= 0:
-            continue
-        w = (a / total) * width_mm
-        if w < 1.4:  # too thin — merge into next visible
-            w = 1.4
-        weights.append(w * mm)
-        bg, _fg = _STATUS_COLOR[st]
-        pct = a / total * 100.0
-        txt_hex = _STATUS_TEXT_HEX[st]
-        txt = (f"<font size=6 color='#{txt_hex}'>{pct:.0f}%</font>"
-               if pct >= 12 else "")
-        # Draw a tiny Paragraph to centre the % text
-        row_cells.append(Paragraph(txt, S["small"]) if txt else "")
-        style.append(("BACKGROUND", (col, 0), (col, 0), bg))
-        col += 1
-
-    if not weights:
-        weights = [width_mm * mm]
-        row_cells = [""]
-        style.append(("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#F3F4F6")))
-
-    # Scale to exactly width_mm
-    scale = (width_mm * mm) / sum(weights)
-    weights = [w * scale for w in weights]
-
-    t = Table([row_cells], colWidths=weights, rowHeights=[5 * mm])
-    t.setStyle(TableStyle(style))
-    return t
-
-
-def _category_card(cat: Dict[str, Any], S):
-    cov = cat["coverage"]
-    # Inner cells
-    head = Table([[
-        Paragraph(f"<b>{cat['label']}</b>", S["body"]),
-        Paragraph(f"<font color='#6B7280'>{cat['count']} parties · {_inr(cat['amount'])}</font>",
-                  S["small"]),
-    ]], colWidths=[28 * mm, 54 * mm])
-    head.setStyle(TableStyle([
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("ALIGN", (1, 0), (1, 0), "RIGHT"),
     ]))
 
     bar = _status_bar(cat, S, width_mm=82)
 
-    legend = Table([[
-        Paragraph(f"<font color='#065F46'>■</font> Confirmed {cat['by_status']['confirmed']['count']}",
-                  S["small"]),
-        Paragraph(f"<font color='#0E7490'>■</font> Reconciled {cat['by_status']['reconciled']['count']}",
-                  S["small"]),
-        Paragraph(f"<font color='#92400E'>■</font> Disputed {cat['by_status']['disputed']['count']}",
-                  S["small"]),
-        Paragraph(f"<font color='#1E40AF'>■</font> In flight {cat['by_status']['in_flight']['count']}",
-                  S["small"]),
-        Paragraph(f"<font color='#4B5563'>■</font> Not sent {cat['by_status']['not_sent']['count']}",
-                  S["small"]),
-    ]], colWidths=[18 * mm] * 5)
+    # 2×3 grid of legend swatches (drawings, not paragraphs)
+    sw = [_legend_swatch(st, cat["by_status"][st]["count"], S)
+          for st in ("confirmed", "reconciled", "disputed",
+                     "in_flight", "failed", "not_sent")]
+    legend = Table([sw[:3], sw[3:]], colWidths=[27 * mm, 27 * mm, 27 * mm],
+                   rowHeights=[5 * mm, 5 * mm])
     legend.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
 
     cov_line = Paragraph(
-        f"<font color='#065F46'><b>Audit coverage {cov['audit_amount_pct']}%</b></font> "
-        f"<font color='#6B7280'>by ₹ &nbsp;·&nbsp; "
-        f"{cov['audit_count_pct']}% by count &nbsp;·&nbsp; "
+        f"<font color='#065F46' size='8.5'><b>Audit coverage "
+        f"{cov['audit_amount_pct']}%</b></font> "
+        f"<font color='#6B7280' size='7.5'>by ₹ · "
+        f"{cov['audit_count_pct']}% by count · "
         f"Response {cov['response_amount_pct']}% by ₹</font>",
         S["small"])
 
     inner = Table([
         [head],
-        [Spacer(1, 2)],
         [bar],
-        [Spacer(1, 3)],
         [legend],
-        [Spacer(1, 2)],
         [cov_line],
     ], colWidths=[82 * mm])
     inner.setStyle(TableStyle([
@@ -800,8 +810,14 @@ def _category_card(cat: Dict[str, Any], S):
         ("BOX",       (0, 0), (-1, -1), 0.5, BORDER),
         ("LEFTPADDING",  (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING",   (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING",   (0, 0), (0, 0), 4),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 3),
+        ("TOPPADDING",   (0, 1), (0, 1), 0),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 4),
+        ("TOPPADDING",   (0, 2), (0, 2), 0),
+        ("BOTTOMPADDING", (0, 2), (0, 2), 3),
+        ("TOPPADDING",   (0, 3), (0, 3), 2),
+        ("BOTTOMPADDING", (0, 3), (0, 3), 4),
     ]))
     return inner
 

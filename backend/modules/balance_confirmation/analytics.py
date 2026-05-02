@@ -234,15 +234,26 @@ def _top_unresponsive(ledgers: List[Dict[str, Any]], limit: int = 10) -> List[Di
     return rows[:limit]
 
 
+_SUBHEAD_RELEVANT_CATEGORIES = {
+    "trade_receivable", "trade_payable", "bank", "unsecured_loans",
+}
+
+
 def _subhead_heatmap(ledgers: List[Dict[str, Any]],
                      reconciled_ids: set,
                      limit: int = 12) -> List[Dict[str, Any]]:
+    """Coverage heatmap — only the audit-relevant heads. Subheads belonging to
+    'other' ledgers (salaries, duties, taxes, etc.) are excluded because the
+    balance-confirmation exercise doesn't apply to them."""
     groups: Dict[str, Dict[str, Any]] = {}
     for L in ledgers:
+        cat = _category_for(L)
+        if cat not in _SUBHEAD_RELEVANT_CATEGORIES:
+            continue
         key = (L.get("parent_group") or "—").strip() or "—"
         g = groups.setdefault(key, {
             "parent_group": key,
-            "category":     _category_for(L),
+            "category":     cat,
             "count": 0,
             "amount": 0.0,
             "audit_count": 0,
