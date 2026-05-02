@@ -147,9 +147,9 @@ def build_ledger_extract_pdf(*,
     meta = Table([[
         Paragraph(f"<b>Party GSTIN</b><br/>{ledger.get('gstin') or '—'}", BODY),
         Paragraph(f"<b>Group</b><br/>{ledger.get('parent_group') or '—'}", BODY),
-        Paragraph(f"<b>Opening Bal.</b><br/>{_bal(-opening)}", BODY),
+        Paragraph(f"<b>Opening Bal.</b><br/>{_bal(opening)}", BODY),
         Paragraph(f"<b>Closing Bal.</b><br/>"
-                  f"<font color='{GREEN.hexval()[2:]}'>{_bal(-closing)}</font>",
+                  f"<font color='{GREEN.hexval()[2:]}'>{_bal(closing)}</font>",
                   BODY),
     ]], colWidths=[45 * mm, 50 * mm, 40 * mm, 51 * mm])
     meta.setStyle(TableStyle([
@@ -167,11 +167,11 @@ def build_ledger_extract_pdf(*,
     headers = ["Date", "Voucher Type", "Voucher #", "Debit", "Credit", "Balance"]
     table_data: List[List[Any]] = [headers]
 
-    # In Tally, amount > 0 = Credit, < 0 = Debit. We want columns:
-    #   Debit  = -amt if amt < 0 else 0
-    #   Credit =  amt if amt > 0 else 0
-    # Running balance = prior + amt (credit-positive convention)
-    running = -opening  # opening_balance: -ve = Dr, +ve = Cr; convert to credit-pos
+    # In Tally JSON for this data source, balances are CREDIT-POSITIVE
+    # (classifier.py: closing_balance > 0 → "cr", < 0 → "dr").  Ledger
+    # entry `amount`: > 0 = Credit to the ledger, < 0 = Debit.  Running
+    # balance stays in the same credit-positive convention throughout.
+    running = opening
     table_data.append([
         "", "Opening Balance", "", "", "", _bal(running),
     ])
@@ -186,9 +186,9 @@ def build_ledger_extract_pdf(*,
             _inr(amt)  if amt > 0 else "",
             _bal(running),
         ])
-    # Closing line — should match -closing (sign-converted to credit-pos)
+    # Closing line (credit-positive, so no sign flip)
     table_data.append([
-        "", "Closing Balance", "", "", "", _bal(-closing),
+        "", "Closing Balance", "", "", "", _bal(closing),
     ])
 
     t = Table(table_data,
