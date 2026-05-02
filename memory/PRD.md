@@ -1,5 +1,43 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Balance Confirmation — Summary Analytics Dashboard (2026-05-02)
+
+The Balance Confirmation run view now ships a top-level `Dashboard | Workbench`
+tab switcher. Dashboard is the default landing view once books are ingested.
+
+### What's new
+- **New API**: `GET /api/balance-confirmation/runs/{rid}/analytics` — the single
+  source of truth consumed by both the on-screen dashboard and the Summary PDF.
+- **New shared module**: `backend/modules/balance_confirmation/analytics.py`
+  computes the full payload (overall, categories, funnel, top-disputed,
+  top-unresponsive, subhead heatmap).
+- **New frontend component**: `frontend/src/pages/balance_confirmation/SummaryDashboard.jsx`
+  renders (1) Hero KPIs — Total parties, Total exposure ₹, Audit coverage by
+  count & by ₹, (2) Category matrix — one card per Rec/Pay/Bank/Unsec Loans with
+  ₹-weighted stacked status bar + coverage %, (3) Confirmation Funnel (6 stages),
+  (4) Recharts donut of status by ₹ exposure, (5) Top Disputed by variance &
+  Top Unresponsive by ₹, (6) Subhead coverage heatmap for audit sampling.
+- **Six-bucket status model**: confirmed · reconciled (= disputed + auditor
+  recon comment exists) · disputed · in_flight · failed · not_sent. Reconciled
+  rolls into audit coverage; disputed-without-comments does not.
+- **Summary PDF rewritten** — now mirrors the on-screen dashboard exactly:
+  page 1 Hero + Category Matrix · page 2 Funnel + Top Disputed · page 3
+  Top Unresponsive + Subhead Heatmap · page 4 Variances detail · page 5
+  Confirmed · page 6 Sign-off.
+- **Download relocation** — Summary XLSX + Summary PDF buttons removed from
+  the run-header strip and moved into the new dashboard header.
+
+### Testing (iteration_17)
+7/7 backend pytest green. Frontend regression green: switcher default =
+Dashboard, all data-testids present (`bc-view-dashboard`, `bc-view-workbench`,
+`bc-dashboard`, `bc-hero-total-parties/exposure/coverage-count/coverage-amount`,
+`bc-category-matrix`, `bc-cat-*`, `bc-funnel-*`, `bc-status-donut`,
+`bc-top-disputed`, `bc-top-unresponsive`, `bc-subhead-heatmap`,
+`bc-summary-pdf`, `bc-summary-xlsx`). Live demo run analytics: 838 parties ·
+₹291.98 Cr exposure · 5 categories populated.
+
+
+
 ## FS Designer — Drop 2c: structural alignment with the in-house FS reference (2026-05-01 PM-10)
 
 After comparing my Drop-2b output against the user's V-904 reference PDF, several **structural** mismatches surfaced. RCA + fixes:

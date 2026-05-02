@@ -535,15 +535,7 @@ function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
     <div className="overflow-x-auto" data-testid="bc-ledger-table">
       <table className="w-full text-[12px] table-fixed">
         <colgroup>
-          <col style={{ width: "32px" }}/>
-          <col style={{ width: "22%" }}/>  {/* Ledger */}
-          <col style={{ width: "10%" }}/>  {/* Subhead */}
-          <col style={{ width: "11%" }}/>  {/* Closing */}
-          <col style={{ width: "8%"  }}/>  {/* Status */}
-          <col style={{ width: "15%" }}/>  {/* Email */}
-          <col style={{ width: "13%" }}/>  {/* Cc */}
-          <col style={{ width: "13%" }}/>  {/* Bcc */}
-          <col style={{ width: "8%"  }}/>  {/* Contact */}
+          <col style={{ width: "32px" }}/><col style={{ width: "22%" }}/><col style={{ width: "10%" }}/><col style={{ width: "11%" }}/><col style={{ width: "8%"  }}/><col style={{ width: "15%" }}/><col style={{ width: "13%" }}/><col style={{ width: "13%" }}/><col style={{ width: "8%"  }}/>
         </colgroup>
         <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
           <tr>

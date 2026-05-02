@@ -167,23 +167,27 @@ function HeroKPIs({ overall, reconciledCount }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="bc-hero">
       <HeroCard
+        testid="bc-hero-total-parties"
         label="Total parties"
         value={String(overall?.count || 0)}
         sub={`${responded} responses received`}
         tone="slate"/>
       <HeroCard
+        testid="bc-hero-total-exposure"
         label="Total exposure"
         value={inrCompact(overall?.amount || 0)}
         sub={`Sum of |closing balance|`}
         tone="emerald"
         primary/>
       <HeroCard
+        testid="bc-hero-audit-coverage-count"
         label="Audit coverage · by count"
         value={pct(cov.audit_count_pct)}
         sub={`${reconciledCount} reconciled + confirmed`}
         tone="blue"
         progress={cov.audit_count_pct || 0}/>
       <HeroCard
+        testid="bc-hero-audit-coverage-amount"
         label="Audit coverage · by ₹"
         value={pct(cov.audit_amount_pct)}
         sub={`Response rate ${pct(cov.response_amount_pct)}`}
@@ -194,7 +198,7 @@ function HeroKPIs({ overall, reconciledCount }) {
   );
 }
 
-function HeroCard({ label, value, sub, tone = "slate", progress = null, primary = false, accent = false }) {
+function HeroCard({ testid, label, value, sub, tone = "slate", progress = null, primary = false, accent = false }) {
   const TONE = {
     slate:   "bg-white border-gray-200",
     emerald: "bg-gradient-to-br from-emerald-50 to-emerald-100/40 border-emerald-200",
@@ -203,7 +207,7 @@ function HeroCard({ label, value, sub, tone = "slate", progress = null, primary 
   };
   return (
     <div className={`border rounded-sm p-5 ${TONE[tone]} ${accent ? "ring-2 ring-emerald-400/40" : ""}`}
-         data-testid={`bc-hero-${label.replace(/[^a-z]/gi, "-").toLowerCase()}`}>
+         data-testid={testid}>
       <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-gray-500">{label}</div>
       <div className={`font-heading mt-1.5 ${primary ? "text-3xl" : "text-2xl"}`}>{value}</div>
       {progress !== null && (
@@ -374,8 +378,8 @@ function StatusDonut({ overall }) {
 
   return (
     <div className="flex flex-col items-center mt-2">
-      <div className="w-full h-52 relative">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="w-full relative" style={{ height: 208, minHeight: 208 }}>
+        <ResponsiveContainer width="100%" height={208}>
           <PieChart>
             <Pie data={segments} dataKey="value" nameKey="name"
                  cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={2} stroke="none">
