@@ -913,6 +913,7 @@ async def get_send_log(
     rid: str,
     request: Request,
     ledger_id: Optional[str] = None,
+    kind: Optional[str] = None,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -922,6 +923,10 @@ async def get_send_log(
     q: Dict[str, Any] = {"run_id": rid}
     if ledger_id:
         q["ledger_id"] = ledger_id
+    if kind:
+        # Allow ?kind=notice OR comma-separated like ?kind=initial,reminder
+        kinds = [k.strip() for k in kind.split(",") if k.strip()]
+        q["kind"] = kinds[0] if len(kinds) == 1 else {"$in": kinds}
     rows = await SENDLOG.find(q, {"_id": 0}).sort("ts", -1).to_list(2000)
     return {"rows": rows, "count": len(rows)}
 

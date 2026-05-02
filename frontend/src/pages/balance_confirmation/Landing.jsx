@@ -777,6 +777,7 @@ function AuthorisationDrawer({ clientId, onClose }) {
 function SendLogDrawer({ rid, onClose }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("all"); // all | primary | notice
   const refresh = () => {
     setLoading(true);
     http.get(`/balance-confirmation/runs/${rid}/send-log`)
@@ -788,6 +789,21 @@ function SendLogDrawer({ rid, onClose }) {
     sent: "text-blue-700", delivered: "text-emerald-700", opened: "text-emerald-800", clicked: "text-emerald-900",
     bounced: "text-rose-700", failed: "text-rose-800", queued: "text-blue-600",
   };
+  const counts = useMemo(() => ({
+    all: rows.length,
+    primary: rows.filter(r => r.kind !== "notice").length,
+    notice: rows.filter(r => r.kind === "notice").length,
+  }), [rows]);
+  const visibleRows = useMemo(() => {
+    if (tab === "all") return rows;
+    if (tab === "notice") return rows.filter(r => r.kind === "notice");
+    return rows.filter(r => r.kind !== "notice");
+  }, [rows, tab]);
+  const TABS = [
+    { key: "all",     label: "All events",   testid: "bc-sendlog-tab-all" },
+    { key: "primary", label: "Primary",      testid: "bc-sendlog-tab-primary" },
+    { key: "notice",  label: "Notice trail", testid: "bc-sendlog-tab-notice" },
+  ];
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} data-testid="bc-sendlog-backdrop"/>
@@ -803,9 +819,33 @@ function SendLogDrawer({ rid, onClose }) {
             <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2" data-testid="bc-sendlog-close">×</button>
           </div>
         </div>
+        {/* Tab strip */}
+        <div className="px-5 border-b border-gray-200 flex gap-1 bg-gray-50/50">
+          {TABS.map(t => {
+            const active = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => setTab(t.key)} data-testid={t.testid}
+                className={`text-xs font-medium px-3 py-2 -mb-px border-b-2 transition ${active
+                  ? "border-emerald-700 text-emerald-800"
+                  : "border-transparent text-gray-600 hover:text-gray-900"}`}>
+                {t.label}
+                <span className={`ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded-sm ${active ? "bg-emerald-100 text-emerald-800" : "bg-gray-200 text-gray-600"}`}>
+                  {counts[t.key]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {tab === "notice" && (
+          <div className="px-5 py-3 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900 leading-relaxed" data-testid="bc-sendlog-notice-banner">
+            <strong>Notice copies</strong> are the informational mails delivered to the CC/BCC addresses you configured for each ledger. The "Confirm or dispute" button is intentionally disabled in these copies — only the primary recipient (TO) can submit a balance confirmation. Use this trail to prove who got an informational copy and when.
+          </div>
+        )}
         <div className="flex-1 overflow-auto">
-          {loading ? <div className="p-5 text-sm text-gray-500">Loading…</div> : rows.length === 0 ? (
-            <div className="p-8 text-center text-xs text-gray-500 font-mono">No events yet.</div>
+          {loading ? <div className="p-5 text-sm text-gray-500">Loading…</div> : visibleRows.length === 0 ? (
+            <div className="p-8 text-center text-xs text-gray-500 font-mono">
+              {tab === "notice" ? "No informational copies dispatched yet — set CC/BCC on a ledger before sending to populate this trail." : "No events yet."}
+            </div>
           ) : (
             <table className="w-full text-[12px]">
               <thead className="bg-gray-50 text-[10px] uppercase tracking-wider text-gray-600 sticky top-0">
@@ -813,17 +853,25 @@ function SendLogDrawer({ rid, onClose }) {
                   <th className="text-left px-3 py-2 border-b">When</th>
                   <th className="text-left px-3 py-2 border-b">Kind</th>
                   <th className="text-left px-3 py-2 border-b">Status</th>
-                  <th className="text-left px-3 py-2 border-b">To</th>
+                  <th className="text-left px-3 py-2 border-b">Recipients</th>
                   <th className="text-left px-3 py-2 border-b">Subject / Note</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map(r => (
-                  <tr key={r.log_id} className="hover:bg-gray-50">
+                {visibleRows.map(r => (
+                  <tr key={r.log_id} className="hover:bg-gray-50" data-testid={r.kind === "notice" ? "bc-sendlog-row-notice" : undefined}>
                     <td className="px-3 py-2 border-b font-mono text-[10.5px]">{r.ts?.slice(0, 19).replace("T", " ")}</td>
-                    <td className="px-3 py-2 border-b font-medium">{r.kind}</td>
+                    <td className="px-3 py-2 border-b">
+                      {r.kind === "notice" ? (
+                        <span className="inline-flex items-center gap-1 text-[10.5px] font-medium px-1.5 py-0.5 rounded-sm bg-amber-100 text-amber-900 border border-amber-200">
+                          notice
+                        </span>
+                      ) : (
+                        <span className="font-medium">{r.kind}</span>
+                      )}
+                    </td>
                     <td className={`px-3 py-2 border-b font-mono ${STATUS_TONE[r.status] || ""}`}>{r.status}</td>
-                    <td className="px-3 py-2 border-b text-gray-700">{r.to_email || "—"}</td>
+                    <td className="px-3 py-2 border-b text-gray-700 max-w-[260px] truncate" title={r.to_email}>{r.to_email || "—"}</td>
                     <td className="px-3 py-2 border-b text-gray-600 max-w-[360px] truncate" title={r.subject || r.error}>{r.subject || r.error || "—"}</td>
                   </tr>
                 ))}
