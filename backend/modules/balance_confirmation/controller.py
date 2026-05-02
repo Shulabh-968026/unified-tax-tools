@@ -42,6 +42,7 @@ from modules.balance_confirmation.sender import (
     build_authorization_attachment,
     build_email_context,
     build_extract_attachment,
+    build_notice_body,
     can_transition,
     inject_tracking,
     load_books_from_run,
@@ -753,8 +754,8 @@ async def bulk_send(
             html_body=body,
             text_body=text_body,
             reply_to=auditor_email or None,
-            cc=cc_list or None,
-            bcc=bcc_list or None,
+            cc=None,         # Legal safeguard: cc/bcc receive a separate
+            bcc=None,        # informational notice with the CTA disabled.
             attachments=attachments or None,
             from_name=(f"Confirmation of Balance — M/s {client.get('name')}".strip()
                        if client.get("name") else None),
@@ -789,6 +790,55 @@ async def bulk_send(
                 to_email=ledger["email"], subject=subject,
                 actor_email=auditor_email,
             ))
+
+            # ---- Notice copy (cc/bcc) — CTA disabled ----------------------
+            # Only fired when the primary actually went out. The CTA in this
+            # body is rendered as an inert grey badge so cc/bcc parties (often
+            # the audit team or the client themselves) cannot self-confirm
+            # the balance — closes the legal lacuna where a CC'd client could
+            # confirm their own books.
+            if cc_list or bcc_list:
+                notice_body = build_notice_body(
+                    rendered_html=body,
+                    click_url=click_url,
+                    response_link=ctx["response_link"],
+                    primary_email=ledger["email"],
+                )
+                notice_subject = f"[Informational copy] {subject}"
+                notice_text = _strip_html(notice_body)
+                # to: primary CC list (so they see each other in the To line);
+                # if no CC, fall back to auditor's own email so each BCC
+                # recipient still gets a privately-addressed copy.
+                notice_to = (cc_list[0] if cc_list else auditor_email)
+                notice_other_cc = cc_list[1:] if len(cc_list) > 1 else []
+                notice_res = await send_one(
+                    to_email=notice_to,
+                    subject=notice_subject,
+                    html_body=notice_body,
+                    text_body=notice_text,
+                    reply_to=auditor_email or None,
+                    cc=notice_other_cc or None,
+                    bcc=bcc_list or None,
+                    attachments=attachments or None,
+                    from_name=(f"Confirmation of Balance — M/s {client.get('name')}".strip()
+                               if client.get("name") else None),
+                    tags=[
+                        {"name": "run_id", "value": rid[:40]},
+                        {"name": "kind", "value": "notice"},
+                    ],
+                )
+                notice_recipients_disp = ", ".join(
+                    [notice_to] + notice_other_cc + [f"(bcc) {b}" for b in bcc_list]
+                )
+                await SENDLOG.insert_one(_send_log_doc(
+                    run_id=rid, ledger_id=ledger_id, kind="notice",
+                    status="sent" if notice_res.get("ok") else "failed",
+                    resend_id=notice_res.get("id") or "",
+                    error=None if notice_res.get("ok") else notice_res.get("error"),
+                    to_email=notice_recipients_disp,
+                    subject=notice_subject, actor_email=auditor_email,
+                ))
+
             results.append({"ledger_id": ledger_id, "name": ledger.get("name"),
                             "ok": True, "id": send_res.get("id")})
         else:

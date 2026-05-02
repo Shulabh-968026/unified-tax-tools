@@ -1,5 +1,41 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Balance Confirmation — CC/BCC legal safeguard (2026-05-02)
+
+### Vulnerability closed
+The recipient-confirmation email previously embedded a single tokenised CTA
+(`/confirm/{token}`) inside one HTML body that Resend delivered to **TO + CC +
+BCC** simultaneously. Anyone in the cc/bcc list could click "Confirm balance"
+and submit a confirmation in the primary recipient's name — including the
+client themselves when CC'd, which is a legal lacuna for a statutory audit.
+
+### Fix
+Bulk-send is now a **two-message pipeline** per ledger:
+
+1. **Primary message** — `to=[ledger.email]`, `cc=None`, `bcc=None`. Carries the
+   live `<a href="...track/click/{token}">Confirm or dispute balance</a>` CTA
+   plus the open-tracking pixel. Telemetry (opened / clicked / responded) flows
+   only from this address.
+2. **Notice message** — fired only when `cc_emails ∪ bcc_emails` is non-empty.
+   `to=[first cc | auditor]`, `cc=[remaining cc]`, `bcc=[bcc list]`. Body is
+   piped through new `sender.build_notice_body()` which:
+   - Strips the open-tracking pixel.
+   - Replaces every `<a>` anchor pointing to the click URL or the response
+     link with an inert grey badge: `Confirm or dispute balance` (line-through)
+     plus an italic *Action required by `<primary email>` only*.
+   - Prepends an amber `Informational copy. No action is required …` banner.
+   - Subject prefixed with `[Informational copy]`; `tags=[kind:"notice"]`;
+     SENDLOG entry written with `kind="notice"` for audit trail.
+
+### Tests
+`backend/tests/test_balance_confirmation_cc_safeguard.py` — 5/5 GREEN.
+Asserts: primary keeps CTA + pixel; notice strips pixel; notice contains zero
+clickable CTA hrefs (both click_url AND response_link variants); banner +
+primary-email caption render; safeguard works for customer/vendor/bank
+default templates.
+
+
+
 ## Balance Confirmation — Summary Analytics Dashboard (2026-05-02)
 
 The Balance Confirmation run view now ships a top-level `Dashboard | Workbench`

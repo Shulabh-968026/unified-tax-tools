@@ -115,6 +115,66 @@ def inject_tracking(html_body: str, *,
     return html_body + pixel
 
 
+def build_notice_body(rendered_html: str, *,
+                      click_url: Optional[str],
+                      response_link: str,
+                      primary_email: str) -> str:
+    """Build an *informational copy* of the rendered email body for CC/BCC
+    recipients. The clickable confirm/dispute CTA is replaced with an inert
+    badge so the cc/bcc parties (typically the audit team or the client
+    themselves) cannot self-confirm the balance — a legal lacuna the user
+    flagged.
+
+    Steps:
+      1. Strip our open-tracking <img …pixel.gif> (telemetry should reflect
+         only the actual recipient's behaviour, not the cc/bcc team).
+      2. Replace every <a href="…click_url|response_link…">…</a> anchor with
+         a styled, non-clickable "Action required by …" badge.
+      3. Prepend a yellow advisory banner so the cc/bcc reader instantly knows
+         they are NOT the action-taker.
+    """
+    body = rendered_html or ""
+
+    # 1) drop tracking pixel if present
+    body = re.sub(
+        r'<img\s[^>]*src="[^"]*track/pixel/[^"]+\.gif[^"]*"[^>]*>\s*',
+        "", body, flags=re.I,
+    )
+
+    # 2) neutralise CTA anchors targeting either click_url OR response_link
+    targets = [t for t in (click_url, response_link) if t]
+    if targets:
+        anchor_re = re.compile(
+            r'<a\s+[^>]*href="(?:' + "|".join(re.escape(t) for t in targets) +
+            r')"[^>]*>(.*?)</a>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        replacement = (
+            '<span style="display:inline-block;padding:10px 22px;'
+            'background:#F3F4F6;color:#6B7280;font-weight:600;border-radius:4px;'
+            'border:1px dashed #D1D5DB;text-decoration:line-through;'
+            'cursor:not-allowed;">Confirm or dispute balance</span>'
+            '<br/><span style="font-size:11px;color:#92400E;'
+            'font-style:italic;">Action required by '
+            f'<strong>{html.escape(primary_email)}</strong> only.</span>'
+        )
+        body = anchor_re.sub(replacement, body)
+
+    # 3) prepend advisory banner
+    banner = (
+        '<div style="background:#FEF3C7;border-left:3px solid #D97706;'
+        'padding:10px 14px;margin:0 0 16px;border-radius:4px;'
+        'font-size:13px;color:#92400E;line-height:1.5;font-family:Helvetica,Arial,sans-serif;">'
+        '<strong>Informational copy.</strong> '
+        'You have been included in CC/BCC of this balance confirmation request. '
+        '<strong>No action is required from you.</strong> The "Confirm or dispute" '
+        f'button has been disabled in this copy. The response is to be submitted '
+        f'directly by <strong>{html.escape(primary_email)}</strong>.'
+        '</div>'
+    )
+    return banner + body
+
+
 # ============================ Resend send ====================================
 def _resend_configured() -> bool:
     return bool((os.environ.get("RESEND_API_KEY") or "").strip())
