@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity } from "lucide-react";
+import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity, LayoutDashboard, Table2 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
+import SummaryDashboard from "./SummaryDashboard";
 
 /* ---------- Helpers ---------- */
 const inr = (v) => {
@@ -59,6 +60,7 @@ export default function BalanceConfirmationLanding() {
   const [universalCc, setUniversalCc] = useState("");
   const [universalBcc, setUniversalBcc] = useState("");
   const [skipZeros, setSkipZeros] = useState(true);
+  const [runView, setRunView] = useState("dashboard"); // dashboard | workbench
   const dropRef = useRef(null);
 
   /* Load past runs + (optionally) hydrate run if URL has :rid */
@@ -148,25 +150,6 @@ export default function BalanceConfirmationLanding() {
       refreshLedgers(); refreshRun();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Import failed");
-    } finally { setBusy(false); }
-  };
-
-  /* ---------- Phase 5 — Summary report exports ---------- */
-  const downloadSummary = async (kind /* "xlsx" | "pdf" */) => {
-    if (!rid) return;
-    setBusy(true);
-    try {
-      const res = await http.get(`/balance-confirmation/runs/${rid}/summary.${kind}`, { responseType: "blob" });
-      const cd = res.headers["content-disposition"] || "";
-      const m = cd.match(/filename="(.+?)"/);
-      const filename = m ? m[1] : `BalanceConfirmation_Summary.${kind}`;
-      const a = document.createElement("a");
-      a.href = window.URL.createObjectURL(new Blob([res.data]));
-      a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      toast.success(`${kind.toUpperCase()} downloaded`);
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Download failed");
     } finally { setBusy(false); }
   };
 
@@ -297,22 +280,28 @@ export default function BalanceConfirmationLanding() {
               <>
                 {/* Run header strip */}
                 <div className="bg-white border border-gray-200 p-5 rounded-sm">
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-start justify-between gap-4">
                     <div>
                       <h2 className="font-heading text-xl">{run.name}</h2>
                       <div className="text-[11px] font-mono text-gray-500 mt-1">FY {run.fy} · As at {run.as_at_date || "—"} · Source: {run.source_filename || "(not uploaded)"}</div>
                     </div>
                     {summary && (summary.total || 0) > 0 && (
-                      <div className="flex gap-2">
-                        <button onClick={() => downloadSummary("xlsx")} disabled={busy}
-                          className="text-xs px-3 h-8 rounded-sm border border-emerald-700 bg-white text-emerald-800 hover:bg-emerald-50 inline-flex items-center gap-1.5 disabled:opacity-40"
-                          data-testid="bc-summary-xlsx">
-                          <Download size={12}/> Summary XLSX
+                      <div className="inline-flex rounded-sm border border-gray-300 overflow-hidden" role="tablist">
+                        <button
+                          role="tab"
+                          aria-selected={runView === "dashboard"}
+                          onClick={() => setRunView("dashboard")}
+                          className={`px-3.5 h-9 text-xs font-medium inline-flex items-center gap-1.5 transition ${runView === "dashboard" ? "bg-emerald-700 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
+                          data-testid="bc-view-dashboard">
+                          <LayoutDashboard size={13}/> Dashboard
                         </button>
-                        <button onClick={() => downloadSummary("pdf")} disabled={busy}
-                          className="text-xs px-3 h-8 rounded-sm border border-rose-700 bg-white text-rose-800 hover:bg-rose-50 inline-flex items-center gap-1.5 disabled:opacity-40"
-                          data-testid="bc-summary-pdf">
-                          <Download size={12}/> Summary PDF
+                        <button
+                          role="tab"
+                          aria-selected={runView === "workbench"}
+                          onClick={() => setRunView("workbench")}
+                          className={`px-3.5 h-9 text-xs font-medium inline-flex items-center gap-1.5 border-l border-gray-300 transition ${runView === "workbench" ? "bg-emerald-700 text-white" : "bg-white text-gray-700 hover:bg-gray-50"}`}
+                          data-testid="bc-view-workbench">
+                          <Table2 size={13}/> Workbench
                         </button>
                       </div>
                     )}
@@ -366,7 +355,7 @@ export default function BalanceConfirmationLanding() {
                 </div>
 
                 {/* Ledger workbench */}
-                {ledgers.length > 0 && (
+                {ledgers.length > 0 && runView === "workbench" && (
                   <div className="bg-white border border-gray-200 rounded-sm">
                     <div className="px-5 pt-4 pb-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
                       <div className="flex gap-1">
@@ -444,6 +433,11 @@ export default function BalanceConfirmationLanding() {
                       <div className="p-8 text-center text-xs text-gray-500 font-mono">No ledgers match the current filter.</div>
                     )}
                   </div>
+                )}
+
+                {/* Dashboard view */}
+                {ledgers.length > 0 && runView === "dashboard" && (
+                  <SummaryDashboard rid={rid}/>
                 )}
               </>
             )}

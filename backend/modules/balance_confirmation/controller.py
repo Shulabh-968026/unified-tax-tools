@@ -37,6 +37,7 @@ from modules.balance_confirmation.schemas import (
 from modules.balance_confirmation.summary_export import (
     build_summary_pdf, build_summary_xlsx,
 )
+from modules.balance_confirmation.analytics import build_analytics
 from modules.balance_confirmation.sender import (
     build_authorization_attachment,
     build_email_context,
@@ -1266,6 +1267,26 @@ async def _build_summary_payload(rid: str) -> Tuple[Dict, Dict, list, list, list
     return run, client, ledgers, responses, send_log
 
 
+@router.get("/runs/{rid}/analytics")
+async def get_analytics(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Single JSON payload powering the Summary Dashboard. Same payload is
+    embedded into the Summary PDF so on-screen and print are pixel-true."""
+    await _auth(request, session_token, authorization)
+    run, client, ledgers, responses, _ = await _build_summary_payload(rid)
+    comments = await db.bc_recon_comments.find(
+        {"run_id": rid}, {"_id": 0},
+    ).to_list(5000)
+    return build_analytics(
+        run=run, client=client, ledgers=ledgers,
+        responses=responses, comments=comments,
+    )
+
+
 @router.get("/runs/{rid}/summary.xlsx")
 async def export_summary_xlsx(
     rid: str,
@@ -1300,8 +1321,16 @@ async def export_summary_pdf(
 ):
     await _auth(request, session_token, authorization)
     run, client, ledgers, responses, _ = await _build_summary_payload(rid)
+    comments = await db.bc_recon_comments.find(
+        {"run_id": rid}, {"_id": 0},
+    ).to_list(5000)
+    analytics = build_analytics(
+        run=run, client=client, ledgers=ledgers,
+        responses=responses, comments=comments,
+    )
     pdf = build_summary_pdf(
         run=run, client=client, ledgers=ledgers, responses=responses,
+        analytics=analytics,
     )
     fy = (run.get("fy") or "").replace("-", "_")
     fname = (

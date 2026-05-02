@@ -77,6 +77,21 @@ def _inr(n) -> str:
     return f"({s})" if n < 0 else s
 
 
+def _inr_short(n) -> str:
+    """Compact Indian currency — '12.4 Cr', '45.1 L', '87.5 K' — for tight cells."""
+    n = _f(n)
+    a = abs(n)
+    if a == 0:
+        return "–"
+    if a >= 1e7:
+        return f"{a / 1e7:.2f} Cr"
+    if a >= 1e5:
+        return f"{a / 1e5:.2f} L"
+    if a >= 1e3:
+        return f"{a / 1e3:.1f} K"
+    return f"{a:,.0f}"
+
+
 def _slim(iso: Optional[str]) -> str:
     if not iso:
         return ""
@@ -623,11 +638,372 @@ def _make_footer_drawer(S, run):
     return _draw
 
 
+# ============================ Dashboard helpers (analytics-driven) ==========
+# Status colour map shared with the frontend dashboard.
+_STATUS_COLOR = {
+    "confirmed":  (colors.HexColor("#D1FAE5"), colors.HexColor("#065F46")),
+    "reconciled": (colors.HexColor("#CFFAFE"), colors.HexColor("#0E7490")),
+    "disputed":   (colors.HexColor("#FEF3C7"), colors.HexColor("#92400E")),
+    "in_flight":  (colors.HexColor("#DBEAFE"), colors.HexColor("#1E40AF")),
+    "failed":     (colors.HexColor("#FEE2E2"), colors.HexColor("#991B1B")),
+    "not_sent":   (colors.HexColor("#F3F4F6"), colors.HexColor("#4B5563")),
+}
+_STATUS_LABEL = {
+    "confirmed":  "Confirmed",
+    "reconciled": "Reconciled",
+    "disputed":   "Disputed",
+    "in_flight":  "In flight",
+    "failed":     "Failed",
+    "not_sent":   "Not sent",
+}
+
+
+def _hero_strip(overall: Dict[str, Any], S):
+    """Total parties · Total ₹ · Coverage (count) · Coverage (₹)."""
+    cov = overall["coverage"]
+    cells = [
+        _kpi_card(overall["count"],            "TOTAL PARTIES",    colors.HexColor("#F3F4F6"), INK, S),
+        _kpi_card(f"{_inr(overall['amount'])}", "TOTAL EXPOSURE (₹)", colors.HexColor("#ECFDF5"), GREEN, S),
+        _kpi_card(f"{cov['audit_count_pct']}%", "AUDIT COVERAGE (BY COUNT)", colors.HexColor("#E0F2FE"), colors.HexColor("#075985"), S),
+        _kpi_card(f"{cov['audit_amount_pct']}%", "AUDIT COVERAGE (BY ₹)",    colors.HexColor("#D1FAE5"), OK_FG, S),
+    ]
+    grid = Table([cells], colWidths=[45 * mm] * 4, hAlign="LEFT")
+    grid.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return grid
+
+
+_STATUS_TEXT_HEX = {
+    "confirmed":  "065F46",
+    "reconciled": "0E7490",
+    "disputed":   "92400E",
+    "in_flight":  "1E40AF",
+    "failed":     "991B1B",
+    "not_sent":   "4B5563",
+}
+
+
+def _status_bar(bucket: Dict[str, Any], S, width_mm: float = 82.0):
+    """Horizontal stacked bar — amount-weighted — with per-status coloured cells.
+    Falls back to a single muted cell when the category has zero amount."""
+    total = bucket["amount"] or 0.0
+    if total <= 0.0001:
+        t = Table([[Paragraph("<font size=7 color='#9CA3AF'>No exposure</font>", S["small"])]],
+                  colWidths=[width_mm * mm], rowHeights=[4.5 * mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F3F4F6")),
+            ("BOX", (0, 0), (-1, -1), 0.3, BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return t
+
+    # Build up column widths based on each status share of total amount
+    weights = []
+    row_cells = []
+    style = [
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.3, BORDER),
+    ]
+    col = 0
+    for st in ("confirmed", "reconciled", "disputed", "in_flight", "failed", "not_sent"):
+        a = bucket["by_status"][st]["amount"]
+        if a <= 0:
+            continue
+        w = (a / total) * width_mm
+        if w < 1.4:  # too thin — merge into next visible
+            w = 1.4
+        weights.append(w * mm)
+        bg, _fg = _STATUS_COLOR[st]
+        pct = a / total * 100.0
+        txt_hex = _STATUS_TEXT_HEX[st]
+        txt = (f"<font size=6 color='#{txt_hex}'>{pct:.0f}%</font>"
+               if pct >= 12 else "")
+        # Draw a tiny Paragraph to centre the % text
+        row_cells.append(Paragraph(txt, S["small"]) if txt else "")
+        style.append(("BACKGROUND", (col, 0), (col, 0), bg))
+        col += 1
+
+    if not weights:
+        weights = [width_mm * mm]
+        row_cells = [""]
+        style.append(("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#F3F4F6")))
+
+    # Scale to exactly width_mm
+    scale = (width_mm * mm) / sum(weights)
+    weights = [w * scale for w in weights]
+
+    t = Table([row_cells], colWidths=weights, rowHeights=[5 * mm])
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _category_card(cat: Dict[str, Any], S):
+    cov = cat["coverage"]
+    # Inner cells
+    head = Table([[
+        Paragraph(f"<b>{cat['label']}</b>", S["body"]),
+        Paragraph(f"<font color='#6B7280'>{cat['count']} parties · {_inr(cat['amount'])}</font>",
+                  S["small"]),
+    ]], colWidths=[28 * mm, 54 * mm])
+    head.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+    ]))
+
+    bar = _status_bar(cat, S, width_mm=82)
+
+    legend = Table([[
+        Paragraph(f"<font color='#065F46'>■</font> Confirmed {cat['by_status']['confirmed']['count']}",
+                  S["small"]),
+        Paragraph(f"<font color='#0E7490'>■</font> Reconciled {cat['by_status']['reconciled']['count']}",
+                  S["small"]),
+        Paragraph(f"<font color='#92400E'>■</font> Disputed {cat['by_status']['disputed']['count']}",
+                  S["small"]),
+        Paragraph(f"<font color='#1E40AF'>■</font> In flight {cat['by_status']['in_flight']['count']}",
+                  S["small"]),
+        Paragraph(f"<font color='#4B5563'>■</font> Not sent {cat['by_status']['not_sent']['count']}",
+                  S["small"]),
+    ]], colWidths=[18 * mm] * 5)
+    legend.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    cov_line = Paragraph(
+        f"<font color='#065F46'><b>Audit coverage {cov['audit_amount_pct']}%</b></font> "
+        f"<font color='#6B7280'>by ₹ &nbsp;·&nbsp; "
+        f"{cov['audit_count_pct']}% by count &nbsp;·&nbsp; "
+        f"Response {cov['response_amount_pct']}% by ₹</font>",
+        S["small"])
+
+    inner = Table([
+        [head],
+        [Spacer(1, 2)],
+        [bar],
+        [Spacer(1, 3)],
+        [legend],
+        [Spacer(1, 2)],
+        [cov_line],
+    ], colWidths=[82 * mm])
+    inner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("BOX",       (0, 0), (-1, -1), 0.5, BORDER),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING",   (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return inner
+
+
+def _category_grid(categories: List[Dict[str, Any]], S):
+    """2×N grid of category cards — only emit cards for non-empty categories
+    but keep the 4 auditor-facing ones in order."""
+    visible = [c for c in categories if c["key"] != "other" or c["count"] > 0]
+    # Render 2 columns
+    rows = []
+    pair = []
+    for c in visible:
+        pair.append(_category_card(c, S))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        pair.append("")  # pad
+        rows.append(pair)
+
+    t = Table(rows, colWidths=[90 * mm, 90 * mm], hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return t
+
+
+def _funnel_table(funnel: List[Dict[str, Any]], S):
+    rows = [["Stage", "Parties", "% of total", "Value (₹)", "% of ₹"]]
+    for s in funnel:
+        rows.append([
+            s["label"],
+            str(s["count"]),
+            f"{s['count_pct']:.1f}%",
+            _inr(s["amount"]),
+            f"{s['amount_pct']:.1f}%",
+        ])
+    t = Table(rows, colWidths=[40 * mm, 24 * mm, 28 * mm, 36 * mm, 28 * mm],
+              repeatRows=1)
+    style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.6, INK),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]
+    # Accent the final "Responded" row
+    last = len(rows) - 1
+    style += [
+        ("FONTNAME", (0, last), (-1, last), "Helvetica-Bold"),
+        ("BACKGROUND", (0, last), (-1, last), OK_BG),
+        ("TEXTCOLOR", (0, last), (-1, last), OK_FG),
+    ]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _top_disputed_table(rows: List[Dict[str, Any]], S):
+    if not rows:
+        return Paragraph("<font color='#9CA3AF'>No disputed confirmations on file.</font>",
+                         S["body"])
+    data = [["Party", "Cat", "Our ₹", "Their ₹", "Diff", "Reason"]]
+    cat_abbr = {"trade_receivable": "Rec", "trade_payable": "Pay",
+                "bank": "Bank", "unsecured_loans": "Loan", "other": "Oth"}
+    for r in rows[:10]:
+        data.append([
+            (r["party"] or "")[:28],
+            cat_abbr.get(r["category"], "—"),
+            f"{_inr(r['our_amount'])} {r['our_dr_cr']}",
+            ("—" if r["their_amount"] is None
+             else f"{_inr(r['their_amount'])} {r['their_dr_cr']}"),
+            ("—" if r["diff"] is None else _inr(r["diff"])),
+            Paragraph((r["reason"] or "")[:100], S["small"]),
+        ])
+    t = Table(data, colWidths=[36 * mm, 10 * mm, 22 * mm, 22 * mm, 20 * mm, 70 * mm],
+              repeatRows=1)
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), WARN_FG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (2, 0), (4, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, WARN_BG]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
+def _top_unresponsive_table(rows: List[Dict[str, Any]], S):
+    if not rows:
+        return Paragraph("<font color='#9CA3AF'>No stale in-flight confirmations.</font>",
+                         S["body"])
+    data = [["Party", "Cat", "₹ Exposure", "Days pending", "Status", "Email"]]
+    cat_abbr = {"trade_receivable": "Rec", "trade_payable": "Pay",
+                "bank": "Bank", "unsecured_loans": "Loan", "other": "Oth"}
+    for r in rows[:10]:
+        data.append([
+            (r["party"] or "")[:28],
+            cat_abbr.get(r["category"], "—"),
+            f"{_inr(r['amount'])} {r['dr_cr']}",
+            f"{r['days_pending']}d",
+            (r["status"] or "").title(),
+            (r["email"] or "")[:28],
+        ])
+    t = Table(data, colWidths=[36 * mm, 10 * mm, 28 * mm, 20 * mm, 20 * mm, 46 * mm],
+              repeatRows=1)
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E40AF")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (2, 0), (4, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, BLUE_BG]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
+def _subhead_heatmap_table(rows: List[Dict[str, Any]], S):
+    if not rows:
+        return Paragraph("<font color='#9CA3AF'>No subhead data.</font>", S["body"])
+    data = [["Subhead", "Parties", "Exposure (₹)", "Coverage ₹ %", "Response ₹ %"]]
+    for r in rows[:12]:
+        data.append([
+            (r["parent_group"] or "—")[:42],
+            str(r["count"]),
+            _inr(r["amount"]),
+            f"{r['audit_amount_pct']:.1f}%",
+            f"{r['response_amount_pct']:.1f}%",
+        ])
+    t = Table(data, colWidths=[60 * mm, 18 * mm, 32 * mm, 28 * mm, 28 * mm],
+              repeatRows=1)
+    style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]
+    # Colour the coverage column by intensity
+    for i, r in enumerate(rows[:12], start=1):
+        pct = r["audit_amount_pct"]
+        if pct >= 80:
+            bg = colors.HexColor("#A7F3D0")
+        elif pct >= 50:
+            bg = colors.HexColor("#D1FAE5")
+        elif pct >= 25:
+            bg = colors.HexColor("#FEF3C7")
+        elif pct > 0:
+            bg = colors.HexColor("#FEE2E2")
+        else:
+            bg = colors.HexColor("#F3F4F6")
+        style.append(("BACKGROUND", (3, i), (3, i), bg))
+    t.setStyle(TableStyle(style))
+    return t
+
+
 def build_summary_pdf(*, run: Dict[str, Any],
                       client: Dict[str, Any],
                       ledgers: List[Dict[str, Any]],
-                      responses: List[Dict[str, Any]]) -> bytes:
-    """Cover/Health → Variances → Confirmed → Sign-off."""
+                      responses: List[Dict[str, Any]],
+                      analytics: Optional[Dict[str, Any]] = None) -> bytes:
+    """Dashboard-style audit summary.
+
+    Page 1  Cover + Hero KPIs + Category Matrix
+    Page 2  Confirmation Funnel + Top Disputed
+    Page 3  Top Unresponsive + Subhead Heatmap
+    Page 4  Variances detail  (if any disputes)
+    Page 5  Confirmed parties (if any confirmed)
+    Page 6  Sign-off
+    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -642,26 +1018,70 @@ def build_summary_pdf(*, run: Dict[str, Any],
     total = len(ledgers)
     ledger_by_id = {L["ledger_id"]: L for L in ledgers if L.get("ledger_id")}
 
+    # ---------- Page 1 · Cover + Hero + Category Matrix ---------------------
     story.append(Paragraph("Balance Confirmation — Summary Report", S["h1"]))
     story.append(Paragraph("Audit Working-Paper · Section 44AB", S["body"]))
     story.append(Spacer(1, 4))
     story.append(_client_block(run, client, S))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("Status Summary", S["h2"]))
-    story.append(_status_banner(kpi, total, S))
-    story.append(Spacer(1, 8))
-    story.append(_kpi_grid(kpi, S))
+    if analytics:
+        story.append(Paragraph("Audit Coverage at a Glance", S["h2"]))
+        story.append(_hero_strip(analytics["overall"], S))
+        story.append(Spacer(1, 8))
+        story.append(_status_banner(kpi, total, S))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Category Matrix", S["h2"]))
+        story.append(_category_grid(analytics["categories"], S))
 
-    # Variances
+        # ---------- Page 2 · Funnel + Top Disputed --------------------------
+        story.append(PageBreak())
+        story.append(Paragraph("Confirmation Funnel", S["h2"]))
+        story.append(Paragraph(
+            "<font color='#6B7280'>Drop-off from total ledgers identified to "
+            "recipients who responded — amount-weighted against total exposure.</font>",
+            S["body"]))
+        story.append(Spacer(1, 4))
+        story.append(_funnel_table(analytics["funnel"], S))
+
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(
+            f"Top Disputed Confirmations · by value variance "
+            f"({len(analytics['top_disputed'])})",
+            S["h2"]))
+        story.append(_top_disputed_table(analytics["top_disputed"], S))
+
+        # ---------- Page 3 · Unresponsive + Subhead Heatmap -----------------
+        story.append(PageBreak())
+        story.append(Paragraph(
+            f"Stale / Unresponsive · sent 7+ days ago, awaiting reply "
+            f"({len(analytics['top_unresponsive'])})",
+            S["h2"]))
+        story.append(_top_unresponsive_table(analytics["top_unresponsive"], S))
+
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Subhead Coverage Heatmap", S["h2"]))
+        story.append(Paragraph(
+            "<font color='#6B7280'>Coverage % is computed as (confirmed + reconciled) ₹ "
+            "÷ subhead total ₹. Useful for sampling rationale and gap identification.</font>",
+            S["body"]))
+        story.append(Spacer(1, 4))
+        story.append(_subhead_heatmap_table(analytics["subheads"], S))
+    else:
+        story.append(Paragraph("Status Summary", S["h2"]))
+        story.append(_status_banner(kpi, total, S))
+        story.append(Spacer(1, 8))
+        story.append(_kpi_grid(kpi, S))
+
+    # ---------- Page 4 · Variances (detail, all rows) -----------------------
     disputed = [r for r in responses if r.get("decision") == "disputed"]
     if disputed:
         story.append(PageBreak())
         story.append(Paragraph(
-            f"Disputed Confirmations · {len(disputed)} party(ies)", S["h2"]))
+            f"Disputed Confirmations — Detail · {len(disputed)} party(ies)", S["h2"]))
         story.append(_variance_table(disputed, ledger_by_id, S))
 
-    # Confirmed
+    # ---------- Page 5 · Confirmed ------------------------------------------
     confirmed = [r for r in responses if r.get("decision") == "confirmed"]
     if confirmed:
         story.append(PageBreak())
@@ -669,16 +1089,19 @@ def build_summary_pdf(*, run: Dict[str, Any],
             f"Confirmed Parties · {len(confirmed)} response(s)", S["h2"]))
         story.append(_confirmed_table(confirmed, ledger_by_id, S))
 
-    # Sign-off
+    # ---------- Page 6 · Sign-off -------------------------------------------
     story.append(PageBreak())
     story.append(Paragraph("Sign-off", S["h2"]))
     story.append(Paragraph(
         "Notes: This summary is auto-generated from the run's ledger data, "
         "send-log and recipient responses captured via the public confirmation "
-        "link. Disputed responses are highlighted in amber; confirmed responses "
-        "in green. The full per-party send timeline + raw recipient submissions "
-        "are available in the companion Excel workbook (Sent Tracker · Status "
-        "Timeline · Variances · Confirmed sheets).", S["body"]))
+        "link. The dashboard on page 1 mirrors the live on-screen analytics "
+        "and is the primary audit sign-off reference. Disputed responses whose "
+        "reconciliation has been logged by the auditor are counted under "
+        "'Reconciled' in the coverage metrics. The full per-party send timeline "
+        "and raw recipient submissions are available in the companion Excel "
+        "workbook (Sent Tracker · Status Timeline · Variances · Confirmed).",
+        S["body"]))
     story.append(Spacer(1, 16))
     story.append(_signoff(S))
 

@@ -1,0 +1,51 @@
+{
+  "summary": "Backend + Frontend regression for the new Balance Confirmation Dashboard (run e96d4d22-f7be-458b-a314-abb97acddf55, client cli_8656f99622ae). All 7 backend pytest cases pass and every spec'd UI element + interaction works. Highlights: (a) /api/.../analytics returns the exact 6 status buckets (confirmed/reconciled/disputed/in_flight/failed/not_sent) with correct sum-consistency, (b) categories include trade_receivable/trade_payable/bank/unsecured_loans + 'other', (c) funnel is 6-stage Identified→With-email→Dispatched→Delivered→Opened→Responded, (d) summary.pdf returns valid %PDF >5KB, (e) summary.xlsx returns valid PK ZIP, (f) reconciled-bucket count == top-level reconciled_count, (g) UI shows Dashboard|Workbench switcher with Dashboard default, all data-testids present (hero ×4, category-matrix + 4 cat cards, funnel ×6 + wrapper, status-donut SVG renders via Recharts, top-disputed/unresponsive panels, subhead heatmap with 12 rows), (h) Summary PDF & Summary XLSX live INSIDE bc-dashboard-header (verified with hdr.contains()) and the old inline run-header buttons are gone, (i) clicking the buttons triggers the corresponding 200 response with correct content-type. On the demo run the response data is sparse (1 in_flight, 837 not_sent, 0 confirmed/reconciled/disputed) so the reconciled-from-recon-comments path is exercised in code but evaluates to 0 here — that is expected per the request and confirmed via /analytics JSON.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard hero strip", "issues": ["Hero card testid for 'Audit Coverage · by ₹' is auto-slugified to `bc-hero-audit-coverage---by--` (trailing double-dash because ₹ becomes empty). Functional, but ugly for automation. Consider using an explicit testid like `bc-hero-audit-coverage-amount` instead of deriving it from the label."]},
+      {"screen": "Dashboard initial render", "issues": ["Recharts logs 'width(-1) and height(-1) of chart should be greater than 0' twice on first paint of the status donut — happens because ResponsiveContainer measures before layout settles. Non-blocking but consider giving the donut wrapper an explicit minHeight to silence the warning."]},
+      {"screen": "Workbench tab", "issues": ["React hydration console error: 'whitespace text nodes cannot be a child of <colgroup>' — points to whitespace between <col> tags in one of the workbench tables (not the dashboard). Cosmetic / hydration warning only."]}
+    ]
+  },
+  "verified": {
+    "backend_pytest": "7/7 passed in /app/backend/tests/test_balance_confirmation_dashboard.py",
+    "analytics_status_buckets": "{confirmed, reconciled, disputed, in_flight, failed, not_sent} — exact match",
+    "analytics_count_consistency": "sum(by_status.count) == overall.count (838)",
+    "analytics_reconciled_consistency": "overall.by_status.reconciled.count == reconciled_count (both 0 for this run, expected)",
+    "categories": "['trade_receivable','trade_payable','bank','unsecured_loans','other'] — required 4 + other",
+    "funnel_stages": "6 — Identified, With email, Dispatched, Delivered, Opened, Responded",
+    "summary_pdf": "200 application/pdf, %PDF magic, >5KB",
+    "summary_xlsx": "200 spreadsheetml, PK magic, >1KB",
+    "ui_view_switcher": "bc-view-dashboard (default active) and bc-view-workbench both clickable; clicking workbench hides bc-dashboard and reveals tables; clicking dashboard restores it.",
+    "ui_dashboard_testids": "bc-dashboard, bc-dashboard-header, bc-summary-xlsx, bc-summary-pdf, bc-dashboard-refresh, bc-category-matrix, bc-cat-trade_receivable/trade_payable/bank/unsecured_loans, bc-status-donut (svg present), bc-top-disputed, bc-top-unresponsive, bc-subhead-heatmap (12 rows), bc-hero-* ×4, bc-funnel-{identified,with-email,dispatched,delivered,opened,responded} — all present",
+    "downloads_inside_dashboard_header": "bc-summary-pdf and bc-summary-xlsx are descendants of bc-dashboard-header (hdr.contains(...) === true). Only one of each exists on the page (old inline run-header buttons removed).",
+    "download_clicks": "Both PDF (200 application/pdf) and XLSX (200 .../spreadsheetml.sheet) download responses captured; toast 'PDF downloaded' visible."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_balance_confirmation_dashboard.py",
+    "/app/test_reports/pytest/bc_dashboard_results.xml"
+  ],
+  "action_items": [
+    "(Cosmetic) Hardcode hero KPI testid for 'Audit Coverage · by ₹' instead of slug-deriving it (currently `bc-hero-audit-coverage---by--`).",
+    "(Cosmetic) Suppress Recharts width(-1) warning on initial paint by giving the status-donut container an explicit minHeight or using fixed pixel height in SummaryDashboard.jsx.",
+    "(Cosmetic) Hydration error in workbench tables — clean up whitespace inside <colgroup>.",
+    "Consider seeding a small QA fixture (a few responses with decision=disputed + a recon comment) so the reconciled bucket can be visually validated end-to-end on the demo run; today the dashboard panels are populated but every status row except not_sent/in_flight is zero."
+  ],
+  "critical_code_review_comments": [
+    "analytics.py is well-structured and small (~340 lines) — single source of truth for both /analytics JSON and PDF mirror. Good separation.",
+    "_reconciled_ledger_ids correctly uses response_id linkage to bc_recon_comments. Edge case: if a comment has response_id but no auditor text it still flips disputed→reconciled; consider requiring non-empty comment body before promoting.",
+    "_top_unresponsive uses _STALE_SENT_DAYS=7 hardcoded — fine, but worth surfacing as a request-level config later.",
+    "summary_export.build_summary_pdf accepting analytics is the right move for SSOT consistency between dashboard and PDF.",
+    "Frontend uses Recharts (CRA/Webpack-friendly), consistent with the 'no import.meta' constraint."
+  ],
+  "updated_files": ["/app/backend/tests/test_balance_confirmation_dashboard.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (all spec'd testids + flows verified)"},
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin, qa-bot@transformautomations.com) — valid.",
+  "seed_data_creation": "None — used the provided demo run e96d4d22-f7be-458b-a314-abb97acddf55. State untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend dashboard analytics + summary downloads are fully covered by /app/backend/tests/test_balance_confirmation_dashboard.py and pass against the qa-bot run. Frontend dashboard at /dashboard/clients/cli_8656f99622ae/utilities/balance-confirmation/runs/e96d4d22-f7be-458b-a314-abb97acddf55 has all required data-testids and interactions wired. The demo run has 838 ledgers but only 1 in_flight + 837 not_sent — to exercise the disputed/reconciled visuals you'll need a run with submitted responses + recon comments. Three cosmetic warnings (hero testid slug, Recharts width=-1, colgroup whitespace hydration) are noted but non-blocking."
+}
