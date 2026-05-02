@@ -82,6 +82,7 @@ def build_ledger_records(run_id: str,
             "phone": (L.get("phoneNumber") or L.get("phone") or "").strip(),
             "email": "",
             "cc_emails": [],
+            "bcc_emails": [],
             "contact_name": "",
             "response_token": uuid.uuid4().hex,
             "confirmation_status": "not_sent",
@@ -137,7 +138,7 @@ def summarise_ledgers(ledgers: List[Dict[str, Any]]) -> Dict[str, Any]:
 EMAIL_CSV_COLUMNS = [
     "ledger_id", "name", "parent_group", "category",
     "closing_balance", "dr_cr",
-    "email", "cc_emails", "contact_name",
+    "email", "cc_emails", "bcc_emails", "contact_name",
     "phone", "gstin", "pan", "address",
 ]
 
@@ -151,6 +152,9 @@ def export_email_csv(ledgers: List[Dict[str, Any]]) -> bytes:
         ccs = L.get("cc_emails") or []
         if isinstance(ccs, list):
             ccs = "; ".join(ccs)
+        bccs = L.get("bcc_emails") or []
+        if isinstance(bccs, list):
+            bccs = "; ".join(bccs)
         w.writerow([
             L.get("ledger_id", ""),
             L.get("name", ""),
@@ -160,6 +164,7 @@ def export_email_csv(ledgers: List[Dict[str, Any]]) -> bytes:
             (L.get("dr_cr") or "").upper(),
             L.get("email", ""),
             ccs,
+            bccs,
             L.get("contact_name", ""),
             L.get("phone", ""),
             L.get("gstin", ""),
@@ -170,8 +175,9 @@ def export_email_csv(ledgers: List[Dict[str, Any]]) -> bytes:
 
 
 def import_email_csv(content: bytes) -> List[Dict[str, Any]]:
-    """Parse uploaded CSV → list of {ledger_id, email, cc_emails, contact_name,
-    phone, gstin, pan, address, category} updates. Other columns ignored.
+    """Parse uploaded CSV → list of {ledger_id, email, cc_emails, bcc_emails,
+    contact_name, phone, gstin, pan, address, category} updates. Other
+    columns ignored.
 
     Matching priority: ledger_id (preferred) > exact name (fallback).
     """
@@ -189,6 +195,8 @@ def import_email_csv(content: bytes) -> List[Dict[str, Any]]:
             rec["email"] = _norm_email(row.get("email", ""))
         if "cc_emails" in row:
             rec["cc_emails"] = _split_emails(row.get("cc_emails", ""))
+        if "bcc_emails" in row:
+            rec["bcc_emails"] = _split_emails(row.get("bcc_emails", ""))
         for k in ("contact_name", "phone", "gstin", "pan", "address"):
             if k in row:
                 rec[k] = (row.get(k) or "").strip()

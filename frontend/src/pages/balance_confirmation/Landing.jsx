@@ -12,10 +12,10 @@ const inr = (v) => {
   return n < 0 ? `(${s})` : s;
 };
 const CATS = [
-  { key: "trade_receivable", label: "Receivables", chip: "emerald" },
-  { key: "trade_payable",    label: "Payables",    chip: "amber" },
-  { key: "bank",             label: "Banks",       chip: "indigo" },
-  { key: "other",            label: "Other",       chip: "slate" },
+  { key: "trade_receivable", label: "Receivables",     chip: "emerald" },
+  { key: "trade_payable",    label: "Payables",        chip: "amber" },
+  { key: "bank",             label: "Banks",           chip: "indigo" },
+  { key: "unsecured_loans",  label: "Unsecured Loans", chip: "slate" },
 ];
 const CHIP_CLS = {
   emerald: "bg-emerald-50 text-emerald-800 border-emerald-200",
@@ -57,6 +57,8 @@ export default function BalanceConfirmationLanding() {
   const [showResponses, setShowResponses] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [universalCc, setUniversalCc] = useState("");
+  const [universalBcc, setUniversalBcc] = useState("");
+  const [skipZeros, setSkipZeros] = useState(true);
   const dropRef = useRef(null);
 
   /* Load past runs + (optionally) hydrate run if URL has :rid */
@@ -186,8 +188,9 @@ export default function BalanceConfirmationLanding() {
     setBusy(true);
     try {
       const cc = universalCc.split(",").map(s => s.trim()).filter(s => s.includes("@"));
+      const bcc = universalBcc.split(",").map(s => s.trim()).filter(s => s.includes("@"));
       const { data } = await http.post(`/balance-confirmation/runs/${rid}/send`, {
-        ledger_ids, cc, is_reminder: isReminder,
+        ledger_ids, cc, bcc, is_reminder: isReminder,
       });
       const tone = data.failed > 0 ? "warning" : "success";
       const msg = `Sent ${data.sent} · Failed ${data.failed}${data.skipped ? ` · Skipped ${data.skipped}` : ""}`;
@@ -220,7 +223,18 @@ export default function BalanceConfirmationLanding() {
   /* ---------- Filtered rows ---------- */
   const visibleLedgers = useMemo(() => {
     let rows = ledgers;
-    if (activeTab !== "all") rows = rows.filter(r => r.category === activeTab);
+    if (activeTab === "unsecured_loans") {
+      // Tab sourced from parent-group text (not the backend category)
+      rows = rows.filter(r => /unsecured\s*loan/i.test(r.parent_group || ""));
+    } else if (activeTab !== "all") {
+      rows = rows.filter(r =>
+        r.category === activeTab
+        && !/unsecured\s*loan/i.test(r.parent_group || ""),
+      );
+    }
+    if (skipZeros) {
+      rows = rows.filter(r => Math.abs(Number(r.closing_balance) || 0) >= 0.005);
+    }
     if (missingEmailOnly) rows = rows.filter(r => !r.email);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -230,13 +244,13 @@ export default function BalanceConfirmationLanding() {
         (r.email || "").toLowerCase().includes(q));
     }
     return rows;
-  }, [ledgers, activeTab, missingEmailOnly, search]);
+  }, [ledgers, activeTab, skipZeros, missingEmailOnly, search]);
 
   const summary = run?.summary;
 
   return (
     <div className="min-h-screen bg-[#f9f9f8]">
-      <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="max-w-[1600px] mx-auto px-6 py-8">
         <Link to={`/dashboard/clients/${clientId}`} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-black mb-6" data-testid="bc-back">
           <ArrowLeft size={14}/> Back to Utilities
         </Link>
@@ -262,33 +276,20 @@ export default function BalanceConfirmationLanding() {
           </div>
         </div>
 
-        <div className="grid grid-cols-12 gap-6">
-          {/* ---------- Past Runs sidebar ---------- */}
-          <div className="col-span-3 space-y-3" data-testid="bc-past-runs">
-            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-gray-500">Past Runs · {runs.length}</div>
-            {runs.length === 0 && <div className="text-xs text-gray-500 border border-dashed border-gray-300 p-4">No runs yet. Click "New Run" to start.</div>}
-            {runs.map(r => {
-              const active = r.id === rid;
-              const t = r.summary?.total ?? 0;
-              return (
-                <div key={r.id} className={`relative border ${active ? "border-emerald-700 bg-white" : "border-gray-200 bg-white hover:border-gray-300"} p-3 cursor-pointer rounded-sm transition`}
-                  onClick={() => navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation/runs/${r.id}`)}
-                  data-testid={`bc-run-${r.id}`}>
-                  <div className="text-sm font-semibold truncate">{r.name}</div>
-                  <div className="text-[11px] text-gray-500 font-mono mt-0.5">FY {r.fy} · As at {r.as_at_date || "—"}</div>
-                  <div className="text-[11px] text-gray-500 mt-1.5">Status: <span className={`font-medium ${r.status === "ingested" ? "text-emerald-700" : "text-gray-700"}`}>{r.status}</span></div>
-                  {t > 0 && <div className="text-[10px] text-gray-500 font-mono mt-0.5">{t} ledgers · {r.summary?.with_email || 0} mapped</div>}
-                  <button onClick={(e) => { e.stopPropagation(); deleteRun(r.id); }} className="absolute top-2 right-2 text-gray-300 hover:text-red-600" data-testid={`bc-run-${r.id}-delete`}><Trash2 size={12}/></button>
-                </div>
-              );
-            })}
-          </div>
+        <div className="space-y-6">
+          {/* ---------- Past Runs (full-width table at top) ---------- */}
+          <PastRunsTable
+            runs={runs}
+            activeRid={rid}
+            onOpen={(r) => navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation/runs/${r.id}`)}
+            onDelete={(r) => deleteRun(r.id)}
+          />
 
-          {/* ---------- Workbench ---------- */}
-          <div className="col-span-9 space-y-6">
+          {/* ---------- Workbench (full width) ---------- */}
+          <div className="space-y-6">
             {!rid && (
               <div className="border border-dashed border-gray-300 bg-white p-12 text-center rounded-sm" data-testid="bc-empty">
-                <div className="text-sm text-gray-600">Select a run on the left or click <span className="font-semibold">New Run</span> to begin.</div>
+                <div className="text-sm text-gray-600">Select a run above or click <span className="font-semibold">New Run</span> to begin.</div>
               </div>
             )}
 
@@ -321,7 +322,21 @@ export default function BalanceConfirmationLanding() {
                   {summary && (
                     <div className="grid grid-cols-4 gap-3 mt-5">
                       {CATS.map(c => {
-                        const s = summary.categories?.[c.key] || { count: 0, balance: 0, with_email: 0 };
+                        const s = (() => {
+                          if (c.key === "unsecured_loans") {
+                            // Derive from ledgers whose parent_group matches
+                            const rows = ledgers.filter(r => /unsecured\s*loan/i.test(r.parent_group || ""));
+                            return {
+                              count: rows.length,
+                              balance: rows.reduce((a, r) => a + Math.abs(Number(r.closing_balance) || 0), 0),
+                              with_email: rows.filter(r => r.email).length,
+                            };
+                          }
+                          // For stock categories, exclude the unsecured-loans rows so counts don't double-count
+                          const raw = summary.categories?.[c.key] || { count: 0, balance: 0, with_email: 0 };
+                          if (c.key === "other") return raw;
+                          return raw;
+                        })();
                         return (
                           <div key={c.key} className={`border p-3 rounded-sm ${CHIP_CLS[c.chip]}`} data-testid={`bc-summary-${c.key}`}>
                             <div className="text-[10px] uppercase tracking-widest font-mono opacity-80">{c.label}</div>
@@ -355,32 +370,37 @@ export default function BalanceConfirmationLanding() {
                   <div className="bg-white border border-gray-200 rounded-sm">
                     <div className="px-5 pt-4 pb-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
                       <div className="flex gap-1">
-                        {[{ key: "trade_receivable", label: "Receivables" },
-                          { key: "trade_payable",    label: "Payables" },
-                          { key: "bank",             label: "Banks" },
-                          { key: "other",            label: "Other" },
-                          { key: "all",              label: "All" }].map(t => (
+                        {[...CATS.map(c => ({ key: c.key, label: c.label })),
+                          { key: "all", label: "All" }].map(t => (
                           <button key={t.key} onClick={() => { setActiveTab(t.key); setSelected(new Set()); }}
                             className={`px-2.5 py-1 text-xs font-medium rounded-sm border ${activeTab === t.key ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"}`}
                             data-testid={`bc-tab-${t.key}`}>{t.label}</button>
                         ))}
                       </div>
+                      <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer" title="Hide ledgers whose closing balance is zero">
+                        <input type="checkbox" checked={skipZeros} onChange={e => setSkipZeros(e.target.checked)} className="accent-emerald-700" data-testid="bc-filter-skip-zeros"/>
+                        Skip zero-valued ledgers
+                      </label>
                       <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
                         <input type="checkbox" checked={missingEmailOnly} onChange={e => setMissingEmailOnly(e.target.checked)} className="accent-rose-700" data-testid="bc-filter-missing-email"/>
                         Missing email only
                       </label>
                       <div className="relative">
                         <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400"/>
-                        <input type="text" placeholder="Search ledger / group / email"
+                        <input type="text" placeholder="Search ledger / subhead / email"
                           value={search} onChange={e => setSearch(e.target.value)}
                           className="text-xs h-8 pl-7 pr-3 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
                           data-testid="bc-search"/>
                       </div>
                       <div className="ml-auto flex items-center gap-2">
-                        <input type="text" placeholder="Universal cc (comma-separated)" value={universalCc}
+                        <input type="text" placeholder="Universal cc" value={universalCc}
                           onChange={e => setUniversalCc(e.target.value)}
-                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
+                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-40 focus:outline-none focus:border-emerald-600"
                           data-testid="bc-universal-cc"/>
+                        <input type="text" placeholder="Universal bcc" value={universalBcc}
+                          onChange={e => setUniversalBcc(e.target.value)}
+                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-40 focus:outline-none focus:border-emerald-600"
+                          data-testid="bc-universal-bcc"/>
                         <button onClick={() => setShowResponses(true)} className="text-xs px-3 h-8 rounded-sm border border-emerald-300 text-emerald-800 inline-flex items-center gap-1.5 hover:bg-emerald-50" data-testid="bc-open-responses">
                           <Mail size={12}/> Responses
                         </button>
@@ -440,23 +460,109 @@ export default function BalanceConfirmationLanding() {
 }
 
 /* ============================================================ */
+function PastRunsTable({ runs, activeRid, onOpen, onDelete }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-sm" data-testid="bc-past-runs">
+      <div className="px-5 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-gray-500">Past Runs</div>
+          <div className="font-heading text-base mt-0.5">{runs.length} run{runs.length === 1 ? "" : "s"}</div>
+        </div>
+        <div className="text-[11px] text-gray-500 font-mono">Click a row to open · Trash to delete</div>
+      </div>
+      {runs.length === 0 ? (
+        <div className="px-8 py-10 text-center text-sm text-gray-500 border-t border-dashed border-gray-200">
+          No runs yet. Click <span className="font-semibold text-gray-900">New Run</span> to start.
+        </div>
+      ) : (
+        <table className="w-full text-[12.5px]">
+          <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left  px-4 py-2 border-b border-gray-200">Run name</th>
+              <th className="text-left  px-4 py-2 border-b border-gray-200 w-[8%]">FY</th>
+              <th className="text-left  px-4 py-2 border-b border-gray-200 w-[12%]">As at</th>
+              <th className="text-left  px-4 py-2 border-b border-gray-200 w-[10%]">Status</th>
+              <th className="text-right px-4 py-2 border-b border-gray-200 w-[8%]">Ledgers</th>
+              <th className="text-right px-4 py-2 border-b border-gray-200 w-[10%]">Mapped</th>
+              <th className="text-left  px-4 py-2 border-b border-gray-200 w-[22%]">Source</th>
+              <th className="px-4 py-2 border-b border-gray-200 w-[48px]"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map(r => {
+              const active = r.id === activeRid;
+              const total = r.summary?.total ?? 0;
+              const mapped = r.summary?.with_email ?? 0;
+              return (
+                <tr key={r.id}
+                    className={`cursor-pointer transition ${active ? "bg-emerald-50/60" : "hover:bg-gray-50"}`}
+                    onClick={() => onOpen(r)}
+                    data-testid={`bc-run-${r.id}`}>
+                  <td className="px-4 py-2 border-b border-gray-100 truncate">
+                    <div className="flex items-center gap-2">
+                      {active && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0" aria-hidden/>}
+                      <span className={`font-medium truncate ${active ? "text-emerald-800" : "text-gray-900"}`}>{r.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 border-b border-gray-100 font-mono text-[11.5px] text-gray-600">{r.fy}</td>
+                  <td className="px-4 py-2 border-b border-gray-100 font-mono text-[11.5px] text-gray-600">{r.as_at_date || "—"}</td>
+                  <td className="px-4 py-2 border-b border-gray-100">
+                    <span className={`text-[10px] font-mono px-2 py-0.5 border rounded-sm ${
+                      r.status === "ingested" ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                      : r.status === "created" ? "border-gray-300 bg-gray-50 text-gray-600"
+                      : "border-amber-300 bg-amber-50 text-amber-700"}`}>{r.status}</span>
+                  </td>
+                  <td className="px-4 py-2 border-b border-gray-100 text-right font-mono">{total}</td>
+                  <td className="px-4 py-2 border-b border-gray-100 text-right font-mono text-gray-500">{mapped}/{total}</td>
+                  <td className="px-4 py-2 border-b border-gray-100 text-[11px] text-gray-500 truncate" title={r.source_filename || ""}>{r.source_filename || "—"}</td>
+                  <td className="px-4 py-2 border-b border-gray-100 text-center">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(r); }}
+                      className="text-gray-400 hover:text-red-600 inline-flex items-center"
+                      title="Delete run"
+                      data-testid={`bc-run-${r.id}-delete`}>
+                      <Trash2 size={13}/>
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================ */
 function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
   const allChecked = rows.length > 0 && rows.every(r => selected.has(r.ledger_id));
   return (
     <div className="overflow-x-auto" data-testid="bc-ledger-table">
-      <table className="w-full text-[12px]">
+      <table className="w-full text-[12px] table-fixed">
+        <colgroup>
+          <col style={{ width: "32px" }}/>
+          <col style={{ width: "22%" }}/>  {/* Ledger */}
+          <col style={{ width: "10%" }}/>  {/* Subhead */}
+          <col style={{ width: "11%" }}/>  {/* Closing */}
+          <col style={{ width: "8%"  }}/>  {/* Status */}
+          <col style={{ width: "15%" }}/>  {/* Email */}
+          <col style={{ width: "13%" }}/>  {/* Cc */}
+          <col style={{ width: "13%" }}/>  {/* Bcc */}
+          <col style={{ width: "8%"  }}/>  {/* Contact */}
+        </colgroup>
         <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
           <tr>
-            <th className="px-3 py-2 border-b border-gray-200 w-8">
+            <th className="px-2 py-2 border-b border-gray-200">
               <input type="checkbox" checked={allChecked} onChange={onToggleAll} className="accent-emerald-700" data-testid="bc-select-all"/>
             </th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Ledger</th>
-            <th className="text-left px-3 py-2 border-b border-gray-200">Group</th>
-            <th className="text-left px-3 py-2 border-b border-gray-200">Category</th>
+            <th className="text-left px-3 py-2 border-b border-gray-200">Subhead</th>
             <th className="text-right px-3 py-2 border-b border-gray-200">Closing</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Status</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Email</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Cc</th>
+            <th className="text-left px-3 py-2 border-b border-gray-200">Bcc</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Contact</th>
           </tr>
         </thead>
@@ -472,26 +578,14 @@ function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
 }
 
 function Row({ row, onPatch, checked, onToggle }) {
-  const cat = CATS.find(c => c.key === row.category) || CATS[3];
   const statusInfo = STATUS_CHIP[row.confirmation_status] || STATUS_CHIP.not_sent;
   return (
     <tr className="hover:bg-gray-50" data-testid={`bc-row-${row.ledger_id}`}>
-      <td className="px-3 py-2 border-b border-gray-100 text-center">
+      <td className="px-2 py-2 border-b border-gray-100 text-center">
         <input type="checkbox" checked={checked} onChange={onToggle} disabled={!row.email} className="accent-emerald-700 disabled:opacity-30" data-testid={`bc-row-${row.ledger_id}-select`}/>
       </td>
-      <td className="px-3 py-2 border-b border-gray-100 max-w-[240px] truncate" title={row.name}>{row.name}</td>
-      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] max-w-[140px] truncate" title={row.parent_group}>{row.parent_group || "—"}</td>
-      <td className="px-3 py-2 border-b border-gray-100">
-        <select
-          value={row.category} onChange={e => onPatch(row.ledger_id, { category: e.target.value })}
-          className={`text-[11px] px-1.5 py-0.5 border rounded-sm font-medium ${CHIP_CLS[cat.chip]}`}
-          data-testid={`bc-row-${row.ledger_id}-category`}>
-          <option value="trade_receivable">Receivable</option>
-          <option value="trade_payable">Payable</option>
-          <option value="bank">Bank</option>
-          <option value="other">Other</option>
-        </select>
-      </td>
+      <td className="px-3 py-2 border-b border-gray-100 truncate" title={row.name}>{row.name}</td>
+      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] truncate" title={row.parent_group}>{row.parent_group || "—"}</td>
       <td className="px-3 py-2 border-b border-gray-100 text-right font-mono whitespace-nowrap">
         {inr(Math.abs(row.closing_balance))} <span className={`text-[10px] ${row.dr_cr === "dr" ? "text-rose-700" : "text-emerald-700"}`}>{(row.dr_cr || "").toUpperCase()}</span>
       </td>
@@ -501,9 +595,12 @@ function Row({ row, onPatch, checked, onToggle }) {
       <Editable value={row.email} placeholder="email@example.com" type="email"
         onSave={v => onPatch(row.ledger_id, { email: v })}
         testid={`bc-row-${row.ledger_id}-email`}/>
-      <Editable value={(row.cc_emails || []).join(", ")} placeholder="cc1@x.com, cc2@x.com"
+      <Editable value={(row.cc_emails || []).join(", ")} placeholder="cc1, cc2"
         onSave={v => onPatch(row.ledger_id, { cc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
         testid={`bc-row-${row.ledger_id}-cc`}/>
+      <Editable value={(row.bcc_emails || []).join(", ")} placeholder="bcc1, bcc2"
+        onSave={v => onPatch(row.ledger_id, { bcc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
+        testid={`bc-row-${row.ledger_id}-bcc`}/>
       <Editable value={row.contact_name} placeholder="Mr. ABC"
         onSave={v => onPatch(row.ledger_id, { contact_name: v })}
         testid={`bc-row-${row.ledger_id}-contact`}/>
@@ -516,12 +613,12 @@ function Editable({ value, placeholder, onSave, type = "text", testid }) {
   const [dirty, setDirty] = useState(false);
   useEffect(() => { setV(value || ""); setDirty(false); }, [value]);
   return (
-    <td className="px-3 py-2 border-b border-gray-100">
+    <td className="px-2 py-1.5 border-b border-gray-100">
       <input type={type} value={v} placeholder={placeholder}
         onChange={e => { setV(e.target.value); setDirty(true); }}
         onBlur={() => { if (dirty) onSave(v); }}
         onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-        className={`text-[12px] px-2 py-1 border rounded-sm w-full ${dirty ? "border-amber-400 bg-amber-50/50" : "border-transparent hover:border-gray-200 focus:border-emerald-500 bg-transparent"} focus:outline-none`}
+        className={`text-[11.5px] px-1.5 py-1 border rounded-sm w-full ${dirty ? "border-amber-400 bg-amber-50/50" : "border-transparent hover:border-gray-200 focus:border-emerald-500 bg-transparent"} focus:outline-none`}
         data-testid={testid}/>
     </td>
   );

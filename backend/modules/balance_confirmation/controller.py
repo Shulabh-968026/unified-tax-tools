@@ -209,7 +209,7 @@ async def upload_books(
         prev = existing.get(rec["name"])
         if prev:
             # carry forward user-edited fields
-            for k in ("email", "cc_emails", "contact_name", "phone",
+            for k in ("email", "cc_emails", "bcc_emails", "contact_name", "phone",
                       "address", "gstin", "pan", "category"):
                 if prev.get(k):
                     rec[k] = prev[k]
@@ -591,6 +591,7 @@ class BulkSendRequest(BaseModel):
     ledger_ids: List[str]
     template_id: Optional[str] = None  # if missing, use default per category
     cc: List[str] = []                 # universal cc applied to every send
+    bcc: List[str] = []                # universal bcc applied to every send
     extra_subject_suffix: Optional[str] = None
     is_reminder: bool = False
     auditor_firm: Optional[str] = None
@@ -723,6 +724,7 @@ async def bulk_send(
 
         # Per-ledger cc = universal + ledger.cc_emails
         cc_list = list(set([*(payload.cc or []), *(ledger.get("cc_emails") or [])]))
+        bcc_list = list(set([*(payload.bcc or []), *(ledger.get("bcc_emails") or [])]))
 
         # Attachments
         attachments: List[Dict[str, Any]] = []
@@ -751,6 +753,7 @@ async def bulk_send(
             text_body=text_body,
             reply_to=auditor_email or None,
             cc=cc_list or None,
+            bcc=bcc_list or None,
             attachments=attachments or None,
             from_name=(f"Confirmation of Balance — M/s {client.get('name')}".strip()
                        if client.get("name") else None),

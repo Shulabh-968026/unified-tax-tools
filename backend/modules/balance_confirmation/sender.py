@@ -143,6 +143,7 @@ async def send_one(*,
                    text_body: str,
                    reply_to: Optional[str] = None,
                    cc: Optional[List[str]] = None,
+                   bcc: Optional[List[str]] = None,
                    attachments: Optional[List[Dict[str, Any]]] = None,
                    tags: Optional[List[Dict[str, str]]] = None,
                    from_name: Optional[str] = None) -> Dict[str, Any]:
@@ -183,6 +184,8 @@ async def send_one(*,
         params["reply_to"] = [reply_to] if isinstance(reply_to, str) else list(reply_to)
     if cc:
         params["cc"] = [c for c in cc if c]
+    if bcc:
+        params["bcc"] = [b for b in bcc if b]
     if attachments:
         params["attachments"] = [
             {

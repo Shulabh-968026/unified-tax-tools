@@ -50,6 +50,7 @@ class LedgerOut(BaseModel):
     dr_cr: str = ""
     email: str = ""
     cc_emails: List[str] = []
+    bcc_emails: List[str] = []
     contact_name: str = ""
     address: str = ""
     phone: str = ""
@@ -65,6 +66,7 @@ class LedgerPatch(BaseModel):
     category: Optional[str] = None
     email: Optional[str] = None
     cc_emails: Optional[List[str]] = None
+    bcc_emails: Optional[List[str]] = None
     contact_name: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
