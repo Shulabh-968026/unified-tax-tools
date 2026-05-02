@@ -147,11 +147,10 @@ def build_ledger_extract_pdf(*,
     meta = Table([[
         Paragraph(f"<b>Party GSTIN</b><br/>{ledger.get('gstin') or '—'}", BODY),
         Paragraph(f"<b>Group</b><br/>{ledger.get('parent_group') or '—'}", BODY),
-        Paragraph(f"<b>Opening Bal.</b><br/>{_inr(-opening) if opening else '–'}", BODY),
+        Paragraph(f"<b>Opening Bal.</b><br/>{_bal(-opening)}", BODY),
         Paragraph(f"<b>Closing Bal.</b><br/>"
-                  f"<font color='{GREEN.hexval()[2:]}'>"
-                  f"{_inr(abs(closing))} {('Dr' if closing < 0 else 'Cr')}"
-                  f"</font>" if closing else "<b>Closing Bal.</b><br/>–", BODY),
+                  f"<font color='{GREEN.hexval()[2:]}'>{_bal(-closing)}</font>",
+                  BODY),
     ]], colWidths=[45 * mm, 50 * mm, 40 * mm, 51 * mm])
     meta.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
@@ -165,7 +164,7 @@ def build_ledger_extract_pdf(*,
     story.append(Spacer(1, 8))
 
     # Vouchers table
-    headers = ["Date", "Voucher Type", "Voucher #", "Narration", "Debit", "Credit", "Balance"]
+    headers = ["Date", "Voucher Type", "Voucher #", "Debit", "Credit", "Balance"]
     table_data: List[List[Any]] = [headers]
 
     # In Tally, amount > 0 = Credit, < 0 = Debit. We want columns:
@@ -174,7 +173,7 @@ def build_ledger_extract_pdf(*,
     # Running balance = prior + amt (credit-positive convention)
     running = -opening  # opening_balance: -ve = Dr, +ve = Cr; convert to credit-pos
     table_data.append([
-        "", "Opening Balance", "", "", "", "", _bal(running),
+        "", "Opening Balance", "", "", "", _bal(running),
     ])
     for r in rows:
         amt = r["amount"]
@@ -183,25 +182,24 @@ def build_ledger_extract_pdf(*,
             r["date"],
             r["vtype"],
             r["vno"],
-            r["narration"],
             _inr(-amt) if amt < 0 else "",
             _inr(amt)  if amt > 0 else "",
             _bal(running),
         ])
     # Closing line — should match -closing (sign-converted to credit-pos)
     table_data.append([
-        "", "Closing Balance", "", "", "", "", _bal(-closing),
+        "", "Closing Balance", "", "", "", _bal(-closing),
     ])
 
     t = Table(table_data,
-              colWidths=[18 * mm, 30 * mm, 26 * mm, 50 * mm, 22 * mm, 22 * mm, 24 * mm],
+              colWidths=[22 * mm, 38 * mm, 34 * mm, 30 * mm, 30 * mm, 32 * mm],
               repeatRows=1)
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), INK),
         ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
         ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE",   (0, 0), (-1, -1), 7.5),
-        ("ALIGN",      (4, 1), (-1, -1), "RIGHT"),
+        ("ALIGN",      (3, 1), (-1, -1), "RIGHT"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, ROW_ALT]),
         ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#ECFDF5")),
         ("TEXTCOLOR",  (0, -1), (-1, -1), GREEN),
