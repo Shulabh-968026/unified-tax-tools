@@ -117,16 +117,11 @@ export default function AdminUsers() {
             </div>
           </div>
           <a
-            href={`${import.meta?.env?.VITE_API_URL || ""}/api/admin/qa-pack.pdf`}
+            href={`${process.env.REACT_APP_BACKEND_URL || ""}/api/admin/qa-pack.pdf`}
             target="_blank"
             rel="noreferrer"
             data-testid="qa-pack-download"
             className="shrink-0 inline-flex items-center gap-2 px-3.5 py-2 bg-sky-800 hover:bg-sky-900 text-white text-[12.5px] rounded-sm"
-            onClick={(e) => {
-              e.preventDefault();
-              const url = `${process.env.REACT_APP_BACKEND_URL || ""}/api/admin/qa-pack.pdf`;
-              window.open(url, "_blank");
-            }}
           >
             Download PDF
           </a>
