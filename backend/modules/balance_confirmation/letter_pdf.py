@@ -50,6 +50,18 @@ def _inr(n: float) -> str:
     return f"({s})" if n < 0 else s
 
 
+def _bal(n: float) -> str:
+    """Format a credit-positive balance as 'X.XX Dr' / 'X.XX Cr' / '–'.
+
+    Used for the Opening / Closing / running-Balance cells in the ledger
+    extract so negatives appear as 'X.XX Dr' without brackets.
+    """
+    if not n:
+        return "–"
+    s = f"{abs(n):,.2f}"
+    return f"{s} Dr" if n < 0 else f"{s} Cr"
+
+
 def _date_iso(d: str) -> str:
     """Tally dates can be 'YYYY-MM-DD' or sometimes 'YYYY-MM-DDTHH:MM:SS'."""
     return (d or "")[:10]
@@ -162,7 +174,7 @@ def build_ledger_extract_pdf(*,
     # Running balance = prior + amt (credit-positive convention)
     running = -opening  # opening_balance: -ve = Dr, +ve = Cr; convert to credit-pos
     table_data.append([
-        "", "Opening Balance", "", "", "", "", _inr(running),
+        "", "Opening Balance", "", "", "", "", _bal(running),
     ])
     for r in rows:
         amt = r["amount"]
@@ -174,12 +186,11 @@ def build_ledger_extract_pdf(*,
             r["narration"],
             _inr(-amt) if amt < 0 else "",
             _inr(amt)  if amt > 0 else "",
-            _inr(running),
+            _bal(running),
         ])
     # Closing line — should match -closing (sign-converted to credit-pos)
     table_data.append([
-        "", "Closing Balance", "", "", "", "",
-        f"{_inr(abs(closing))} {'Dr' if closing < 0 else 'Cr' if closing > 0 else ''}",
+        "", "Closing Balance", "", "", "", "", _bal(-closing),
     ])
 
     t = Table(table_data,
