@@ -29,10 +29,94 @@
 <div class="shell">
   {% block content %}{% endblock %}
 
+  {% if not for_pdf %}
+  {# ─── Overall feedback strip — only on screen ─── #}
+  <section class="fb fb--overall" data-fb-module="{{ meta.key }}" data-fb-section="_overall" data-testid="fb-overall">
+    <div class="fb__title">Did this guide help you ship the working paper?</div>
+    <div class="fb__sub">Your tap powers the heatmap your reviewer uses to refine these guides over time.</div>
+    <div class="fb__actions" role="group" aria-label="Was this guide helpful?">
+      <button type="button" class="fb__btn fb__up"   data-helpful="1" data-testid="fb-overall-up"   aria-label="Yes, this helped">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"/></svg>
+        Yes
+      </button>
+      <button type="button" class="fb__btn fb__dn"   data-helpful="0" data-testid="fb-overall-down" aria-label="Not really">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"/></svg>
+        Not really
+      </button>
+    </div>
+  </section>
+  {% endif %}
+
   <footer class="docfoot">
     <div>{{ brand }} · User Guide for {{ meta.title }} {{ meta.version }}</div>
     <div>Generated {{ generated_at }} · Support: <a href="mailto:{{ support_email }}">{{ support_email }}</a></div>
   </footer>
 </div>
+
+{% if not for_pdf %}
+<script>
+/* Compact, dependency-free feedback widget.
+   - Two click states per widget (Yes / No).
+   - Picking "No" reveals an inline reason field; submit on blur or Enter.
+   - Sends to /api/docs/feedback as JSON.
+   - Cookie-based session is sent via credentials:'include'. */
+(function () {
+  const post = async (body) => {
+    try {
+      const r = await fetch("/api/docs/feedback", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return r.ok;
+    } catch (e) { return false; }
+  };
+
+  document.querySelectorAll(".fb").forEach((el) => {
+    const moduleKey = el.dataset.fbModule;
+    const sectionId = el.dataset.fbSection;
+    const buttons = el.querySelectorAll(".fb__btn");
+
+    const onClick = async (btn) => {
+      const helpful = btn.dataset.helpful === "1";
+      buttons.forEach((b) => b.classList.remove("is-on"));
+      btn.classList.add("is-on");
+
+      if (!helpful) {
+        // Reveal reason input
+        let inp = el.querySelector(".fb__reason");
+        if (!inp) {
+          const wrap = document.createElement("div");
+          wrap.className = "fb__reason";
+          wrap.innerHTML =
+            '<label>What was unclear or missing?</label>' +
+            '<textarea rows="2" placeholder="Optional — type a one-liner so we can fix it" data-testid="fb-reason-' + sectionId + '"></textarea>' +
+            '<button type="button" class="fb__send" data-testid="fb-send-' + sectionId + '">Send feedback</button>';
+          el.appendChild(wrap);
+          const ta = wrap.querySelector("textarea");
+          const send = wrap.querySelector(".fb__send");
+          send.addEventListener("click", async () => {
+            const ok = await post({ module_key: moduleKey, section_id: sectionId, helpful: false, reason: ta.value });
+            el.classList.add("fb--sent");
+            el.querySelector(".fb__title") && (el.querySelector(".fb__title").textContent = ok ? "Thanks — captured." : "Couldn't reach the server, but we noted it locally.");
+          });
+          ta.focus();
+        }
+        // Record the click immediately (reason can come on send-click)
+        await post({ module_key: moduleKey, section_id: sectionId, helpful: false, reason: "" });
+      } else {
+        const ok = await post({ module_key: moduleKey, section_id: sectionId, helpful: true, reason: "" });
+        el.classList.add("fb--sent");
+        const t = el.querySelector(".fb__title");
+        if (t) t.textContent = ok ? "Thanks — appreciated." : "Noted locally.";
+      }
+    };
+
+    buttons.forEach((btn) => btn.addEventListener("click", () => onClick(btn)));
+  });
+})();
+</script>
+{% endif %}
 </body>
 </html>

@@ -1,5 +1,51 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Docs feedback widget — heatmap-ready (2026-05-03)
+
+### Why
+Each readme now ends with a "Did this guide help?" widget AND every numbered
+section has a tiny "Was this section clear?" thumbs strip. Over time, the
+admin can see which sections silent-fail for new joinees — the reason
+free-text gives prose-level signal.
+
+### Backend  ·  `modules/docs/feedback.py`
+- `POST /api/docs/feedback` — any logged-in user. Body:
+  `{module_key, section_id, helpful: bool, reason?: str}`. Idempotent
+  upsert keyed on `(user_id, module_key, section_id)` — users can flip
+  their thumbs without polluting the dataset.
+- `GET  /api/docs/feedback/aggregate?module_key=…` — admin only.
+  Group-by `(module_key, section_id)` returning `{up, down, total, score,
+  recent_reasons[]}`. Score = up / (up + down). Reasons sorted recent-first
+  and capped at 5.
+- `GET  /api/docs/feedback/raw?module_key=…&limit=200` — admin only,
+  full row dump for triage.
+- DB collection `docs_feedback` with `feedback_id`, `user_email`,
+  `user_name`, `ts`, `updated_at`.
+
+### Frontend (vanilla JS embedded in `_base.html`)
+- Per-section widget: `<div class="fb fb--section" data-fb-module="…"
+  data-fb-section="…">`. Two thumbs. Picking "No" reveals an inline
+  `<textarea>` with a "Send feedback" button — submits with the reason.
+- Overall card at the very bottom: same shape, slightly bigger, serif title.
+- Confirmation message replaces title after submit ("Thanks — captured.").
+- `@media print { .fb { display: none !important; } }` AND the whole script
+  is wrapped in `{% if not for_pdf %}` — verified zero markup leaks into
+  the PDF.
+
+### Tests  ·  `tests/test_docs.py` — 12/12 GREEN
+- 6 endpoint/branding tests (unchanged)
+- 6 new feedback tests: thumbs-up, thumbs-down with reason, idempotent
+  re-submit, aggregate shape, admin gating on aggregate, payload validation.
+
+### Observability path forward
+Aggregate JSON is consumable as-is. When you want a UI, plug the
+`/feedback/aggregate` endpoint into a tiny admin page with a colour-graded
+table (red for low score sections). Section IDs we already track:
+`regulatory · cohorts · prereq · walkthrough · output · edge · faq ·
+glossary · _overall`.
+
+
+
 ## User Guides + AssureAI rebrand (2026-05-03)
 
 ### New module — `modules/docs/` (HTML + PDF user guides)

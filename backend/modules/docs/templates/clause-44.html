@@ -1,4 +1,24 @@
 {% extends "_base.html" %}
+
+{# Per-section feedback widget — silent in PDF, screen-only on web. #}
+{% macro section_fb(section_id) -%}
+{% if not for_pdf %}
+<div class="fb fb--section" data-fb-module="{{ meta.key }}" data-fb-section="{{ section_id }}" data-testid="fb-section-{{ section_id }}">
+  <div class="fb__title">Was this section clear?</div>
+  <div class="fb__actions" role="group" aria-label="Was this section clear?">
+    <button type="button" class="fb__btn fb__up" data-helpful="1" data-testid="fb-{{ section_id }}-up"   aria-label="Yes">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z"/></svg>
+      Yes
+    </button>
+    <button type="button" class="fb__btn fb__dn" data-helpful="0" data-testid="fb-{{ section_id }}-down" aria-label="No">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22h0a3.13 3.13 0 0 1-3-3.88Z"/></svg>
+      No
+    </button>
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
+
 {% block content %}
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -95,6 +115,7 @@
     <span class="callout__title">Auditor's note</span>
     The four cohorts the module produces (<em>Exempt · Non-GST · Composition · Registered</em>) collapse cleanly onto the seven-column table. The Excel <em>Summary</em> sheet is laid out exactly the way the 3CD utility expects.
   </div>
+  {{ section_fb('regulatory') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -173,6 +194,7 @@
     </svg>
     <figcaption>Cohort waterfall — illustrative ₹100 of expenditure</figcaption>
   </figure>
+  {{ section_fb('cohorts') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -311,6 +333,7 @@
       <p>If you also want a single-page PDF for the audit file, use the <em>Print Schedule (PDF)</em> action on the same toolbar. The PDF carries the firm header and is signed-off-ready.</p>
     </div>
   </div>
+  {{ section_fb('walkthrough') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -340,6 +363,7 @@
       <tr><td><em>… and so on …</em></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
     </tbody>
   </table>
+  {{ section_fb('output') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -399,6 +423,7 @@
 
   <h3>Where do I report a wrong classification?</h3>
   <p>Use the <em>Suggest correction</em> button on the Mapping screen. Your override + reasoning ships to the AssureAI rules team and improves the next release for everyone.</p>
+  {{ section_fb('faq') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -434,6 +459,7 @@
     <dt>RCM</dt>
     <dd>Reverse-charge mechanism — GST liability sits on the recipient instead of the supplier, typically for legal/manpower services and imports.</dd>
   </dl>
+  {{ section_fb('glossary') }}
 </section>
 
 {% endblock %}

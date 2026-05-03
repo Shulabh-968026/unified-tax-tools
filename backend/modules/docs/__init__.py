@@ -28,8 +28,10 @@ from fastapi.responses import HTMLResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from modules.auth.controller import get_current_user
+from modules.docs.feedback import feedback_router
 
 router = APIRouter(prefix="/docs", tags=["docs"])
+router.include_router(feedback_router)
 
 _HERE = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _HERE / "templates"

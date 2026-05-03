@@ -306,6 +306,84 @@ dl.gloss dd {
 }
 .chip--accent { color: var(--accent); border-color: var(--accent-line); background: var(--accent-bg); }
 
+/* ────────── Feedback widget ────────── */
+.fb {
+  margin: 22px 0 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-card);
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.fb__title { font-size: 13px; font-weight: 500; color: var(--ink); flex: 1; }
+.fb__sub   { display: none; }
+.fb__actions { display: flex; gap: 6px; }
+.fb__btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  background: white; border: 1px solid var(--line);
+  border-radius: 3px; color: var(--ink-soft); cursor: pointer;
+  transition: all .15s ease;
+}
+.fb__btn:hover { border-color: var(--ink); transform: translateY(-1px); }
+.fb__btn.is-on.fb__up { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.fb__btn.is-on.fb__dn { background: var(--warn-bg);   border-color: var(--warn-fg); color: var(--warn-fg); }
+.fb__reason {
+  flex: 1 0 100%; margin-top: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.fb__reason label {
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted);
+}
+.fb__reason textarea {
+  width: 100%; resize: vertical;
+  font-family: var(--sans); font-size: 13.5px; line-height: 1.5;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 3px;
+  background: var(--bg);
+}
+.fb__reason textarea:focus { outline: none; border-color: var(--accent); background: white; }
+.fb__send {
+  align-self: flex-start;
+  padding: 6px 14px;
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  background: var(--ink); color: white;
+  border: 1px solid var(--ink); border-radius: 3px;
+  cursor: pointer; transition: all .15s ease;
+}
+.fb__send:hover { background: var(--accent); border-color: var(--accent); }
+.fb--sent .fb__actions { display: none; }
+.fb--sent .fb__reason  { display: none; }
+
+/* Overall card — slightly larger to terminate the doc body */
+.fb--overall { margin: 60px 0 0; padding: 22px 24px; }
+.fb--overall .fb__title { font-size: 16px; font-family: var(--serif); font-weight: 500; }
+.fb--overall .fb__sub   { display: block; flex: 1 0 100%; font-size: 12.5px; color: var(--muted); margin-top: -6px; }
+
+/* Section widgets sit unobtrusively */
+.fb--section {
+  margin-top: 18px;
+  background: transparent;
+  border: 0; border-top: 1px dashed var(--line);
+  border-radius: 0; padding: 12px 0 4px;
+}
+.fb--section .fb__title {
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); font-weight: 500;
+}
+
+@media print {
+  .fb { display: none !important; }
+}
+
+/* ────────── End feedback widget ────────── */
+
 /* ──────────  Two-up grid (for the four-cohort chart etc.)  ────────── */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0; }
 @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
