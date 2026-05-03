@@ -1,0 +1,439 @@
+{% extends "_base.html" %}
+{% block content %}
+
+{# ════════════════════════════════════════════════════════════════════════
+   COVER  ·  page 1 in print
+   ════════════════════════════════════════════════════════════════════════ #}
+<section class="cover keep">
+  <div class="cover__eyebrow">User Guide · {{ meta.version }} · {{ meta.reading_time_min }} min read</div>
+  <h1>{{ meta.title }}</h1>
+  <p class="cover__lede">{{ meta.tagline }}</p>
+  <div class="cover__meta">
+    <span><strong>Audience</strong>&nbsp; Articleship · Semi-qualified · Qualified</span>
+    <span><strong>Module</strong>&nbsp; {{ meta.key }}</span>
+    <span><strong>Updated</strong>&nbsp; {{ generated_at }}</span>
+  </div>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   EXECUTIVE SUMMARY  ·  the one-page version
+   ════════════════════════════════════════════════════════════════════════ #}
+<section class="exec keep">
+  <h2>Executive summary</h2>
+  <h3>For the busy reviewer</h3>
+  <p>
+    Clause 44 of Form 3CD requires every assessee under tax-audit to break up
+    its <strong>total expenditure on goods and services</strong> for the year
+    into four GST-status cohorts. The module ingests a Tally JSON export of
+    the books, classifies each ledger automatically using its parent group
+    and prior-year mapping, lets the auditor override the few exceptions, and
+    produces a single working-paper that maps 1-for-1 onto the Clause 44
+    table.
+  </p>
+  <ul>
+    <li><strong>Input</strong>&nbsp; Tally JSON export (Display &gt; Statements of Accounts &gt; Ledger Vouchers, exported as JSON).</li>
+    <li><strong>Effort</strong>&nbsp; ~10 minutes per division for a clean books-set; ~25 minutes when manual classification is required.</li>
+    <li><strong>Output</strong>&nbsp; Excel working-paper with five sheets: <em>Summary</em>, <em>Exempt</em>, <em>Non-GST</em>, <em>Composition</em>, <em>Registered</em> — each with ledger-level proofs that tie to the books.</li>
+    <li><strong>Audit assertion supported</strong>&nbsp; Completeness &amp; classification of expenditure for Clause 44 reporting.</li>
+  </ul>
+  <p style="margin-top: 14px; font-size: 13px; color: var(--muted);">
+    The remainder of this document is the click-by-click walkthrough for the
+    person doing the work — typically the articled clerk preparing the
+    schedule for partner review.
+  </p>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   TOC
+   ════════════════════════════════════════════════════════════════════════ #}
+<nav class="toc keep">
+  <h4>What's inside</h4>
+  <ol>
+    <li><a href="#regulatory">Regulatory primer — what Clause 44 actually asks</a></li>
+    <li><a href="#cohorts">The four cohorts, demystified</a></li>
+    <li><a href="#prereq">Before you start — prerequisites</a></li>
+    <li><a href="#walkthrough">Step-by-step walkthrough</a></li>
+    <li><a href="#output">Reading the output workbook</a></li>
+    <li><a href="#edge">Edge cases &amp; common pitfalls</a></li>
+    <li><a href="#faq">Frequently asked questions</a></li>
+    <li><a href="#glossary">Glossary</a></li>
+  </ol>
+</nav>
+
+{# ════════════════════════════════════════════════════════════════════════
+   1 · REGULATORY PRIMER
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="regulatory" class="page-break">
+  <h2>1 · Regulatory primer</h2>
+  <p>
+    Clause 44 of Form 3CD was inserted by the Income-Tax (8th Amendment)
+    Rules, 2018 to capture the GST-classification breakup of every rupee
+    debited to the Profit &amp; Loss account (and capital expenditure
+    routed through purchase ledgers). The reporting requirement was kept in
+    abeyance until <strong>FY 2021-22</strong> and is now mandatory for all
+    tax-audit cases.
+  </p>
+  <p>
+    The clause requires a <em>seven-column</em> table where each row is one
+    natural head of expense and the columns split that head's total amount
+    across:
+  </p>
+  <ol>
+    <li>Total expenditure&nbsp;<span class="chip">A</span></li>
+    <li>Expenditure on entities <strong>not registered</strong> under GST &mdash; further split into:
+      <ul style="margin-top: 4px;">
+        <li>Relating to goods/services <strong>exempt</strong> from GST&nbsp;<span class="chip chip--accent">B1</span></li>
+        <li>Relating to entities falling under the <strong>Composition</strong> scheme&nbsp;<span class="chip chip--accent">B2</span></li>
+        <li>Other registered entities&nbsp;<span class="chip chip--accent">B3</span></li>
+        <li>Total payments to <strong>non-registered</strong> entities&nbsp;<span class="chip chip--accent">B4</span></li>
+      </ul>
+    </li>
+    <li>Total payment to registered entities (= A − B4)</li>
+  </ol>
+
+  <div class="callout callout--note">
+    <span class="callout__title">Auditor's note</span>
+    The four cohorts the module produces (<em>Exempt · Non-GST · Composition · Registered</em>) collapse cleanly onto the seven-column table. The Excel <em>Summary</em> sheet is laid out exactly the way the 3CD utility expects.
+  </div>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   2 · THE FOUR COHORTS
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="cohorts">
+  <h2>2 · The four cohorts, demystified</h2>
+  <p>The module classifies every ledger into one — and only one — of these:</p>
+
+  <div class="grid-2">
+    <div class="cohort">
+      <div class="cohort__name">Exempt</div>
+      <h4>Goods/services exempt under GST</h4>
+      <p>Salaries, statutory dues, interest, dividend, donations, insurance premiums for life and health (specified categories), bank charges, etc. Anything covered by the GST exemption notifications.</p>
+    </div>
+    <div class="cohort">
+      <div class="cohort__name">Non-GST</div>
+      <h4>Outside the GST net altogether</h4>
+      <p>Petrol &amp; diesel, electricity, alcoholic liquor for human consumption, stamp duty &amp; registration, court fees, fines &amp; penalties, foreign-supplier transactions where IGST is paid under reverse charge separately.</p>
+    </div>
+    <div class="cohort">
+      <div class="cohort__name">Composition</div>
+      <h4>Vendor under composition scheme</h4>
+      <p>Smaller suppliers (turnover ≤ ₹1.5 Cr; ≤ ₹50 L for services) who pay GST at concessional flat rates and cannot pass on input credit. Their invoices show "Composition taxable person, not eligible to collect tax on supplies".</p>
+    </div>
+    <div class="cohort">
+      <div class="cohort__name">Registered</div>
+      <h4>Vendor with regular GSTIN</h4>
+      <p>Default cohort. Any supplier holding a regular GST registration and charging tax in the normal manner.  The module funnels everything that isn't Exempt / Non-GST / Composition into this bucket.</p>
+    </div>
+  </div>
+
+  <figure class="keep">
+    <svg viewBox="0 0 760 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cohort waterfall">
+      <style>
+        .lab { font: 600 11px "JetBrains Mono", monospace; fill: #0B0B09; letter-spacing: .08em; text-transform: uppercase; }
+        .num { font: 600 13px "Inter", sans-serif; fill: #0B0B09; }
+        .sub { font: 11px "Inter", sans-serif; fill: #6B6B66; }
+        .ax  { stroke: #E5E5E0; stroke-width: 1; }
+      </style>
+      <line x1="40" y1="200" x2="720" y2="200" class="ax"/>
+      <line x1="40" y1="40" x2="40" y2="200" class="ax"/>
+
+      <!-- Total bar -->
+      <rect x="58"  y="60"  width="80" height="140" fill="#0B0B09"/>
+      <text x="98"  y="50"  class="lab" text-anchor="middle">A · Total</text>
+      <text x="98"  y="225" class="num" text-anchor="middle">₹ 100</text>
+
+      <!-- Exempt -->
+      <rect x="178" y="160" width="80" height="40" fill="#10B981"/>
+      <text x="218" y="50"  class="lab" text-anchor="middle">B1 · Exempt</text>
+      <text x="218" y="225" class="num" text-anchor="middle">₹ 12</text>
+
+      <!-- Composition -->
+      <rect x="298" y="180" width="80" height="20" fill="#F59E0B"/>
+      <text x="338" y="50"  class="lab" text-anchor="middle">B2 · Composition</text>
+      <text x="338" y="225" class="num" text-anchor="middle">₹ 4</text>
+
+      <!-- Non-GST -->
+      <rect x="418" y="170" width="80" height="30" fill="#6B7280"/>
+      <text x="458" y="50"  class="lab" text-anchor="middle">Non-GST</text>
+      <text x="458" y="225" class="num" text-anchor="middle">₹ 8</text>
+      <text x="458" y="64"  class="sub" text-anchor="middle">(reported in</text>
+      <text x="458" y="76"  class="sub" text-anchor="middle">B3 / outside)</text>
+
+      <!-- Non-registered total -->
+      <rect x="538" y="120" width="80" height="80" fill="#B45309"/>
+      <text x="578" y="50"  class="lab" text-anchor="middle">B4 · Non-Reg</text>
+      <text x="578" y="225" class="num" text-anchor="middle">₹ 24</text>
+      <text x="578" y="64"  class="sub" text-anchor="middle">B1+B2+others</text>
+
+      <!-- Registered (A−B4) -->
+      <rect x="658" y="80"  width="80" height="120" fill="#047857"/>
+      <text x="698" y="50"  class="lab" text-anchor="middle">A − B4 · Reg</text>
+      <text x="698" y="225" class="num" text-anchor="middle">₹ 76</text>
+    </svg>
+    <figcaption>Cohort waterfall — illustrative ₹100 of expenditure</figcaption>
+  </figure>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   3 · PRE-REQUISITES
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="prereq" class="page-break">
+  <h2>3 · Before you start</h2>
+
+  <h3>3.1 The Tally export you'll need</h3>
+  <p>Open the client's books in Tally Prime (or ERP 9) and export the ledger-vouchers JSON for the audit period.</p>
+  <table class="t">
+    <thead><tr><th>Step</th><th>Tally menu path</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>Gateway of Tally</code> → <code>Display More Reports</code> → <code>Account Books</code> → <code>Ledger</code></td></tr>
+      <tr><td>2</td><td>Set the period using <kbd>Alt + F2</kbd> to the full audit year (e.g. 1-Apr-2024 to 31-Mar-2025)</td></tr>
+      <tr><td>3</td><td>Press <kbd>Ctrl + E</kbd> (Export). Format: <strong>JSON</strong>. Show profit / Show inventory: <em>No</em>. Range: <em>All ledgers</em>.</td></tr>
+      <tr><td>4</td><td>Save the file. The default name is <code>{COMPANY}_DAYBOOK_{from}-{to}.json</code> — keep it as-is; the module reads metadata from the filename.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout callout--tip">
+    <span class="callout__title">Pro tip</span>
+    The same JSON powers Clause 44 <em>and</em> 43B(h) <em>and</em> the Balance Confirmation module. Export it once, reuse it three times.
+  </div>
+
+  <h3>3.2 Client master &amp; period</h3>
+  <ul>
+    <li>The client must already exist in <strong>All Clients</strong>. If not, click <em>+ Add Client</em> on the dashboard first — that takes 30 seconds.</li>
+    <li>For multi-division clients, ensure each division has been added (Settings → Divisions). Tally usually exports one JSON per division.</li>
+    <li>The audit period should match the year your Tally export covers. Default is the previous FY.</li>
+  </ul>
+
+  <h3>3.3 Access &amp; permissions</h3>
+  <p>Any user with the <strong>Auditor</strong> role can run the module. <em>Admin</em> rights are not required. The output never leaves your tenant database.</p>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   4 · WALKTHROUGH
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="walkthrough" class="page-break">
+  <h2>4 · Step-by-step walkthrough</h2>
+
+  <div class="step step--accent">
+    <div class="step__num">1</div>
+    <div class="step__body">
+      <h3>Pick the client &amp; create a run</h3>
+      <p>From <strong>All Clients</strong>, open the client (e.g. <em>ABC Textile Mills</em>) → <strong>Utilities</strong> → click the <em>Clause 44 Schedule</em> card.</p>
+      <p>You land on the <strong>Choose Period</strong> screen. Select the FY (defaults to the prior year), choose a division if the client is multi-division, and click <em>Start a new run</em>.</p>
+      <div class="callout callout--note">
+        <span class="callout__title">What happens under the hood</span>
+        A run is just a workspace tied to (client × period × division). You can keep multiple runs against the same period — useful when you want to A/B compare classifications or revisit after audit-team feedback.
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step__num">2</div>
+    <div class="step__body">
+      <h3>Upload the Tally JSON</h3>
+      <p>The upload step accepts a single <code>.json</code> file. Drag-drop or click to browse. Files up to ~100 MB are supported (typical exports run 5-25 MB).</p>
+      <p>The system reads the file in the browser, ships a parsed payload to the server, and persists it against the run. You'll see a parse confirmation toast and the row count at the bottom of the panel.</p>
+      <div class="callout callout--warn">
+        <span class="callout__title">If the upload fails</span>
+        99% of upload failures are caused by the JSON being exported with <em>Show profit = Yes</em>. Re-export with profit/inventory toggles set to No, and try again. The other 1% is browsers blocking large clipboard pastes — drag-drop the file instead.
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step__num">3</div>
+    <div class="step__body">
+      <h3>Review the auto-mapping</h3>
+      <p>After upload you land on the <strong>Mapping</strong> screen. Two side-by-side columns:</p>
+      <table class="t">
+        <thead><tr><th>Column</th><th>What it shows</th><th>Default state</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Suggested expense ledgers</strong></td><td>Every ledger the engine considers a P&amp;L expense based on parent-group (Indirect Expenses, Direct Expenses, Purchase Accounts, etc.).</td><td>All checked</td></tr>
+          <tr><td><strong>Excluded ledgers</strong></td><td>Asset / liability / income ledgers that won't appear in the schedule.</td><td>All un-checked</td></tr>
+        </tbody>
+      </table>
+      <p>You can:</p>
+      <ul>
+        <li>Tick a ledger in the right column to <strong>include</strong> it (e.g. a "Repairs - Capital" ledger that the previous CA had treated as expense).</li>
+        <li>Un-tick a ledger in the left column to <strong>exclude</strong> it (e.g. an inter-branch transfer).</li>
+        <li>Use the search bar to jump to a specific ledger by name or parent group.</li>
+        <li>Click <em>Select Suggested</em> / <em>Clear</em> to reset bulk state.</li>
+      </ul>
+
+      <div class="callout callout--tip">
+        <span class="callout__title">Pro tip — ride the prior-year mapping</span>
+        If the same client was processed last year, the module remembers your overrides and applies them automatically. You'll see a small <em>"recalled from FY 2023-24"</em> badge on each ledger that picked up a prior-year decision.
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step__num">4</div>
+    <div class="step__body">
+      <h3>Generate the schedule</h3>
+      <p>Click <em>Generate Run</em> at the bottom of the mapping screen. The engine:</p>
+      <ol>
+        <li>Aggregates voucher-level debits/credits per ledger for the chosen period.</li>
+        <li>Routes each ledger to one of the four cohorts using a 200+ rule rule-set (parent-group keywords, vendor-name patterns, GST treatment hints, prior-year mapping).</li>
+        <li>Computes the four totals + the "Total non-registered" subtotal.</li>
+        <li>Persists the result and routes you to the <strong>Report</strong> screen.</li>
+      </ol>
+      <p>For a typical clean books-set with 800-1500 ledgers this takes 4-7 seconds.</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step__num">5</div>
+    <div class="step__body">
+      <h3>Resolve exceptions</h3>
+      <p>The Report screen highlights any ledger the classifier couldn't decide with high confidence — typically 5-30 rows out of a 1000-ledger book. They appear in the <em>Exceptions</em> drawer at the top. Each row shows:</p>
+      <ul>
+        <li>Ledger name &amp; parent group</li>
+        <li>The classifier's <em>tentative</em> cohort</li>
+        <li>The reasoning trace (which rules fired, prior-year decision if any)</li>
+        <li>A four-radio "override" picker — Exempt / Non-GST / Composition / Registered</li>
+      </ul>
+      <p>Resolve every exception. The summary recomputes live as you click. Once the drawer is empty, the schedule is reviewable.</p>
+
+      <div class="callout callout--pitfall">
+        <span class="callout__title">Pitfall — bank charges</span>
+        Bank charges and processing fees are <strong>Exempt</strong> (Notification 12/2017-CT(R) entry 27). The classifier sometimes nudges them to <em>Registered</em> when the bank ledger is named like a vendor (e.g. "HDFC Bank Charges A/c"). Override these to Exempt — the workpaper auto-recomputes the cohort totals.
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step__num">6</div>
+    <div class="step__body">
+      <h3>Download the working paper</h3>
+      <p>Top-right of the Report screen, click <em>Export Excel</em>. You get a single <code>.xlsx</code> with five sheets — described in detail in the next section.</p>
+      <p>If you also want a single-page PDF for the audit file, use the <em>Print Schedule (PDF)</em> action on the same toolbar. The PDF carries the firm header and is signed-off-ready.</p>
+    </div>
+  </div>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   5 · OUTPUT
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="output" class="page-break">
+  <h2>5 · Reading the output workbook</h2>
+  <table class="t">
+    <thead><tr><th>Sheet</th><th>Contents</th><th>Tie to 3CD</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Summary</strong></td><td>The 4-cohort total + B4 + Registered total. Lays out exactly the way the 3CD utility expects to receive it.</td><td>Direct copy-paste into the Clause 44 table.</td></tr>
+      <tr><td><strong>Exempt</strong></td><td>Every ledger in the Exempt cohort with parent group, debit/credit, net, and the override flag if any.</td><td>Backing for column B1.</td></tr>
+      <tr><td><strong>Non-GST</strong></td><td>Petrol/diesel/electricity/stamp duty etc. with the same shape.</td><td>Backing for the "outside GST" disclosure.</td></tr>
+      <tr><td><strong>Composition</strong></td><td>Vendor-level breakup — usually small.</td><td>Backing for column B2.</td></tr>
+      <tr><td><strong>Registered</strong></td><td>The largest sheet. Every regular-GST vendor ledger.</td><td>Backing for "Total registered" = A − B4.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>What the Summary sheet looks like</h3>
+  <p>Five columns, one row per natural head. The column headers exactly match 3CD column letters:</p>
+  <table class="t">
+    <thead><tr><th>Head of expense</th><th>Total (A)</th><th>Exempt (B1)</th><th>Composition (B2)</th><th>Other registered (B3)</th><th>Non-registered (B4)</th><th>Registered (A − B4)</th></tr></thead>
+    <tbody>
+      <tr><td>Purchase of raw material</td><td>4,12,68,000</td><td>—</td><td>2,18,000</td><td>4,08,12,000</td><td>2,38,000</td><td>4,10,30,000</td></tr>
+      <tr><td>Power &amp; fuel</td><td>1,82,40,000</td><td>—</td><td>—</td><td>—</td><td>1,82,40,000</td><td>—</td></tr>
+      <tr><td>Salaries &amp; wages</td><td>2,11,06,500</td><td>2,11,06,500</td><td>—</td><td>—</td><td>2,11,06,500</td><td>—</td></tr>
+      <tr><td><em>… and so on …</em></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    </tbody>
+  </table>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   6 · EDGE CASES
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="edge" class="page-break">
+  <h2>6 · Edge cases &amp; common pitfalls</h2>
+
+  <h3>6.1 Capital expenditure routed through revenue ledgers</h3>
+  <p>Sometimes a fixed-asset purchase finds its way into a "Repairs &amp; Maintenance" ledger. Clause 44 only asks about expenditure debited to P&amp;L — capital additions should ride the Fixed Assets schedule, not Clause 44. Use the <em>Exclude</em> ticking on the Mapping screen to remove these entries.</p>
+
+  <h3>6.2 Reimbursements &amp; recoveries</h3>
+  <p>Reimbursement of travel, telephone, etc. recovered from group companies is <strong>not</strong> "expenditure on goods/services". Exclude such ledgers via the override. The work-paper carries a <em>Notes</em> column where you should record the basis ("Reimbursed by ABC Holdings").</p>
+
+  <h3>6.3 RCM payments</h3>
+  <p>GST paid under reverse-charge by the assessee on services from unregistered/foreign vendors is itself <strong>Non-GST</strong> from the vendor's standpoint — the vendor's ledger goes to <em>Non-Registered</em> (B3) and the GST-RCM ledger goes to <em>Exempt</em>. The classifier handles this automatically when it finds an RCM tag.</p>
+
+  <h3>6.4 Foreign-currency vendors</h3>
+  <p>Imports paid via LC: cohort = <em>Non-Registered</em>. The bank charges &amp; LC commission ledgers go separately to <em>Exempt</em> as bank-related services.</p>
+
+  <h3>6.5 Salaries vs Director Remuneration</h3>
+  <p>Both go to <em>Exempt</em> — services rendered by an employee/director to their employer are out of GST scope (Schedule III). The classifier keys on the parent group "Salaries", "Director Remuneration", "Wages".</p>
+
+  <h3>6.6 Donations under CSR</h3>
+  <p>If donated <em>in kind</em> via purchase, the original purchase ledger's cohort applies. If a cash donation, cohort = <em>Exempt</em>.</p>
+
+  <h3>6.7 What about deferred items routed via prepaid?</h3>
+  <p>Annual maintenance contracts, insurance premia, etc. that you know are routed via "Prepaid Expenses" — only the period-amortised portion is in the P&amp;L. The classifier picks up only the P&amp;L hit. The prepaid balance sheet movement is out of scope.</p>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   7 · FAQ
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="faq" class="page-break">
+  <h2>7 · Frequently asked questions</h2>
+
+  <h3>How accurate is the auto-classification?</h3>
+  <p>Across our test pool of 30+ tax-audit clients (mid-cap manufacturing, services, trading), the classifier hits 92-97% accuracy on first pass. The remaining 3-8% surface as Exceptions — which is by design. <em>The auditor — not the engine — bears Clause 44 responsibility.</em></p>
+
+  <h3>Can I reuse a run from last year?</h3>
+  <p>Yes. The mapping screen carries a "Recall FY 2023-24 mapping" toggle. When on, every prior-year override re-applies before you even see the screen.</p>
+
+  <h3>What if Tally has been migrated mid-year?</h3>
+  <p>Export each segment (Apr-Aug from old company, Sep-Mar from new) as separate JSONs and create two runs in the same period. Combine the Summary sheets manually — they're additive.</p>
+
+  <h3>Does the module support Zoho/Busy/SAP?</h3>
+  <p>Today only Tally JSON is supported natively. For Zoho Books / Busy, export the trial-balance and ledger-by-ledger CSV; we have a CSV adapter in beta — write to <a href="mailto:{{ support_email }}">{{ support_email }}</a> if you'd like access.</p>
+
+  <h3>Does it leak data?</h3>
+  <p>No. The Tally JSON is parsed and stored against your tenant DB. The classifier rules are local. No call goes to any external LLM unless you explicitly use the OCR-attach feature in Fixed Assets — which is different and uses Gemini Vision under your Emergent LLM key.</p>
+
+  <h3>What happens when I delete a run?</h3>
+  <p>The run, its ledger mappings, and the Excel cache are all removed. The Tally JSON is also deleted. Audit-trail entries (who deleted, when) survive in the admin log.</p>
+
+  <h3>Can two articled clerks work on the same run simultaneously?</h3>
+  <p>Yes — the Mapping and Report screens are real-time and collaborative. The exceptions drawer locks each row to whoever is editing it for 30 seconds.</p>
+
+  <h3>Where do I report a wrong classification?</h3>
+  <p>Use the <em>Suggest correction</em> button on the Mapping screen. Your override + reasoning ships to the AssureAI rules team and improves the next release for everyone.</p>
+</section>
+
+{# ════════════════════════════════════════════════════════════════════════
+   8 · GLOSSARY
+   ════════════════════════════════════════════════════════════════════════ #}
+<section id="glossary" class="page-break">
+  <h2>8 · Glossary</h2>
+  <dl class="gloss">
+    <dt>3CD</dt>
+    <dd>Annexure to Form 3CA / 3CB — the tax-audit report under section 44AB.</dd>
+
+    <dt>Clause 44</dt>
+    <dd>The clause inside 3CD that captures the GST-status breakup of total expenditure.</dd>
+
+    <dt>Cohort</dt>
+    <dd>Our internal name for one of the four mutually-exclusive classification buckets.</dd>
+
+    <dt>Composition scheme</dt>
+    <dd>A simplified GST regime for small suppliers (turnover ≤ ₹1.5 Cr; ≤ ₹50 L for services). Composition vendors charge concessional flat rates and cannot pass on input credit.</dd>
+
+    <dt>Exempt supply</dt>
+    <dd>Supply that is exempt from GST — explicitly notified as nil-rated, exempted, or non-taxable.</dd>
+
+    <dt>Non-GST</dt>
+    <dd>Goods/services kept outside the GST net altogether (petrol, diesel, electricity, alcohol for human consumption, stamp duty, court fees).</dd>
+
+    <dt>Parent group</dt>
+    <dd>The Tally classification ladder above an individual ledger — e.g. <em>Indirect Expenses</em> &gt; <em>Selling &amp; Distribution</em>.</dd>
+
+    <dt>Run</dt>
+    <dd>A workspace tied to (client × period × division). Holds the upload, mapping decisions and the generated workpaper.</dd>
+
+    <dt>RCM</dt>
+    <dd>Reverse-charge mechanism — GST liability sits on the recipient instead of the supplier, typically for legal/manpower services and imports.</dd>
+  </dl>
+</section>
+
+{% endblock %}

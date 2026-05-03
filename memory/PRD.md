@@ -1,5 +1,58 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## User Guides + AssureAI rebrand (2026-05-03)
+
+### New module — `modules/docs/` (HTML + PDF user guides)
+- `GET /api/docs/{key}` → branded HTML readme (login-gated)
+- `GET /api/docs/{key}.pdf` → WeasyPrint PDF rendered from the SAME Jinja2
+  template (single source of truth, zero drift)
+- `GET /api/docs/{key}/_asset/{name}` → static SVG/CSS/screenshots
+- Module catalogue defined in `MODULES` list — each entry needs one
+  `templates/{key}.html`. Catalogue currently: `clause-44`. Adding a new
+  module = add one HTML file + one catalogue entry.
+
+### Clause 44 readme — gold-standard reference
+- 11-page user guide; cover + executive summary on page 1 (paywall page for
+  busy reviewers), then 8 numbered sections: regulatory primer · 4 cohorts
+  demystified (with cohort waterfall SVG) · prerequisites (Tally export
+  paths) · click-by-click walkthrough (6 steps with callouts) · output
+  workbook structure · 7 edge cases · 8-item FAQ · glossary
+- Premium typography: Fraunces serif headings + Inter body + JetBrains Mono
+  monospace; emerald accent; printable A4 with page numbers and running
+  header
+- Six callout flavours: note · tip · warn · pitfall — auditor-tone copy
+
+### Frontend
+- `Readme` button (lucide `BookOpen` icon) added to Clause 44 page header
+  (`ClientHome.jsx`) — opens `/api/docs/clause-44` in a new tab
+- `data-testid="readme-clause-44"` for regression
+
+### Brand rebrand — MSS × Assure → AssureAI Utilities
+Touched 14 files across frontend & backend:
+- Frontend sidebar mark "M" → "A", brand text, login page hero copy,
+  consolidated footer, balance-confirmation public landing footer,
+  client-utilities subtitle
+- Backend PDF footers (balance-confirmation summary, ledger letter, fixed
+  assets working paper, GST recon), QA Test Pack title + filename, invitation
+  email template, FastAPI app title, Resend `EMAIL_FROM` default
+- Auditor firm fallback (was "MSS & Co.") → "AssureAI Audit Utilities"
+- Verified: zero `MSS` references remain in production code
+  (`grep -r "MSS" --include="*.{py,jsx,tsx}"` returns empty)
+
+### Tests
+- New `backend/tests/test_docs.py` — 6/6 GREEN
+  - HTML index renders + lists modules
+  - Clause 44 HTML carries Executive Summary, Walkthrough, Edge cases, FAQ, Glossary
+  - PDF returns `application/pdf` with `%PDF-` magic, > 30 KB, correct branded filename
+  - Unknown module → 404 (both HTML and PDF routes)
+  - Anonymous → 401/403
+
+### Dependency added
+- `weasyprint==68.1` (HTML → PDF). Pango/Cairo system libs already present
+  in the container; no Dockerfile changes required.
+
+
+
 ## Balance Confirmation — CC/BCC legal safeguard (2026-05-02)
 
 ### Vulnerability closed

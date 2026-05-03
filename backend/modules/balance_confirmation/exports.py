@@ -106,7 +106,7 @@ def build_authorization_template_docx(client: Dict[str, Any]) -> bytes:
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     fr = p.add_run(
         f"\n\nGenerated {datetime.now(timezone.utc).strftime('%d %b %Y')} · "
-        f"MSS × Assure Audit Utilities · Sign on company letterhead, "
+        f"AssureAI Audit Utilities · Sign on company letterhead, "
         f"then re-upload the signed PDF."
     )
     fr.font.size = Pt(8)

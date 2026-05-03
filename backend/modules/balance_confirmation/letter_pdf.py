@@ -218,7 +218,7 @@ def build_ledger_extract_pdf(*,
 
     story.append(Paragraph(
         f"Generated {datetime.now(timezone.utc).strftime('%d %b %Y · %H:%M UTC')} · "
-        f"{auditor_firm or 'MSS × Assure Audit Utilities'} · "
+        f"{auditor_firm or 'AssureAI Audit Utilities'} · "
         "This extract is auto-generated from books of account for the sole purpose "
         "of balance confirmation. Please reconcile against your statement and respond "
         "via the secure link in the accompanying email.", SMALL))

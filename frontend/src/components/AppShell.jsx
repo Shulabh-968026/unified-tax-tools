@@ -19,9 +19,9 @@ export default function AppShell({ children }) {
     <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] h-screen overflow-hidden bg-[#F9F9F8]">
       <aside className="hidden md:flex flex-col border-r border-[#E5E5E0] bg-[#F3F4F1]" data-testid="sidebar">
         <div className="px-5 pt-6 pb-4 flex items-center gap-2">
-          <div className="w-7 h-7 border border-[#0F172A] grid place-items-center text-[#0F172A] font-mono text-xs">M</div>
+          <div className="w-7 h-7 border border-[#0F172A] grid place-items-center text-[#0F172A] font-mono text-xs">A</div>
           <div>
-            <div className="font-heading text-[15px] tracking-tight leading-none">MSS × Assure</div>
+            <div className="font-heading text-[15px] tracking-tight leading-none">AssureAI</div>
             <div className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#8A8A83] mt-1">Audit Utilities</div>
           </div>
         </div>

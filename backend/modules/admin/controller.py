@@ -198,6 +198,6 @@ async def download_qa_pack(
         media_type="application/pdf",
         headers={
             "Content-Disposition":
-            'attachment; filename="MSS_Assure_QA_Test_Pack_v1.pdf"',
+            'attachment; filename="AssureAI_QA_Test_Pack_v1.pdf"',
         },
     )

@@ -1,0 +1,384 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   AssureAI · Audit Utilities — User-guide stylesheet
+   Single file, served BOTH for screen and bundled-into-PDF rendering.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* ──────────  Tokens  ────────── */
+:root {
+  --ink:        #0B0B09;
+  --ink-soft:   #1F1F1B;
+  --muted:      #6B6B66;
+  --line:       #E5E5E0;
+  --line-soft:  #F1F1ED;
+  --bg:         #FBFBF8;
+  --bg-card:    #FFFFFF;
+  --accent:     #047857;          /* emerald-700 — AssureAI primary */
+  --accent-bg:  #ECFDF5;
+  --accent-line:#A7F3D0;
+  --warn-bg:    #FFFBEB;
+  --warn-fg:    #92400E;
+  --warn-line:  #FDE68A;
+  --info-bg:    #EFF6FF;
+  --info-fg:    #1E40AF;
+  --info-line:  #BFDBFE;
+  --pitfall-bg: #FEF2F2;
+  --pitfall-fg: #991B1B;
+  --pitfall-line:#FECACA;
+
+  --max-w:      820px;
+  --serif:      "Fraunces", "Source Serif 4", "Charter", Georgia, serif;
+  --sans:       "Inter", "Helvetica Neue", Arial, sans-serif;
+  --mono:       "JetBrains Mono", "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+
+@font-face { font-family: "Inter"; font-weight: 400; src: local("Inter"), local("system-ui"); }
+
+/* ──────────  Reset  ────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+img, svg { max-width: 100%; display: block; }
+button { font: inherit; }
+
+/* ──────────  Body & typography  ────────── */
+body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+h1 { font-size: 36px; line-height: 1.12; margin: 0 0 6px; }
+h2 { font-size: 26px; line-height: 1.18; margin: 48px 0 14px; padding-top: 8px; }
+h3 { font-size: 18px; line-height: 1.3;  margin: 28px 0 8px;  font-weight: 600; }
+h4 { font-size: 14.5px; line-height: 1.35; margin: 18px 0 6px; font-weight: 600; }
+
+p  { margin: 0 0 14px; }
+a  { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-line); }
+a:hover { background: var(--accent-bg); }
+
+ul, ol { margin: 0 0 16px; padding-left: 22px; }
+li { margin: 4px 0; }
+
+code, kbd {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink-soft);
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 36px 0;
+}
+
+/* ──────────  Page chrome (screen)  ────────── */
+.shell {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 56px 28px 120px;
+}
+
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px;
+  background: rgba(251, 251, 248, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar__brand {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.topbar__brand .mark {
+  width: 22px; height: 22px;
+  border: 1px solid var(--ink); display: grid; place-items: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+}
+.topbar__actions { display: flex; gap: 8px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 500;
+  border: 1px solid var(--ink); border-radius: 3px;
+  background: var(--ink); color: white; cursor: pointer;
+  transition: transform .15s ease;
+}
+.btn:hover { transform: translateY(-1px); background: var(--ink-soft); }
+.btn--ghost { background: transparent; color: var(--ink); }
+.btn--ghost:hover { background: var(--ink); color: white; }
+
+/* ──────────  Cover  ────────── */
+.cover {
+  margin-bottom: 48px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--line);
+}
+.cover__eyebrow {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--accent);
+}
+.cover__lede { font-size: 17px; color: var(--muted); max-width: 620px; }
+.cover__meta {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  margin-top: 26px; padding-top: 18px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.05em; color: var(--muted);
+}
+.cover__meta strong { color: var(--ink); font-weight: 500; }
+
+/* ──────────  Executive summary card  ────────── */
+.exec {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 26px 30px;
+  margin: 18px 0 36px;
+}
+.exec h2 { margin: 0 0 4px; font-size: 14.5px; font-family: var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); padding: 0; }
+.exec h3 { margin: 12px 0 8px; font-size: 22px; font-family: var(--serif); }
+.exec p { font-size: 14.5px; }
+.exec ul { padding-left: 18px; }
+.exec li { font-size: 14px; color: var(--ink-soft); }
+
+/* ──────────  Step blocks  ────────── */
+.step {
+  display: grid; grid-template-columns: 36px 1fr; gap: 18px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.step:first-of-type { border-top: 0; padding-top: 8px; }
+.step__num {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--ink); color: white;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-weight: 600; font-size: 13px;
+}
+.step__body h3 { margin-top: 0; }
+.step--accent .step__num { background: var(--accent); }
+
+/* ──────────  Callouts  ────────── */
+.callout {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 3px;
+  margin: 14px 0;
+  font-size: 14px;
+}
+.callout__title {
+  display: block;
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  font-weight: 600; margin-bottom: 6px;
+}
+.callout--note   { background: var(--info-bg);    border-left-color: var(--info-fg);   }
+.callout--note   .callout__title { color: var(--info-fg); }
+.callout--tip    { background: var(--accent-bg);  border-left-color: var(--accent);    }
+.callout--tip    .callout__title { color: var(--accent); }
+.callout--warn   { background: var(--warn-bg);    border-left-color: var(--warn-fg);   }
+.callout--warn   .callout__title { color: var(--warn-fg); }
+.callout--pitfall{ background: var(--pitfall-bg); border-left-color: var(--pitfall-fg);}
+.callout--pitfall .callout__title { color: var(--pitfall-fg); }
+
+/* ──────────  Tables  ────────── */
+table.t {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 13.5px;
+}
+table.t th, table.t td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.t th {
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  font-weight: 600; color: var(--muted);
+  background: var(--line-soft);
+  border-bottom: 1px solid var(--line);
+}
+table.t tbody tr:hover { background: var(--bg); }
+
+/* ──────────  Figures / illustrations  ────────── */
+figure {
+  margin: 22px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+figure img, figure svg {
+  width: 100%; height: auto; display: block;
+}
+figcaption {
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--line-soft);
+}
+
+/* ──────────  Definition / glossary  ────────── */
+dl.gloss {
+  display: grid; grid-template-columns: 200px 1fr;
+  gap: 8px 24px; margin: 14px 0 24px;
+}
+dl.gloss dt {
+  font-family: var(--mono); font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent);
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+dl.gloss dd {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  font-size: 14px;
+}
+
+/* ──────────  TOC  ────────── */
+.toc {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 18px 22px;
+  margin: 0 0 30px;
+}
+.toc h4 {
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  margin: 0 0 10px; color: var(--muted); font-weight: 500;
+}
+.toc ol {
+  padding-left: 18px; margin: 0;
+  font-size: 14px;
+}
+.toc ol li { margin: 4px 0; }
+.toc a { border-bottom: 0; }
+.toc a:hover { background: transparent; color: var(--accent); }
+
+/* ──────────  Footer  ────────── */
+.docfoot {
+  margin-top: 80px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.05em; color: var(--muted);
+}
+
+/* ──────────  Tag chips  ────────── */
+.chip {
+  display: inline-block;
+  font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--bg-card);
+  color: var(--muted);
+  margin-right: 4px;
+}
+.chip--accent { color: var(--accent); border-color: var(--accent-line); background: var(--accent-bg); }
+
+/* ──────────  Two-up grid (for the four-cohort chart etc.)  ────────── */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0; }
+@media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.cohort {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  padding: 14px 16px;
+  background: var(--bg-card);
+}
+.cohort__name {
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600;
+}
+.cohort h4 { margin: 4px 0 6px; font-family: var(--serif); font-size: 16px; }
+.cohort p  { font-size: 13.5px; color: var(--ink-soft); margin: 0; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   PRINT / WeasyPrint
+   ──────────────────────────────────────────────────────────────────────── */
+@page {
+  size: A4;
+  margin: 18mm 16mm 22mm;
+  @bottom-left {
+    content: "AssureAI · Audit Utilities";
+    font-family: "JetBrains Mono", monospace;
+    font-size: 8.5pt;
+    color: #6B6B66;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 8.5pt;
+    color: #6B6B66;
+  }
+  @top-right {
+    content: string(doc-title);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 8.5pt;
+    color: #6B6B66;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+}
+@page :first {
+  @top-right { content: ""; }
+}
+
+@media print {
+  body { background: white; font-size: 10.5pt; line-height: 1.5; }
+  .shell { max-width: 100%; padding: 0; margin: 0; }
+  .topbar { display: none; }
+  h1 { font-size: 26pt; line-height: 1.12; string-set: doc-title content(); }
+  h2 { font-size: 16pt; margin-top: 22pt; page-break-after: avoid; }
+  h3 { font-size: 12pt; page-break-after: avoid; }
+  p, li { orphans: 2; widows: 2; }
+
+  /* Hard page break before each major numbered section if requested */
+  .page-break { page-break-before: always; }
+  .keep       { page-break-inside: avoid; }
+  figure      { page-break-inside: avoid; }
+  table.t     { page-break-inside: auto; }
+  table.t tr  { page-break-inside: avoid; }
+
+  .exec  { page-break-after: always; }
+  .toc   { display: none; }
+  a      { color: var(--ink); border-bottom: 0; }
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 8pt; color: var(--muted);
+  }
+  /* Step numbers — keep on left */
+  .step__num { background: white !important; color: var(--ink) !important; border: 1px solid var(--ink); }
+}

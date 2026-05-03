@@ -1,0 +1,21 @@
+{% extends "_base.html" %}
+{% block content %}
+<section class="cover">
+  <div class="cover__eyebrow">User Guides</div>
+  <h1>{{ brand }}</h1>
+  <p class="cover__lede">A friendly walkthrough for every utility in the workbench. Each guide covers the regulatory context, the click-by-click workflow, edge cases, and a glossary — designed to take a brand-new articled clerk from cold start to a reviewer-ready working paper.</p>
+</section>
+<ol class="toc" style="list-style: none; padding-left: 0;">
+{% for m in modules %}
+  <li style="border-top: 1px solid var(--line); padding: 14px 0;">
+    <a href="/api/docs/{{ m.key }}" target="_blank" style="border-bottom: 0;">
+      <strong style="color: var(--ink); font-family: var(--serif); font-size: 18px;">{{ m.title }}</strong>
+    </a>
+    <div style="color: var(--muted); font-size: 14px; margin-top: 4px;">{{ m.tagline }}</div>
+    <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; letter-spacing: 0.05em;">
+      {{ m.version }} · ~{{ m.reading_time_min }} min read
+    </div>
+  </li>
+{% endfor %}
+</ol>
+{% endblock %}

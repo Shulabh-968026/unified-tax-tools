@@ -138,7 +138,7 @@ function Shell({ children }) {
       </div>
       <div style={{ maxWidth: 720, margin: "12px auto 0", textAlign: "center",
                     fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>
-        Powered by MSS × Assure Audit Utilities
+        Powered by AssureAI · Audit Utilities
       </div>
     </div>
   );

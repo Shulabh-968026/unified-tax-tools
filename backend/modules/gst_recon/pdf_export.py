@@ -438,7 +438,7 @@ def _make_footer_drawer(S, run: Dict[str, Any]):
         text = f"GST Recon Working-Paper · FY {fy} · Run {rid} · Page {doc.page}"
         canvas.drawString(15 * mm, 10 * mm, text)
         canvas.drawRightString(A4[0] - 15 * mm, 10 * mm,
-                               "MSS × Assure · Audit Utilities")
+                               "AssureAI · Audit Utilities")
         canvas.restoreState()
     return _draw
 
@@ -456,7 +456,7 @@ def build_pdf(run: Dict[str, Any],
         leftMargin=15 * mm, rightMargin=15 * mm,
         topMargin=15 * mm, bottomMargin=15 * mm,
         title="GST Recon Working-Paper",
-        author="MSS × Assure",
+        author="AssureAI",
     )
     S = _styles()
     story: List[Any] = []

@@ -69,7 +69,7 @@ export default function ClientUtilities() {
             <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Utilities Catalog</div>
             <h2 className="mt-1 font-heading text-2xl tracking-tight">Pick a utility</h2>
             <p className="mt-1.5 text-sm text-[#52524E] max-w-2xl">
-              The MSS × Assure utility shelf — small, well-built tools that complement AssureAI for the audit chores nobody enjoys. New utilities ship every few weeks.
+              The AssureAI utility shelf — small, well-built tools that complement AssureAI for the audit chores nobody enjoys. New utilities ship every few weeks.
             </p>
           </div>
           <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">

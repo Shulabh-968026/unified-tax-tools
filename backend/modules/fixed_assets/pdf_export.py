@@ -113,7 +113,7 @@ def _page_chrome(
         canvas.setFillColor(MUTED)
         canvas.setFont("Helvetica", 7.5)
         canvas.drawString(15 * mm, 10 * mm, f"{run_name}")
-        canvas.drawCentredString(A4[0] / 2, 10 * mm, "MSS × Assure  ·  Audit Working-Paper")
+        canvas.drawCentredString(A4[0] / 2, 10 * mm, "AssureAI  ·  Audit Working-Paper")
         canvas.drawRightString(A4[0] - 15 * mm, 10 * mm, f"Page {doc.page}")
         canvas.line(15 * mm, 13 * mm, A4[0] - 15 * mm, 13 * mm)
         canvas.restoreState()
@@ -575,7 +575,7 @@ def build_pdf(
         leftMargin=15 * mm, rightMargin=15 * mm,
         topMargin=18 * mm, bottomMargin=15 * mm,
         title=f"IT Depreciation — {client_name} {fy_label}",
-        author="MSS × Assure",
+        author="AssureAI",
     )
     frame = Frame(doc.leftMargin, doc.bottomMargin,
                   doc.width, doc.height,

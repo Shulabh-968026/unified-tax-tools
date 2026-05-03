@@ -12,6 +12,7 @@ import { ArrowLeft, ArrowRight, Plus, Stack, ChartBar, FileArrowDown, Archive } 
 import { formatDate, formatDateTime } from "@/lib/format";
 import { toast } from "sonner";
 import StepUpload from "@/pages/StepUpload";
+import { BookOpen } from "lucide-react";
 
 const PERIOD_PRESETS = ["2024-25", "2023-24", "2022-23", "2021-22", "2020-21"];
 
@@ -100,6 +101,18 @@ export default function ClientHome() {
               {isMulti ? `Multi · ${client.divisions?.length || 0} div` : "Single"}
             </Badge>
           </span>
+        }
+        actions={
+          <a
+            href="/api/docs/clause-44"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 h-9 px-3 border border-[#E5E5E0] rounded-sm bg-white hover:bg-[#0F172A] hover:text-white hover:border-[#0F172A] text-[#0F172A] font-mono text-[10.5px] uppercase tracking-[0.1em] transition-colors"
+            data-testid="readme-clause-44"
+            title="Open the user guide for this module in a new tab"
+          >
+            <BookOpen size={13}/> Readme
+          </a>
         }
       />
 

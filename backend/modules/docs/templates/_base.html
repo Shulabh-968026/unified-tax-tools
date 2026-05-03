@@ -1,0 +1,38 @@
+{# Base shell — every readme extends this. The CSS lives in
+ # `assets/_doc.css`; we inline it so WeasyPrint can render the PDF without
+ # having to resolve external assets through the (auth-gated) FastAPI route.
+ #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ meta.title }} · {{ brand }}</title>
+<style>
+{{ css|safe }}
+</style>
+</head>
+<body>
+{% if not for_pdf %}
+  <header class="topbar" data-testid="docs-topbar">
+    <div class="topbar__brand">
+      <span class="mark">A</span>
+      <span>{{ brand }}</span>
+    </div>
+    <div class="topbar__actions">
+      <a class="btn btn--ghost" href="/api/docs/{{ meta.key }}.pdf" data-testid="docs-download-pdf">↓ Download PDF</a>
+      <a class="btn btn--ghost" href="javascript:window.close()">Close</a>
+    </div>
+  </header>
+{% endif %}
+
+<div class="shell">
+  {% block content %}{% endblock %}
+
+  <footer class="docfoot">
+    <div>{{ brand }} · User Guide for {{ meta.title }} {{ meta.version }}</div>
+    <div>Generated {{ generated_at }} · Support: <a href="mailto:{{ support_email }}">{{ support_email }}</a></div>
+  </footer>
+</div>
+</body>
+</html>

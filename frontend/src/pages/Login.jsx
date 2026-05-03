@@ -28,22 +28,22 @@ export default function Login() {
         <div className="absolute inset-0 bg-gradient-to-br from-[#0F172A]/85 via-[#0F172A]/65 to-[#0F172A]/85" />
         <div className="relative z-10 flex flex-col justify-between h-full p-10 text-white">
           <div className="flex items-center gap-2 font-mono text-sm tracking-tight">
-            <div className="w-6 h-6 border border-white/40 grid place-items-center font-mono text-[10px]">M</div>
-            <span>MSS&nbsp;×&nbsp;Assure&nbsp;·&nbsp;Audit Utilities</span>
+            <div className="w-6 h-6 border border-white/40 grid place-items-center font-mono text-[10px]">A</div>
+            <span>AssureAI&nbsp;·&nbsp;Audit Utilities</span>
           </div>
           <div className="max-w-md">
             <p className="font-heading text-4xl xl:text-5xl leading-[1.05] tracking-tight">
               Audit utilities,<br/>refined for the everyday.
             </p>
             <p className="mt-6 text-white/70 text-sm leading-relaxed">
-              The miscellaneous workbench from MSS &amp; Co. and AssureAI — small, well-built tools for the everyday audit chores AssureAI doesn't yet cover. Clause 44, TDS reconciliations, MSME 43B(h), 26AS / AIS / TIS — under one roof.
+              The miscellaneous workbench from AssureAI — small, well-built tools for the everyday audit chores the core platform doesn't yet cover. Clause 44, TDS reconciliations, MSME 43B(h), 26AS / AIS / TIS, Balance Confirmations, Fixed Assets, Financial Statement Designer — under one roof.
             </p>
             <ul className="mt-8 space-y-3 text-sm text-white/85">
               <li className="flex gap-3 items-start"><FileText size={18} weight="duotone" className="mt-0.5 shrink-0"/>Drop in books and mappings; we run the math.</li>
               <li className="flex gap-3 items-start"><ShieldCheck size={18} weight="duotone" className="mt-0.5 shrink-0"/>Every classification reasoned and auditable.</li>
             </ul>
           </div>
-          <div className="font-mono text-xs text-white/45">v1.2&nbsp;·&nbsp;MSS &amp; Co. × AssureAI</div>
+          <div className="font-mono text-xs text-white/45">v1.2&nbsp;·&nbsp;AssureAI Audit Utilities</div>
         </div>
       </div>
 
@@ -51,8 +51,8 @@ export default function Login() {
       <div className="flex items-center justify-center p-8 lg:p-12">
         <div className="w-full max-w-md">
           <div className="lg:hidden flex items-center gap-2 font-mono text-sm tracking-tight mb-10">
-            <div className="w-6 h-6 border border-[#0F172A] grid place-items-center text-[#0F172A] font-mono text-[10px]">M</div>
-            <span className="text-[#0F172A]">MSS&nbsp;×&nbsp;Assure&nbsp;·&nbsp;Audit Utilities</span>
+            <div className="w-6 h-6 border border-[#0F172A] grid place-items-center text-[#0F172A] font-mono text-[10px]">A</div>
+            <span className="text-[#0F172A]">AssureAI&nbsp;·&nbsp;Audit Utilities</span>
           </div>
           <div className="border border-[#E5E5E0] bg-white p-8 rounded-sm">
             <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[#8A8A83]">Sign in</div>

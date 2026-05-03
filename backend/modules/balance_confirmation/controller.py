@@ -676,7 +676,7 @@ async def bulk_send(
 
     base_url = _public_base_url(request)
     auditor_email = (user.get("email") or "").strip()
-    auditor_firm = (payload.auditor_firm or "").strip() or "MSS & Co."
+    auditor_firm = (payload.auditor_firm or "").strip() or "AssureAI Audit Utilities"
 
     results: List[Dict[str, Any]] = []
     sent_count = 0
@@ -1089,7 +1089,7 @@ def _public_ctx_for_ledger(ledger: Dict[str, Any], run: Dict[str, Any],
         "fy":                  run.get("fy") or "",
         "client_name":         client.get("name") or "",
         "client_gstin":        client.get("gstin") or "",
-        "auditor_firm":        run.get("auditor_firm") or "MSS & Co.",
+        "auditor_firm":        run.get("auditor_firm") or "AssureAI Audit Utilities",
         "auditor_name":        run.get("created_by_name") or "",
         "confirmation_status": ledger.get("confirmation_status") or "not_sent",
     }

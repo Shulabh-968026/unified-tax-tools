@@ -402,7 +402,7 @@ def _page_decor(canvas, doc):
     canvas.setFont("Helvetica-Bold", 9)
     canvas.setFillColor(colors.white)
     canvas.drawString(doc.leftMargin, doc.pagesize[1] - 9 * mm,
-                      "MSS × ASSURE — QA TEST PACK")
+                      "ASSUREAI — QA TEST PACK")
     canvas.setFont("Helvetica", 8)
     canvas.drawRightString(doc.pagesize[0] - doc.rightMargin,
                            doc.pagesize[1] - 9 * mm,
@@ -478,7 +478,7 @@ def _module_card(mod, styles, content_w):
 def _cover(styles, content_w):
     flow: List[Any] = []
     flow.append(Spacer(1, 30 * mm))
-    flow.append(Paragraph("MSS × Assure", styles["h2"]))
+    flow.append(Paragraph("AssureAI", styles["h2"]))
     flow.append(Paragraph("Audit Utilities — QA Test Pack", styles["h1"]))
     flow.append(Spacer(1, 4 * mm))
     flow.append(Paragraph(
@@ -539,7 +539,7 @@ def render_qa_pack() -> bytes:
         buf, pagesize=A4,
         leftMargin=14 * mm, rightMargin=14 * mm,
         topMargin=20 * mm, bottomMargin=12 * mm,
-        title="MSS x Assure — QA Test Pack",
+        title="AssureAI — QA Test Pack",
     )
     frame = Frame(
         doc.leftMargin, doc.bottomMargin,
