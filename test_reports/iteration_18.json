@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only validation of Clause 44 Release 1 against ABC Textile Mills run (run_8d427d1f97e0). All 37 tests pass — 15 release-1 unit tests, 12 iteration-patch tests, and 9 NEW live-API integration tests (test_clause44_release1_live.py) hitting the preview environment with the dev session cookie. Live API confirms (a) PATCH /selections accepts the new fields, (b) POST /generate consumes them, (c) GET /runs returns silent re-classified summary that flips on use_itc_inference toggle, (d) Excel export ships 6 sheets with the ICAI 5-line Reconciliation + Disclaimer block, (e) cascade lands the 91 'Reverse Charge' vouchers in Col 7 with rcm_total=1,178,357.83 / rcm_vouchers=91 and import_total=0 (no foreign parties — expected). Recon arithmetic ties: pl_total + capex - non_cash - sch3 - money - other == reportable_total == summary.col2_total (8,072,786.27).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "pytest_total": "37/37 passed (15 release-1 unit + 12 iteration-patch + 9 new live-API)",
+    "patch_selections_new_fields": "exempt_ledgers, use_itc_inference, exclusion_categories, disclaimer_text — all accepted, persisted, echoed by GET",
+    "post_generate_new_fields": "GenerateRequest accepts all five new fields; classification re-runs and persists summary/by_ledger/by_party/transactions/recon",
+    "get_run_silent_reclassify": "Toggling use_itc_inference via PATCH and re-fetching with GET gives a fresh summary without an explicit Generate call (col3_from_input_b=0 when toggle off, populated when on, col3 always == input_a + input_b)",
+    "cascade_RCM_real_data": "summary.rcm_total=1,178,357.83 across 91 'Reverse Charge' vouchers — all in Col 7 with is_rcm=true",
+    "cascade_imports_real_data": "summary.import_total=0 (dataset has no non-India parties — matches request expectation)",
+    "icai_5_line_recon_arithmetic": "pl_total(8,072,786.27) + capex(0) − non_cash(0) − sch3(0) − money(0) − other(0) = reportable(8,072,786.27) = summary.col2_total(8,072,786.27) ✓",
+    "excel_export_6_sheets": "Workbook from /api/runs/{id}/export has exactly 6 sheets (verified via openpyxl)",
+    "excel_recon_format": "Reconciliation sheet contains every ICAI line: Total Expenditure as per Profit & Loss, Capital expenditure additions (Para 79.18), Less: Non-cash, Less: Schedule III, Less: Money/Securities, Less: Other auditor-elected exclusions, = Reportable Expenditure (Col 2)",
+    "excel_disclaimer_block": "Disclaimer header + body present in recon sheet (custom text round-trips from PATCH selections)",
+    "auto_categoriser_unit": "Salary→sch3, Depreciation→non_cash, Interest→money, unknown→other (4 unit tests pass)",
+    "input_a_de_dup": "Tagged exempt ledger never double-counts via Input B even when ITC inference is ON (unit test passes); Input A wins per-line"
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_clause44_release1_live.py",
+    "/app/backend/tests/test_clause44_release1.py",
+    "/app/backend/tests/test_clause44_iteration_patch.py",
+    "/app/test_reports/pytest/iteration_18.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "controller.py is clean: PATCH selections + GenerateRequest both expose the same five new fields and persist via the same _run_classification helper — keeps GET-path and Generate-path using identical inputs (good single source of truth).",
+    "Silent re-classification on GET (lines 296-308) wraps the call in a bare try/except that swallows ALL exceptions silently. Consider logging the exception so a malformed run doesn't fail invisibly when the engine logic changes again. Today it falls back to the stored snapshot, which is correct behaviour, but a logger.warning() would help operators.",
+    "PATCH endpoint correctly skips fields where the auditor sent null (None), which means there is no way to clear a custom disclaimer back to the default via the API — the only path is to send the default text explicitly. Acceptable trade-off for the Optional[None]==omit semantics, but worth noting if the UI needs a 'Reset to default' affordance.",
+    "service.classify_vouchers cascade ordering matches choice-4B exactly: RCM → Input A (exempt) → Import → Composition → Registered (with/without ITC inference) → URD. Verified end-to-end on real dataset (91 RCM vouchers all routed to Col 7).",
+    "exports._write_recon_sheet output matches the spec: 5 deduction lines + capex add-back + reportable line + indented per-bucket excluded lines + Disclaimer block at bottom. Auto-tested in test_recon_arithmetic_in_workbook."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_clause44_release1_live.py (NEW — 9 live-API tests)"
+  ],
+  "success_rate": {"backend": "100% (37/37)", "frontend": "n/a (backend-only)"},
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin, qa-bot@transformautomations.com) — valid",
+  "seed_data_creation": "None — used the existing run_8d427d1f97e0 / cli_ad137f29aebb (ABC Textile Mills) as instructed. The run was re-Generated and PATCH-ed during the test (last state: use_itc_inference=True, disclaimer_text='Test disclaimer iteration_18.', exempt_ledgers=[], exclusion_categories={}). If the next agent needs a virgin disclaimer, send PATCH with disclaimer_text equal to controller.DEFAULT_DISCLAIMER explicitly.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Live API regression for Clause 44 Release 1 lives in /app/backend/tests/test_clause44_release1_live.py — runs in <2s against the preview env using the dev cookie. Combined with the existing 27 unit tests it gives 37 green tests covering the cascade, Input-A de-dupe, ICAI 5-line recon, PATCH selections, POST generate, GET silent re-classify, and 6-sheet Excel export incl. recon arithmetic. PATCH semantics: sending null for a field is a no-op (Optional[None]==omit). To reset the disclaimer back to default after testing, PATCH with the explicit DEFAULT_DISCLAIMER string from controller.py."
+}

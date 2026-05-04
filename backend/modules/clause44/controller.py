@@ -77,6 +77,10 @@ def _company_names_match(client_name: str, books_name: str) -> bool:
 class GenerateRequest(BaseModel):
     itc_ledgers: List[str] = Field(default_factory=list)
     excluded_ledgers: List[str] = Field(default_factory=list)
+    exempt_ledgers: List[str] = Field(default_factory=list)
+    use_itc_inference: bool = True
+    exclusion_categories: Dict[str, str] = Field(default_factory=dict)
+    disclaimer_text: Optional[str] = None
 
 
 async def _fetch_run(run_id: str) -> Dict[str, Any]:
@@ -84,6 +88,58 @@ async def _fetch_run(run_id: str) -> Dict[str, Any]:
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Default boilerplate disclaimer — shipped on every fresh run, editable by
+# the auditor per choice 8B.  Stored on the run document once the auditor
+# first opens the report step.
+# ─────────────────────────────────────────────────────────────────────────
+DEFAULT_DISCLAIMER = (
+    "Classification under Clause 44 is derived solely from the accounting "
+    "data (books JSON) made available.  Where the books do not carry "
+    "nature-of-supply, Section 17(5) eligibility, supplier status at the "
+    "time of supply, or bill-of-supply markers, the engine relies on "
+    "(a) auditor-tagged exempt-supply purchase ledgers (\"Input A\"), "
+    "and (b) if enabled, the absence of an ITC-input ledger on a "
+    "voucher from a registered vendor as a presumptive marker of exempt "
+    "supply (\"Input B / ITC inference\").  RCM-type vouchers are treated "
+    "as Col 7 (Unregistered) for reporting; imports (non-Indian suppliers) "
+    "are also reported under Col 7.  Readers are referred to ICAI "
+    "Guidance Note on Tax Audit Para 79.20 / 79.21."
+)
+
+
+def _run_classification(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-run the Clause 44 engine against a run's persisted selections
+    (used for both initial generate and silent re-classification on GET).
+    """
+    accounting = run.get("accounting", {}) or {}
+    ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
+    ledgers_json = accounting.get("ledgers", []) or []
+    vouchers = accounting.get("vouchers", []) or []
+    groups = accounting.get("groups", []) or []
+
+    excluded = set(run.get("exclusion_selection") or [])
+    itc_set = set(run.get("itc_selection") or [])
+    exempt_set = set(run.get("exempt_selection") or [])
+    use_itc_inf = run.get("use_itc_inference", True)
+    exclusion_categories = run.get("exclusion_categories") or {}
+
+    group_chains = build_group_chain(groups)
+    full_exp_ledgers = determine_expenditure_ledgers(ledgers_xlsx, ledgers_json, group_chains, set())
+    party_lookup = {l.get("name", ""): l for l in ledgers_json}
+
+    full_result = classify_vouchers(
+        vouchers, full_exp_ledgers, itc_set, party_lookup,
+        exempt_ledgers=exempt_set, use_itc_inference=use_itc_inf,
+    )
+    return compute_recon_and_filter(
+        full_result, excluded,
+        ledgers_xlsx=ledgers_xlsx,
+        group_chains=group_chains,
+        exclusion_categories=exclusion_categories,
+    )
 
 
 @router.post("/runs")
@@ -231,6 +287,26 @@ async def get_run(
                    if ledgers_xlsx else
                    {"itc_candidates": run.get("itc_candidates", []),
                     "pl_ledgers":     run.get("pl_ledgers", [])})
+
+    # Silent re-classification for generated runs (choice 7A) — opening an
+    # old run reflects the *current* engine logic without forcing the
+    # auditor to click Generate again.  We don't persist the re-classified
+    # values; they're computed on demand and overwritten on the next
+    # explicit Generate call.
+    summary = run.get("summary")
+    by_ledger = run.get("by_ledger")
+    by_party = run.get("by_party")
+    recon = run.get("recon")
+    if run.get("generated"):
+        try:
+            fresh = _run_classification(run)
+            summary = fresh["summary"]
+            by_ledger = fresh["by_ledger"]
+            by_party = fresh["by_party"]
+            recon = fresh["recon"]
+        except Exception:  # pragma: no cover — fall back to stored snapshot
+            pass
+
     return {
         "run_id": run["run_id"],
         "created_at": run["created_at"],
@@ -255,12 +331,16 @@ async def get_run(
         "generated_at": run.get("generated_at"),
         "generated_by_name": run.get("generated_by_name"),
         "generated_by_email": run.get("generated_by_email"),
-        "summary": run.get("summary"),
-        "by_ledger": run.get("by_ledger"),
-        "by_party": run.get("by_party"),
-        "recon": run.get("recon"),
+        "summary": summary,
+        "by_ledger": by_ledger,
+        "by_party": by_party,
+        "recon": recon,
         "itc_selection": run.get("itc_selection", []),
+        "exempt_selection": run.get("exempt_selection", []),
         "exclusion_selection": run.get("exclusion_selection", []),
+        "exclusion_categories": run.get("exclusion_categories", {}),
+        "use_itc_inference": run.get("use_itc_inference", True),
+        "disclaimer_text": run.get("disclaimer_text", DEFAULT_DISCLAIMER),
     }
 
 
@@ -275,40 +355,42 @@ async def generate_run(
     user = await get_current_user(request, session_token, authorization)
     run = await _fetch_run(run_id)
 
-    accounting = run.get("accounting", {}) or {}
-    ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
-    ledgers_json = accounting.get("ledgers", []) or []
-    vouchers = accounting.get("vouchers", []) or []
-    groups = accounting.get("groups", []) or []
-
-    excluded = set(body.excluded_ledgers or [])
     itc_set = set(body.itc_ledgers or [])
+    excluded = set(body.excluded_ledgers or [])
+    exempt_set = set(body.exempt_ledgers or [])
 
-    group_chains = build_group_chain(groups)
-    full_exp_ledgers = determine_expenditure_ledgers(ledgers_xlsx, ledgers_json, group_chains, set())
-    party_lookup = {l.get("name", ""): l for l in ledgers_json}
+    # Persist the selections onto the run doc first so `_run_classification`
+    # reads them via the canonical path (keeps the GET-path and the
+    # generate-path using identical inputs).
+    run["itc_selection"] = list(itc_set)
+    run["exempt_selection"] = list(exempt_set)
+    run["exclusion_selection"] = list(excluded)
+    run["use_itc_inference"] = bool(body.use_itc_inference)
+    run["exclusion_categories"] = dict(body.exclusion_categories or {})
 
-    full_result = classify_vouchers(vouchers, full_exp_ledgers, itc_set, party_lookup)
-    final = compute_recon_and_filter(full_result, excluded)
+    final = _run_classification(run)
 
-    await db.runs.update_one(
-        {"run_id": run_id},
-        {"$set": {
-            "generated": True,
-            "itc_selection": list(itc_set),
-            "exclusion_selection": list(excluded),
-            "summary": final["summary"],
-            "by_ledger": final["by_ledger"],
-            "by_party": final["by_party"],
-            "transactions": final["transactions"],
-            "recon": final["recon"],
-            "expenditure_ledgers": list(full_exp_ledgers.keys()),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "generated_by_user_id": user["user_id"],
-            "generated_by_name": user.get("name") or user.get("email"),
-            "generated_by_email": user.get("email"),
-        }},
-    )
+    update_doc = {
+        "generated": True,
+        "itc_selection": list(itc_set),
+        "exempt_selection": list(exempt_set),
+        "exclusion_selection": list(excluded),
+        "use_itc_inference": bool(body.use_itc_inference),
+        "exclusion_categories": dict(body.exclusion_categories or {}),
+        "summary": final["summary"],
+        "by_ledger": final["by_ledger"],
+        "by_party": final["by_party"],
+        "transactions": final["transactions"],
+        "recon": final["recon"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_by_user_id": user["user_id"],
+        "generated_by_name": user.get("name") or user.get("email"),
+        "generated_by_email": user.get("email"),
+    }
+    if body.disclaimer_text is not None:
+        update_doc["disclaimer_text"] = body.disclaimer_text
+
+    await db.runs.update_one({"run_id": run_id}, {"$set": update_doc})
     return {
         "run_id": run_id,
         "summary": final["summary"],
@@ -322,6 +404,10 @@ async def generate_run(
 class SelectionsRequest(BaseModel):
     itc_ledgers: Optional[List[str]] = None
     excluded_ledgers: Optional[List[str]] = None
+    exempt_ledgers: Optional[List[str]] = None
+    use_itc_inference: Optional[bool] = None
+    exclusion_categories: Optional[Dict[str, str]] = None
+    disclaimer_text: Optional[str] = None
 
 
 @router.patch("/runs/{run_id}/selections")
@@ -332,9 +418,10 @@ async def save_selections(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Persist ITC / exclusion picks across stepper navigation — without
-    running classification. Step 2 and Step 3 of the stepper call this on
-    "Proceed" so a user can safely go Back without losing state."""
+    """Persist any subset of the stepper selections across navigation —
+    without running classification.  Each stepper "Proceed" calls this so
+    going Back does not lose state.
+    """
     await get_current_user(request, session_token, authorization)
     await _fetch_run(run_id)
     update: Dict[str, Any] = {}
@@ -342,6 +429,14 @@ async def save_selections(
         update["itc_selection"] = list(set(body.itc_ledgers))
     if body.excluded_ledgers is not None:
         update["exclusion_selection"] = list(set(body.excluded_ledgers))
+    if body.exempt_ledgers is not None:
+        update["exempt_selection"] = list(set(body.exempt_ledgers))
+    if body.use_itc_inference is not None:
+        update["use_itc_inference"] = bool(body.use_itc_inference)
+    if body.exclusion_categories is not None:
+        update["exclusion_categories"] = dict(body.exclusion_categories)
+    if body.disclaimer_text is not None:
+        update["disclaimer_text"] = body.disclaimer_text
     if not update:
         return {"run_id": run_id, "saved": False}
     update["last_selections_saved_at"] = datetime.now(timezone.utc).isoformat()

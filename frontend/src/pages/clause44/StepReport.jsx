@@ -14,7 +14,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatINR, formatDate } from "@/lib/format";
-import { getTransactions } from "@/lib/api";
+import { getTransactions, saveSelections } from "@/lib/api";
 import { ACCENTS, COL_ACCENTS } from "@/lib/colors";
 import { CaretDown, CaretRight, MagnifyingGlass, ArrowUp, ArrowDown, ChartPieSlice } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -38,6 +38,13 @@ const PIVOT_COLS = [
 ];
 
 export default function StepReport({ run }) {
+  const col3FromA = run?.summary?.col3_from_input_a || 0;
+  const col3FromB = run?.summary?.col3_from_input_b || 0;
+  const rcmCount = run?.summary?.rcm_vouchers || 0;
+  const importTotal = run?.summary?.import_total || 0;
+  const useItcInf = run?.use_itc_inference !== false;
+  const col3HasSplit = col3FromA > 0 || col3FromB > 0;
+
   return (
     <section className="mx-auto max-w-[1200px]" data-testid="step-report">
       <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8A8A83]">Step 04 / 04</div>
@@ -48,6 +55,31 @@ export default function StepReport({ run }) {
         Use the <strong>Reconciliation</strong> tab to tie books to schedule
         before you export.
       </p>
+
+      {/* Release-1 contextual strip — makes the Col 3 attribution + RCM
+          / import posture visible to the auditor at a glance.  Only
+          renders once there's actual detail to show. */}
+      {(col3HasSplit || rcmCount > 0 || importTotal > 0) && (
+        <div className="mt-4 p-3 bg-[#FAFAF7] border border-[#E5E5E0] rounded-sm text-[11.5px] text-[#52524E] flex flex-wrap gap-x-6 gap-y-1" data-testid="report-info-strip">
+          {col3HasSplit && (
+            <span data-testid="col3-split">
+              <strong>Col 3 split:</strong> Input A ≈ {formatINR(col3FromA)} · Input B ≈ {formatINR(col3FromB)}
+              {" "}
+              (<em>ITC inference {useItcInf ? "ON" : "OFF"}</em>)
+            </span>
+          )}
+          {rcmCount > 0 && (
+            <span data-testid="rcm-chip">
+              <strong>RCM:</strong> {rcmCount} vouchers tagged → Col 7
+            </span>
+          )}
+          {importTotal > 0 && (
+            <span data-testid="imports-chip">
+              <strong>Imports:</strong> {formatINR(importTotal)} → Col 7
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="mt-8">
         <Tabs defaultValue="schedule" className="w-full">
@@ -63,7 +95,18 @@ export default function StepReport({ run }) {
             <Schedule run={run}/>
           </TabsContent>
           <TabsContent value="recon" className="mt-6">
-            <ReconTable recon={run.recon}/>
+            <ReconTable
+              recon={run.recon}
+              onUpdateCategory={async (ledgerName, newBucket) => {
+                try {
+                  const next = { ...(run.exclusion_categories || {}), [ledgerName]: newBucket };
+                  await saveSelections(run.run_id, { exclusion_categories: next });
+                  toast.success(`Re-categorised '${ledgerName}' — re-generate to refresh totals`);
+                } catch {
+                  toast.error("Failed to save category");
+                }
+              }}
+            />
           </TabsContent>
         </Tabs>
       </div>

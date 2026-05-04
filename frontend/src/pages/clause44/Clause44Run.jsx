@@ -8,23 +8,29 @@
  *                  (import happens on ClientHome; arriving here means
  *                   the books have been ingested and the run exists)
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, CheckCircle, DownloadSimple, Lightning } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
 import { generateRun, getRun, saveSelections, exportRunUrl } from "@/lib/api";
-import StepItc from "./StepItc";
+import StepSpecialLedgers from "./StepSpecialLedgers";
 import StepExclusion from "./StepExclusion";
 import StepReport from "./StepReport";
 
 const STEPS = [
-  { key: "import",    label: "Import" },           // shown as completed — import happens on ClientHome
-  { key: "itc",       label: "ITC Ledgers" },
+  { key: "import",    label: "Import" },             // shown as completed — import happens on ClientHome
+  { key: "special",   label: "Special Ledgers" },    // renamed from "itc" (was narrower)
   { key: "exclusion", label: "Exclusions" },
   { key: "report",    label: "Report" },
 ];
+
+// Legacy URL shim — `?step=itc` → `special`.
+function normaliseStepKey(raw) {
+  if (raw === "itc") return "special";
+  return raw;
+}
 
 export default function Clause44Run() {
   const { runId } = useParams();
@@ -32,14 +38,22 @@ export default function Clause44Run() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   // Legacy /runs/:runId/report URLs → default to the report step.
-  const step = params.get("step") || (location.pathname.endsWith("/report") ? "report" : "itc");
+  const rawStep = params.get("step") || (location.pathname.endsWith("/report") ? "report" : "special");
+  const step = normaliseStepKey(rawStep);
 
   const [run, setRun] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+
+  // Step 2 — Special Ledgers (two tabs + toggle)
   const [itc, setItc] = useState(new Set());
-  const [exc, setExc] = useState(new Set());
+  const [exempt, setExempt] = useState(new Set());
+  const [useItcInf, setUseItcInf] = useState(true);
   const [itcQuery, setItcQuery] = useState("");
+  const [exemptQuery, setExemptQuery] = useState("");
+
+  // Step 3 — Exclusions
+  const [exc, setExc] = useState(new Set());
   const [excQuery, setExcQuery] = useState("");
 
   // Load run + seed selections.
@@ -48,11 +62,11 @@ export default function Clause44Run() {
       try {
         const r = await getRun(runId);
         setRun(r);
-        // Seed: restore any previously-saved selections (across step navigation).
         const itcSeed = new Set(r.itc_selection || []);
+        const exemptSeed = new Set(r.exempt_selection || []);
         const excSeed = new Set(r.exclusion_selection || []);
-        // First-load heuristic: if user hasn't made any explicit selection yet
-        // AND run has not been generated, pre-tick the "suggested" rows.
+        // First-load heuristic: if user hasn't made any explicit selection
+        // yet AND run has not been generated, pre-tick "suggested" rows.
         const noPriorItc = !(r.itc_selection && r.itc_selection.length) && !r.generated;
         const noPriorExc = !(r.exclusion_selection && r.exclusion_selection.length) && !r.generated;
         if (noPriorItc) {
@@ -61,8 +75,11 @@ export default function Clause44Run() {
         if (noPriorExc) {
           (r.pl_ledgers || []).forEach((x) => { if (x.suggested) excSeed.add(x.name); });
         }
+        // Exempt purchases — never pre-ticked; auditor must opt-in consciously.
         setItc(itcSeed);
+        setExempt(exemptSeed);
         setExc(excSeed);
+        setUseItcInf(r.use_itc_inference !== false);  // default true
       } catch (e) {
         toast.error("Failed to load run");
       } finally {
@@ -74,10 +91,14 @@ export default function Clause44Run() {
 
   const goTo = (key) => setParams({ step: key });
 
-  const proceedItc = async () => {
+  const proceedSpecial = async () => {
     setBusy(true);
     try {
-      await saveSelections(runId, { itc_ledgers: Array.from(itc) });
+      await saveSelections(runId, {
+        itc_ledgers: Array.from(itc),
+        exempt_ledgers: Array.from(exempt),
+        use_itc_inference: useItcInf,
+      });
       goTo("exclusion");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to save");
@@ -85,13 +106,17 @@ export default function Clause44Run() {
       setBusy(false);
     }
   };
+
   const proceedExclusion = async () => {
     setBusy(true);
     try {
-      // Persist exclusions and trigger classification in one go
+      // Persist exclusions and trigger classification in one go.
       await generateRun(runId, {
         itc_ledgers: Array.from(itc),
+        exempt_ledgers: Array.from(exempt),
         excluded_ledgers: Array.from(exc),
+        use_itc_inference: useItcInf,
+        exclusion_categories: run?.exclusion_categories || {},
       });
       // Re-fetch — the backend now has by_ledger / by_party etc.
       const r = await getRun(runId);
@@ -104,11 +129,11 @@ export default function Clause44Run() {
       setBusy(false);
     }
   };
+
   const backToClient = () => run?.client_id
     ? navigate(`/dashboard/clients/${run.client_id}/utilities/clause-44`)
     : navigate("/dashboard");
-  const backFromItc = () => backToClient();
-  const backFromExclusion = () => goTo("itc");
+  const backFromExclusion = () => goTo("special");
   const backFromReport = () => goTo("exclusion");
 
   // Header meta for the fixed top strip
@@ -157,7 +182,7 @@ export default function Clause44Run() {
                 <li key={s.key} className="flex items-center gap-1">
                   <button
                     onClick={() => {
-                      if (s.key === "import") return;                // noop
+                      if (s.key === "import") return;                   // noop
                       if (s.key === "report" && !run.generated) return; // gate
                       goTo(s.key);
                     }}
@@ -185,11 +210,11 @@ export default function Clause44Run() {
 
           {/* Action cluster — top right */}
           <div className="ml-auto flex items-center gap-2">
-            {step === "itc" && (
+            {step === "special" && (
               <Button
-                onClick={proceedItc}
+                onClick={proceedSpecial}
                 disabled={busy}
-                data-testid="proceed-itc"
+                data-testid="proceed-special"
                 className="h-9 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-1.5"
               >
                 Proceed <ArrowLeft size={12} weight="bold" style={{ transform: "rotate(180deg)" }}/>
@@ -241,13 +266,19 @@ export default function Clause44Run() {
 
       {/* ───── Step content ───── */}
       <div className="px-6 md:px-10 py-8 pb-40">
-        {step === "itc" && (
-          <StepItc
+        {step === "special" && (
+          <StepSpecialLedgers
             run={run}
-            selected={itc}
-            setSelected={setItc}
-            query={itcQuery}
-            setQuery={setItcQuery}
+            itcSelected={itc}
+            setItcSelected={setItc}
+            itcQuery={itcQuery}
+            setItcQuery={setItcQuery}
+            exemptSelected={exempt}
+            setExemptSelected={setExempt}
+            exemptQuery={exemptQuery}
+            setExemptQuery={setExemptQuery}
+            useItcInference={useItcInf}
+            setUseItcInference={setUseItcInf}
           />
         )}
         {step === "exclusion" && (

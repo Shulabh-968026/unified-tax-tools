@@ -125,27 +125,70 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
 def _write_recon_sheet(wb, run: Dict[str, Any]):
     recon = run.get("recon") or {}
     ws = wb.create_sheet("Reconciliation")
-    ws["A1"] = "Reconciliation — Books to Clause 44"
+    ws["A1"] = "Reconciliation — Books to Clause 44 (ICAI Para 79.4)"
     ws["A1"].font = TITLE_FONT
     ws.merge_cells("A1:B1")
     ws.append([])
     ws.append(["Particulars", "Amount"])
     _style_header_row(ws, ws.max_row, 2)
 
-    ws.append(["Total Expenditure as per Books", recon.get("total_books", 0)])
-    ws.append(["Less : Expenditures excluded from Clause 44 Report", None])
-    for line in (recon.get("excluded_lines") or []):
-        ws.append([f"   • {line['name']}", -float(line.get("amount") or 0)])
-    ws.append(["Expenditure as per Clause 44 Report", recon.get("balance", 0)])
+    pl_total = recon.get("pl_total")
+    capex_total = recon.get("capex_total")
+    reportable = recon.get("reportable_total")
 
-    last_row = ws.max_row
-    for col in (1, 2):
-        c = ws.cell(row=last_row, column=col)
-        c.font = Font(bold=True)
-        c.fill = PatternFill("solid", fgColor="F3F4F1")
-        c.border = BORDER
+    # ICAI 5-line format — render only when the new fields are present.
+    if pl_total is not None and capex_total is not None:
+        ws.append(["Total Expenditure as per Profit & Loss", float(pl_total or 0)])
+        ws.append(["+ Capital expenditure additions (ICAI Para 79.18)", float(capex_total or 0)])
 
-    ws.column_dimensions["A"].width = 60
+        buckets = [
+            ("non_cash", "Less: Non-cash charges (depreciation, provisions, fair-value losses)"),
+            ("sch3",     "Less: Schedule III items (salary, wages, PF/ESI, gratuity, dividend declared, sale of land/building)"),
+            ("money",    "Less: Money / Securities transactions (interest, TDS, investments, share transactions)"),
+            ("other",    "Less: Other auditor-elected exclusions"),
+        ]
+        for key, label in buckets:
+            lines = recon.get(f"{key}_lines") or []
+            total = recon.get(f"{key}_total") or 0
+            ws.append([label, -float(total or 0)])
+            header_row = ws.max_row
+            ws.cell(row=header_row, column=1).font = Font(bold=True)
+            for line in lines:
+                ws.append([f"   • {line['name']}", -float(line.get('amount') or 0)])
+
+        ws.append(["= Reportable Expenditure (Col 2 of Clause 44)", float(reportable or 0)])
+        last_row = ws.max_row
+        for col in (1, 2):
+            c = ws.cell(row=last_row, column=col)
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="F3F4F1")
+            c.border = BORDER
+    else:
+        # Legacy single-bucket recon (pre-Release-1 runs).
+        ws.append(["Total Expenditure as per Books", recon.get("total_books", 0)])
+        ws.append(["Less : Expenditures excluded from Clause 44 Report", None])
+        for line in (recon.get("excluded_lines") or []):
+            ws.append([f"   • {line['name']}", -float(line.get("amount") or 0)])
+        ws.append(["Expenditure as per Clause 44 Report", recon.get("balance", 0)])
+        last_row = ws.max_row
+        for col in (1, 2):
+            c = ws.cell(row=last_row, column=col)
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="F3F4F1")
+            c.border = BORDER
+
+    # Disclaimer block — appended regardless of recon shape.
+    disclaimer = run.get("disclaimer_text") or ""
+    if disclaimer:
+        ws.append([])
+        ws.append(["Disclaimer"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        ws.append([disclaimer])
+        ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+        ws.row_dimensions[ws.max_row].height = 90
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=2)
+
+    ws.column_dimensions["A"].width = 70
     ws.column_dimensions["B"].width = 22
     _apply_indian_fmt(ws, min_row=4, cols=[2])
 
