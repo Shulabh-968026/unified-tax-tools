@@ -1,0 +1,45 @@
+{
+  "summary": "Clause 44 Release 3.1 backend validation — ITC kind classification + smarter seeding (Fix 1 only). Wrote 8 NEW live HTTP tests in /app/backend/tests/test_clause44_release3_1_live.py covering every bullet in the review request. All 9 pre-existing unit tests in test_clause44_release3_1.py pass. Combined Clause 44 regression suite (R1 unit+live + R2 unit+live + R3 unit+live + R3.1 unit+live + iteration_patch) = 98/98 passed in 7.84s. No clients/runs leaked — DB still holds exactly 3 clients. Col 2 identity (= col3+col4+col5+col7+col8) holds on run_0ef0127bba5c.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "kind_field_on_every_candidate": "Every element of GET /api/runs/{run_id}.itc_candidates carries kind ∈ {input, output, other} — verified on both run_0ef0127bba5c and run_8d427d1f97e0.",
+    "output_ledgers_not_pre_ticked": "On run_0ef0127bba5c, the 3 Output ledgers (Output CGST @ 2.5%, Output SGST @ 2.5%, Output IGST @ 5%) are all classified kind='output' AND suggested=False even though their subhead is 'Statutory Dues Payable'.",
+    "input_ledger_pre_ticked": "Input SGST @ 9% (subhead='Balance with Revenue Authorities') has kind='input' and suggested=True.",
+    "user_reported_exact_shape": "Exactly 4 GST ledgers in candidate pool; only ['Input SGST @ 9%'] is pre-ticked (suggested=True); the 3 Output ledgers have kind='output' and suggested=False — exact shape the review request demanded.",
+    "patch_respects_user_output_election": "PATCH /api/runs/{run_id}/selections {itc_ledgers:['Output CGST @ 2.5%']} persists verbatim — server does NOT strip user-elected Output ledgers. Candidate pool still reports kind='output' so UI warning chip can fire.",
+    "generate_respects_user_output_election": "POST /api/runs/{run_id}/generate with itc_ledgers containing an Output ledger keeps it in itc_selection and still classifies the run successfully (summary.col2_total populated).",
+    "unit_tests_9_of_9": "All 9 new Release-3.1 unit tests (TestKindClassifier + TestSeedingHeuristic including the real-world ABC Textile scenario) pass.",
+    "regression_98_of_98": "Combined Clause 44 release suite (R1+R1 live + R2+R2 live + R3+R3 live + R3.1+R3.1 live + iteration_patch) = 98/98 passed; no cross-release breakage.",
+    "col2_identity": "On run_0ef0127bba5c: summary.col2_total (8,072,786.27) == col3+col4+col5+col7+col8 (8,072,786.27) — diff 0.0. Reportable identity col6+col7 also matches col2 (no exclusions elected on this run).",
+    "no_client_leak": "GET /api/clients still returns exactly 3: Velav Garments India P Limited, Allman Knitwear, ABC Textile Mills."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_clause44_release3_1_live.py",
+    "/app/backend/tests/test_clause44_release3_1.py",
+    "/app/test_reports/pytest/iteration_21_full.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "service.py::_classify_itc_kind — regex-based name classifier correctly prioritises 'Input' / 'Output' / 'RCM' tokens. Verified against real-world names including 'Input SGST @ 9%', 'Output CGST @ 2.5%', 'RCM Output 18%'. Edge case 'Balance with GST Authorities' → 'other' is correct (ambiguous neutral name).",
+    "service.py::compute_suggestions — pre-tick gate now requires BOTH (subhead ∈ target list) AND (kind == 'input'). The bug case (Output ledger under 'Statutory Dues Payable') is correctly defanged. Verified live on run_0ef0127bba5c.",
+    "controller.py::save_selections (PATCH) — itc_ledgers persisted verbatim with no server-side Output stripping, matching the stated contract ('we don't strip user-elected selections on save').",
+    "controller.py::generate_run (POST) — reads itc_ledgers from request body (not persisted doc), so client must send the full selection list each time. This is the existing contract, unchanged.",
+    "Pre-existing (out of R3.1 scope) — tests/test_clause44_backend.py still uses hardcoded internal URLs and fails auth/CRUD against the preview env. Flagged in iter19/iter20; not addressed here. Recommend deletion or rewrite as a separate follow-up."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_clause44_release3_1_live.py (NEW — 8 live HTTP tests)"
+  ],
+  "success_rate": {
+    "backend_release3_1_unit": "100% (9/9)",
+    "backend_release3_1_live": "100% (8/8)",
+    "backend_clause44_combined": "100% (98/98)",
+    "frontend": "n/a (backend-only per request)"
+  },
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin qa-bot@transformautomations.com) — valid.",
+  "seed_data_creation": "None. All tests run against existing seeded runs run_0ef0127bba5c and run_8d427d1f97e0 (ABC Textile Mills). The PATCH/generate round-trip tests snapshot original selections in fixture setup and restore them in a finally: block, so run state ends unchanged after each test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Release-3.1 live regression suite is /app/backend/tests/test_clause44_release3_1_live.py (8 tests, ~1.7s). Reads run_0ef0127bba5c and run_8d427d1f97e0 to verify the kind classifier and the smarter seeding heuristic. The user-reported 4-GST-ledger shape is asserted exactly: Input SGST @ 9% pre-ticked, three Output ledgers untouched. Teardown restores any PATCH/generate mutation. The only outstanding known issue is the pre-existing test_clause44_backend.py hardcoded-URL failures (iter19/iter20 minor item) — still not in scope. Backend fix itself (service.py::_classify_itc_kind + compute_suggestions) is live and correct in production.",
+  "rca of the issue": "n/a — no Release 3.1 bugs found. Initial false-positive in my test was a test-script issue: I called POST /generate with an empty body, which correctly overwrote itc_selection = [] per the existing /generate contract (request body is canonical, not persisted doc). Split into two explicit tests: (a) PATCH-only persistence, (b) /generate with Output ledger in body — both pass."
+}

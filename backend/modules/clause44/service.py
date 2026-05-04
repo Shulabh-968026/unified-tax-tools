@@ -211,19 +211,47 @@ def is_capex_ledger(ledger: Dict[str, Any], group_chains: Dict[str, str]) -> boo
     return "fixed asset" in chain
 
 
+def _classify_itc_kind(name: str, subhead: str, group_parent: str) -> str:
+    """Tag an ITC candidate as 'input' (typical Col 5 marker), 'output'
+    (sales-side, should NOT drive Col 5 inference), or 'other' (neutral
+    ITC-pool ledger that the auditor may still tag manually).
+
+    Heuristic is name-prefix-driven because Tally consistently names
+    these ledgers `Input <tax>` / `Output <tax>` regardless of the
+    subhead they're filed under.  We *also* honour the subhead match so
+    blocks of "Balance with Revenue Authorities" sub-types still surface,
+    but classified as 'other' (neutral) when the name pattern is silent.
+    """
+    n = (name or "").lower().strip()
+    if n.startswith("input ") or n.startswith("input-") or " input " in f" {n} ":
+        return "input"
+    if n.startswith("output ") or n.startswith("output-") or " output " in f" {n} ":
+        return "output"
+    # Cesses, RCM-input, ITC reversed — common alt-names
+    if "rcm input" in n or "itc input" in n or "input cess" in n or n.startswith("rcm "):
+        return "input"
+    if "rcm output" in n or "output cess" in n:
+        return "output"
+    return "other"
+
+
 def compute_suggestions(ledgers_xlsx: Dict[str, Dict[str, Any]], ledgers_json: List[Dict[str, Any]]):
     """Build the two pools the Mapping screen needs.
 
     ITC candidate pool  — every BS-side ledger except those whose subhead is
     in `ITC_POOL_EXCLUDE_SUBHEADS` (trade payables/receivables/fixed assets/
-    cash/bank).  Within this pool, `suggested=True` is set only for ledgers
-    whose subhead matches one of `ITC_SUGGEST_SUBHEADS` (Balance with
-    Revenue Authorities / Statutory Dues Payable).  Everything else is
-    shown un-ticked but searchable.
+    cash/bank).  Each candidate carries a `kind` ∈ {input, output, other}
+    classification so the UI can render warnings on Output-side picks.
+
+    Pre-selection rule (`suggested=True`) — fires only for ledgers whose
+    subhead matches the target list AND whose `kind` == "input".  This is
+    the Release-3.1 fix: prior versions also pre-ticked Output-side
+    ledgers (Output CGST / SGST / IGST), which over-fed Input B and
+    swept registered-vendor purchases into Col 3.  The auditor can still
+    add Output-side ledgers manually if they have a justification.
 
     Expenditure-exclusion pool — every P&L ledger, with `suggested=True`
-    for those whose NAME hints at non-supply items (salaries, PF, interest,
-    depreciation, etc.).
+    for those whose NAME hints at non-supply items.
     """
     itc_candidates = []
     for name, rec in ledgers_xlsx.items():
@@ -232,19 +260,22 @@ def compute_suggestions(ledgers_xlsx: Dict[str, Dict[str, Any]], ledgers_json: L
         subhead = rec.get("subhead", "") or ""
         group_parent = rec.get("groupParent", "") or ""
         head = rec.get("head", "") or ""
-        # Exclude check walks subhead + groupParent + head so Tally's
-        # granular subheads (Buildings, Furniture, etc.) still get caught
-        # by the Fixed-Assets rule on their parent group.
         if _fields_match(ITC_POOL_EXCLUDE_SUBHEADS, subhead, group_parent, head):
             continue
+        kind = _classify_itc_kind(name, subhead, group_parent)
+        # Pre-tick only when the target subhead matches AND kind is
+        # "input" — Output ledgers stay un-ticked even if their subhead
+        # would otherwise qualify.
+        suggested = (
+            _subhead_matches(subhead, ITC_SUGGEST_SUBHEADS) and kind == "input"
+        )
         itc_candidates.append({
             "name": name,
             "groupParent": group_parent,
             "subhead": subhead,
             "closingBalance": rec.get("closingBalance"),
-            # Pre-selection is still strictly driven by the two target subheads
-            # — group-parent ambiguity must not auto-select an ITC ledger.
-            "suggested": _subhead_matches(subhead, ITC_SUGGEST_SUBHEADS),
+            "kind": kind,
+            "suggested": suggested,
         })
 
     pl_ledgers = []

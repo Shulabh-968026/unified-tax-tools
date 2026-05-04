@@ -60,19 +60,34 @@ export default function LedgerList({
                       onCheckedChange={() => onToggle(it.name)}
                       className="mt-0.5"
                     />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-medium truncate">{it.name}</span>
-                        {it.suggested && (
-                          <Badge className="bg-amber-50 text-amber-900 border border-amber-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">
-                            <Sparkle size={10} weight="fill" className="mr-1"/> {suggestedLabel}
-                          </Badge>
-                        )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[13px] font-medium truncate">{it.name}</span>
+                          {it.suggested && (
+                            <Badge className="bg-amber-50 text-amber-900 border border-amber-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">
+                              <Sparkle size={10} weight="fill" className="mr-1"/> {suggestedLabel}
+                            </Badge>
+                          )}
+                          {it.kind === "input" && (
+                            <Badge className="bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono" data-testid={`itc-kind-input-${encodeURIComponent(it.name)}`}>
+                              INPUT
+                            </Badge>
+                          )}
+                          {it.kind === "output" && (
+                            <Badge className="bg-rose-50 text-rose-900 border border-rose-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono" data-testid={`itc-kind-output-${encodeURIComponent(it.name)}`}>
+                              OUTPUT · sales-side
+                            </Badge>
+                          )}
+                          {isSel && it.kind === "output" && (
+                            <Badge className="bg-rose-700 text-white rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono" data-testid={`itc-kind-output-warn-${encodeURIComponent(it.name)}`}>
+                              ⚠ may misclassify Col 5
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-[#8A8A83] mt-0.5">
+                          {showSubhead && it.subhead ? `${it.subhead} · ` : ""}{it.groupParent || "—"}{it.closingBalance != null ? ` · bal ${formatINR(it.closingBalance)}` : ""}
+                        </div>
                       </div>
-                      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-[#8A8A83] mt-0.5">
-                        {showSubhead && it.subhead ? `${it.subhead} · ` : ""}{it.groupParent || "—"}{it.closingBalance != null ? ` · bal ${formatINR(it.closingBalance)}` : ""}
-                      </div>
-                    </div>
                   </label>
                 </li>
               );

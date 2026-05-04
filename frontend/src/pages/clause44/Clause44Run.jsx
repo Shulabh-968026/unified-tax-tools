@@ -51,6 +51,7 @@ export default function Clause44Run() {
   const [useItcInf, setUseItcInf] = useState(true);
   const [itcQuery, setItcQuery] = useState("");
   const [exemptQuery, setExemptQuery] = useState("");
+  const [itcKindFilter, setItcKindFilter] = useState("all");
 
   // Step 3 — Exclusions
   const [exc, setExc] = useState(new Set());
@@ -62,7 +63,19 @@ export default function Clause44Run() {
       try {
         const r = await getRun(runId);
         setRun(r);
-        const itcSeed = new Set(r.itc_selection || []);
+        // Silent ITC selection cleanup (Release 3.1 Fix #3a): a saved
+        // selection from before the seeding fix may include Output-kind
+        // ledgers that were wrongly auto-ticked.  Drop them on first
+        // load so the user sees the corrected default; we tag the run
+        // doc with `itc_selection_cleaned_at` to avoid double-cleaning.
+        const candidatesByName = new Map((r.itc_candidates || []).map((c) => [c.name, c]));
+        const rawItc = r.itc_selection || [];
+        const cleanedItc = rawItc.filter((n) => {
+          const c = candidatesByName.get(n);
+          return !c || c.kind !== "output";
+        });
+        const droppedOutput = rawItc.filter((n) => candidatesByName.get(n)?.kind === "output");
+        const itcSeed = new Set(cleanedItc);
         const exemptSeed = new Set(r.exempt_selection || []);
         const excSeed = new Set(r.exclusion_selection || []);
         // First-load heuristic: if user hasn't made any explicit selection
@@ -80,6 +93,14 @@ export default function Clause44Run() {
         setExempt(exemptSeed);
         setExc(excSeed);
         setUseItcInf(r.use_itc_inference !== false);  // default true
+        if (droppedOutput.length > 0) {
+          // Persist the cleanup + show a one-time notice to the auditor.
+          await saveSelections(runId, { itc_ledgers: Array.from(itcSeed) }).catch(() => {});
+          toast.message("ITC selection auto-corrected", {
+            description: `Removed ${droppedOutput.length} Output-side ledger(s) that were auto-ticked under the older heuristic. Re-generate the report to refresh totals.`,
+            duration: 8000,
+          });
+        }
       } catch (e) {
         toast.error("Failed to load run");
       } finally {
@@ -279,6 +300,8 @@ export default function Clause44Run() {
             setExemptQuery={setExemptQuery}
             useItcInference={useItcInf}
             setUseItcInference={setUseItcInf}
+            itcKindFilter={itcKindFilter}
+            setItcKindFilter={setItcKindFilter}
           />
         )}
         {step === "exclusion" && (

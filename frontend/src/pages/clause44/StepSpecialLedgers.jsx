@@ -26,6 +26,7 @@ export default function StepSpecialLedgers({
   itcSelected, setItcSelected, itcQuery, setItcQuery,
   exemptSelected, setExemptSelected, exemptQuery, setExemptQuery,
   useItcInference, setUseItcInference,
+  itcKindFilter, setItcKindFilter,
 }) {
   const itcItems = run?.itc_candidates || [];
   const plItems = run?.pl_ledgers || [];
@@ -167,13 +168,54 @@ export default function StepSpecialLedgers({
             </div>
           </div>
 
-          <div className="mb-3 flex items-baseline justify-between">
-            <div className="text-[12px] text-[#52524E]">
-              Pre-ticked: BS ledgers mapped to <span className="font-mono">Balance with Revenue Authorities</span> or <span className="font-mono">Statutory Dues Payable</span>.
-            </div>
-            <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm font-mono shadow-none">
-              {itcSelected.size} / {itcItems.length}
-            </Badge>
+          {/* Smart guard: warn if any Output-kind ledger has been ticked.
+              Output ledgers fire on SALES vouchers — they don't appear on
+              purchase vouchers, so tagging them as "ITC marker" makes
+              every registered-vendor purchase miss the ITC presence
+              check and (with inference ON) sweep into Col 3. */}
+          {(() => {
+            const outputPicked = itcItems.filter((x) => x.kind === "output" && itcSelected.has(x.name));
+            if (outputPicked.length === 0) return null;
+            return (
+              <div className="mb-3 p-3 bg-rose-50 border border-rose-200 rounded-sm" data-testid="itc-output-warning">
+                <div className="flex items-start gap-2.5">
+                  <span className="text-rose-700 font-mono text-[10.5px] uppercase tracking-[0.12em] mt-0.5">⚠ Heads up</span>
+                  <p className="text-[11.5px] text-rose-950/80 leading-snug flex-1 min-w-0">
+                    You've ticked <strong>{outputPicked.length}</strong> Output-side tax ledger(s):
+                    {" "}{outputPicked.map((x) => <code key={x.name} className="font-mono text-[11px] bg-white border border-rose-200 px-1 rounded-sm mr-1">{x.name}</code>)}.
+                    Output ledgers fire on <em>sales</em> vouchers, not purchases — they will <strong>not</strong> mark a purchase as having ITC, so Input B (ITC inference) will continue treating those purchases as exempt and route them to Col 3.
+                    Untick these unless you have a specific reason to keep them, or turn the inference toggle OFF above.
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Quick-filter strip — Input only · All · Output only */}
+          <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="itc-kind-filter">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E]">View</span>
+            {[
+              { v: "all",    label: "All" },
+              { v: "input",  label: "Input only" },
+              { v: "output", label: "Output only" },
+              { v: "other",  label: "Other" },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                onClick={() => setItcKindFilter(opt.v)}
+                data-testid={`itc-kind-filter-${opt.v}`}
+                className={`px-2.5 py-1 rounded-sm border font-mono text-[10.5px] uppercase tracking-[0.12em] ${
+                  (itcKindFilter || "all") === opt.v
+                    ? "bg-[#0F172A] text-white border-[#0F172A]"
+                    : "bg-white text-[#52524E] border-[#E5E5E0] hover:bg-[#F3F4F1]"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+            <span className="ml-auto font-mono text-[10px] text-[#8A8A83]">
+              Pre-tick rule: only <span className="text-emerald-800">INPUT</span>-kind + matching subhead
+            </span>
           </div>
 
           {itcSelected.size > 0 && (
@@ -190,7 +232,11 @@ export default function StepSpecialLedgers({
           )}
 
           <LedgerList
-            items={itcItems}
+            items={
+              !itcKindFilter || itcKindFilter === "all"
+                ? itcItems
+                : itcItems.filter((x) => (x.kind || "other") === itcKindFilter)
+            }
             selected={itcSelected}
             onToggle={toggleItc}
             onSelectAll={() => setItcSelected(new Set(itcItems.filter((x) => x.suggested).map((x) => x.name)))}
