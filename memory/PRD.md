@@ -1,5 +1,90 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3 · Reading B + Col 8 + new disclaimer (2026-05-04)
+
+User-driven structural shift on the engine plus a complete rewrite of
+the Schedule UI to "Reading B" (one unified pivot, no cohort accordion).
+
+### Conceptual change — what Col 2 means now
+
+Per-user-affirmed reading of ICAI Para 79.4: **Col 2 of Clause 44 is the
+*gross* total expenditure** (P&L plus capex additions), including
+non-cash charges, Sch III items, money / securities and any other
+auditor-elected exclusion.  The reportable split (Cols 3-7) covers only
+those items that *should* appear in the 3CD table.  The residual is now
+its own bucket: **Col 8 · Excluded**.
+
+Identity: `Col 2 = Col 3 + Col 4 + Col 5 + Col 7 + Col 8`
+Reportable: `Col 6 + Col 7` (= Cols 3+4+5+7).
+
+### Cascade — Step 0 added
+
+`_classify_single_line` now opens with:
+```
+0. Ledger ∈ excluded_ledgers  → Col 8  (wins over everything else)
+1. RCM voucher                → Col 7
+2. Input A (exempt-tagged)    → Col 3
+3. Foreign supplier           → Col 7
+4. Composition                → Col 4
+5. Regular + GSTIN ± inference → Col 5 / Col 3
+6. Else                        → Col 7
+```
+
+### Frontend — Schedule tab rewrite (Reading B)
+
+Cohort accordion removed.  New layout:
+- **KPI strip** — Col 2 · Col 6 · Col 7 · **Col 8** (4 tiles).
+- **Tabbed unified pivot** — `Expense-wise | Party-wise`.  Each tab is
+  a single 7-column table (Col 2 / Col 3 / Col 4 / Col 5 / Col 6 /
+  Col 7 / Col 8) with one row per ledger or per party.
+- **Click any row** → inline drawer with voucher-level detail
+  (lazy-loaded via `getTransactions`).
+
+### Excel — 7 sheets
+
+1. `Clause 44 Summary` — aggregate row + per-ledger 7-col pivot.
+2. `Reconciliation` — ICAI 5-line + disclaimer block.
+3-6. `Col 3 · Exempt`, `Col 4 · Composition`, `Col 5 · Other Reg ITC`,
+     `Col 7 · Unregistered` — Para 79.20 column set unchanged.
+7. **`Col 8 · Excluded`** (new) — vouchers grouped by ICAI sub-bucket
+   (Non-cash charges / Schedule III items / Money / Securities /
+   Capex add-back / Other) with a per-sub-bucket subtotal and a final
+   "Col 8 Total · Excluded expenditure" grand-total row.
+
+### Disclaimer text — replaced verbatim
+
+`DEFAULT_DISCLAIMER` in `controller.py` now reads exactly as the user
+dictated (management-affirmation framing, RCM/foreign-supplier note,
+Para 79.20 / 79.21 reference).  Existing runs keep their custom text;
+new runs receive the new default.
+
+### Database
+DB cleaned in Release 2; remains: ABC Textile Mills, Allman Knitwear,
+Velav Garments.
+
+### Files touched
+- `backend/modules/clause44/service.py` — Step 0 cascade + col8 in
+  every aggregator + `compute_recon_and_filter` no longer filters.
+- `backend/modules/clause44/controller.py` — DEFAULT_DISCLAIMER swap;
+  `excluded_ledgers` passed through `_run_classification`; transactions
+  endpoint accepts `bucket=col8`.
+- `backend/modules/clause44/exports.py` — 7-col summary; new Col 8
+  sub-bucketed sheet; `BUCKET_META` extended.
+- `frontend/src/pages/clause44/StepReport.jsx` — `Schedule` rewritten
+  to KPI strip + `UnifiedPivot` (Expense-wise / Party-wise tabs with
+  inline drill).
+- `backend/tests/test_clause44_release3.py` — 7 new unit tests.
+- `backend/tests/test_clause44_release1.py` /
+  `backend/tests/test_clause44_iteration_patch.py` — fixtures rebased
+  for Col 8.
+
+### Tests · 41 unit + 40 live-API = 81 green
+Live HTTP suite verified Col 2 gross identity, 7-sheet workbook, Col 8
+sub-bucket band headers, transactions endpoint with `bucket=col8`,
+DEFAULT_DISCLAIMER verbatim round-trip via PATCH → export.
+
+
+
 ## Clause 44 — Release 2 · RCM polish · Para 79.20 columns · disclaimer UI · Readme rewrite (2026-05-04)
 
 Slices 2, 4, 5, 6 from the Release 2 plan.  All 4 shipped in one cut.
