@@ -19,6 +19,7 @@ import { ACCENTS } from "@/lib/colors";
 import { CaretDown, CaretRight, MagnifyingGlass, ChartPieSlice } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReconTable from "@/pages/ReconTable";
+import AutoFitText from "@/components/AutoFitText";
 
 // Seven-column pivot cells (Col 2 · Col 3 · Col 4 · Col 5 · Col 6 · Col 7 · Col 8).
 // This schema is used identically on the Expense-wise and Party-wise tabs
@@ -538,7 +539,11 @@ function KPI({ label, amt, accent, testid, active = false, dimmed = false, onCli
       style={{ borderTop: `2px solid ${a.fg}` }}
     >
       <div className={`font-mono text-[10px] uppercase tracking-[0.12em] ${a.text}`}>{label}</div>
-      <div className="mt-1.5 num text-[20px] tracking-tight font-medium">{formatINR(amt)}</div>
+      <div className="mt-1.5 num tracking-tight font-medium">
+        <AutoFitText maxFontPx={20} minFontPx={11} testid={`${testid}-value`}>
+          {formatINR(amt)}
+        </AutoFitText>
+      </div>
     </button>
   );
 }

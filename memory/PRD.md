@@ -1,5 +1,40 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.5 · Auto-fit KPI tiles for large clients (2026-05-04)
+
+User reported (with screenshot) that on a large client whose Clause 44
+aggregates ran into 9–10 digits (e.g. `₹56,58,19,949.99`,
+`₹27,03,59,393.42`), the KPI tile values overflowed their container
+widths and visually overlapped the next tile.
+
+### Fix
+
+New reusable component `frontend/src/components/AutoFitText.jsx`:
+* Renders children at `maxFontPx` (20 by default).
+* After paint, measures `inner.scrollWidth` vs `wrap.clientWidth`.
+* If overflowing, scales font-size down by
+  `floor(maxFontPx × clientWidth / scrollWidth × 0.96)` clamped to
+  `minFontPx` (11) — keeps 4% safety margin for sub-pixel rounding.
+* Re-measures on container resize via a `ResizeObserver` whose
+  callback is deferred to `requestAnimationFrame` to avoid the
+  "ResizeObserver loop completed with undelivered notifications" dev
+  overlay (since the observer's callback mutates layout-affecting state).
+* Wrapper has `overflow-hidden` so a one-frame race during shrink
+  doesn't bleed into adjacent tiles.
+
+`StepReport.jsx::KPI` now wraps the formatted INR amount in
+`<AutoFitText maxFontPx={20} minFontPx={11}>` while keeping the label
+unchanged.  All 7 tiles benefit; smaller values still render at the
+full 20 px size.
+
+### Verified
+- ABC Textile Mills (current data): all 7 tiles render at full 20 px,
+  no clipping at 1280 / 900 px viewports.
+- Math sanity: `56,58,19,949.99` measured at 20 px = 174 px wide; in a
+  138 px wrap → autofit scales to 15 px (~131 px wide) → fits cleanly.
+- Runtime error overlay no longer fires.
+
+
 ## Tests · Auto-cleanup of seeded clients on session end (2026-05-04)
 
 Recurring DB drift: live test fixtures (e.g. `test_iteration4_modules_archive_period.py`) seed clients with file numbers like `ITER4_DUP_*`, `ITER4_PER_*`, `ITER4_ARCH_*`, `ITER4_DIV_*` and don't tear them down, so they accumulate across iterations and pollute the All Clients list.
