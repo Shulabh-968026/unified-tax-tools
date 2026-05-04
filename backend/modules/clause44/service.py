@@ -211,7 +211,7 @@ def is_capex_ledger(ledger: Dict[str, Any], group_chains: Dict[str, str]) -> boo
     return "fixed asset" in chain
 
 
-_INPUT_SYNONYMS_NAME = ("itc", "cenvat", "input tax credit", "rcm")
+_INPUT_SYNONYMS_NAME = ("itc", "cenvat", "input tax credit")
 
 
 def _alnum_lower(s: str) -> str:
@@ -364,19 +364,78 @@ def compute_suggestions(
 
     Output ledgers stay in the candidate pool but are never pre-ticked.
     """
-    # Build the candidate skeleton first so we can run usage-detection
-    # against the names that actually qualify (skips trade
-    # payables/receivables/fixed assets which we'd never count anyway).
+    # Build the candidate skeleton — **union** of XLSX-mapped ledgers and
+    # JSON-only ledgers (Release 3.2 / fix-up).  The XLSX may not have a
+    # row for every BS-side ledger Tally exported (the user maps only
+    # what they care about), but ITC ledgers can lurk in the JSON-only
+    # set.  We therefore iterate every JSON ledger marked ``bsOrPnl=='B'``
+    # and merge the XLSX record on top when present, so the candidate
+    # carries the auditor's subhead mapping but is *never gated* on it.
     skeleton = []
+    seen: set = set()
+
+    def _admit(name, subhead, group_parent, head):
+        """Decide if a BS-side ledger belongs in the ITC candidate pool.
+
+        Default: filter out trade payables / receivables / fixed assets /
+        cash / bank (they can never be ITC ledgers).
+
+        **Override** (Release 3.2 fix-up): when the *name* or *parent
+        group* clearly signals input/output (e.g. ``INPUT CREDIT`` parent
+        group, ``Input CGST`` name pattern, ``OUTPUT CREDIT`` group), we
+        keep the ledger even if the auditor mis-mapped its subhead to
+        ``Sundry Debtors`` / ``Trade Receivables`` in the books XLSX.
+        Real-world books frequently have this mis-mapping because Tally
+        files Input/Output GST ledgers under generic 'Trade ...' heads.
+        """
+        nk, src = _classify_itc_kind(name, subhead, group_parent)
+        # Strong signal from name OR group → always admit.
+        if nk in ("input", "output") and src in ("name", "group"):
+            return True, nk, src
+        # No strong signal → defer to the legacy exclude filter.
+        if _fields_match(ITC_POOL_EXCLUDE_SUBHEADS, subhead, group_parent, head):
+            return False, nk, src
+        return True, nk, src
+
+    # 1. Start from the JSON ledgers (authoritative on what exists).
+    for jl in (ledgers_json or []):
+        name = jl.get("name", "")
+        if not name or name in seen:
+            continue
+        bs_json = (jl.get("bsOrPnl") or "").strip().upper()
+        if bs_json not in ("B", "P", ""):
+            bs_json = ""
+        rec = ledgers_xlsx.get(name) or {}
+        bs_xlsx = (rec.get("bsOrPl") or "").strip().upper()
+        bsorpl = bs_xlsx or bs_json
+        if bsorpl != "B":
+            continue
+        subhead = (rec.get("subhead") or "") or ""
+        group_parent = (rec.get("groupParent") or "") or jl.get("parentGroup", "") or ""
+        head = (rec.get("head") or "") or ""
+        admit, name_kind, kind_source = _admit(name, subhead, group_parent, head)
+        if not admit:
+            continue
+        skeleton.append({
+            "name": name,
+            "groupParent": group_parent,
+            "subhead": subhead,
+            "head": head,
+            "closingBalance": rec.get("closingBalance") if rec else jl.get("closingBalance"),
+            "name_kind": name_kind,
+            "kind_source": kind_source,
+        })
+        seen.add(name)
+    # 2. Then catch any XLSX-only ledgers that didn't appear in the JSON.
     for name, rec in ledgers_xlsx.items():
-        if rec.get("bsOrPl") != "B":
+        if name in seen or rec.get("bsOrPl") != "B":
             continue
         subhead = rec.get("subhead", "") or ""
         group_parent = rec.get("groupParent", "") or ""
         head = rec.get("head", "") or ""
-        if _fields_match(ITC_POOL_EXCLUDE_SUBHEADS, subhead, group_parent, head):
+        admit, name_kind, kind_source = _admit(name, subhead, group_parent, head)
+        if not admit:
             continue
-        name_kind, kind_source = _classify_itc_kind(name, subhead, group_parent)
         skeleton.append({
             "name": name,
             "groupParent": group_parent,
@@ -386,6 +445,7 @@ def compute_suggestions(
             "name_kind": name_kind,
             "kind_source": kind_source,
         })
+        seen.add(name)
 
     # Voucher-usage detection (option B) — only if vouchers were passed.
     usage_map: Dict[str, Dict[str, Any]] = {}

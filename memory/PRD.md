@@ -1,5 +1,49 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.2.1 · ITC pool union & subhead-override (2026-05-04)
+
+User retest revealed that Release 3.2 still missed 8 of 9 expected ITC
+ledgers on the ABC Textile Mills run.  Two compounding root causes:
+
+1. **XLSX gating** — `compute_suggestions` only iterated the books-XLSX
+   mapping, so ledgers present in the JSON but absent from the XLSX
+   never reached the candidate pool.
+2. **Mis-mapped subhead** — the auditor's XLSX mapped the GST input
+   ledgers to subhead `Sundry Debtors` / `Trade Receivables` (which are
+   in the exclude pool).  Even when the XLSX had the row, the
+   exclude-pool filter dropped it before the heuristic ever ran.
+
+### Fix
+* `compute_suggestions` now iterates the **union** of XLSX and JSON
+  ledgers (JSON-first, then XLSX-only stragglers).  JSON's `bsOrPnl`
+  is the BS/PL marker when XLSX doesn't supply one.
+* New helper `_admit(name, subhead, group_parent, head)`: when the
+  multi-signal classifier returns `kind ∈ {input, output}` via the
+  *name* or *parent group* signal, the ledger is admitted to the pool
+  **regardless** of subhead-mis-mapping.  The exclude-pool filter only
+  applies when the name/group give no kind signal.
+* Dropped the over-broad `"rcm"` name synonym — was matching "Rcm
+  Apparels And Company" (a vendor) as input.  Updated unit tests.
+
+### Real-data verification
+On `run_0ef0127bba5c` (ABC Textile Mills) the candidate pool now
+returns **11 input + 3 output** ledgers (vs 1+3 before), with the 6
+actively-used Input CGST/SGST @ rate ledgers auto-pre-ticked via
+voucher usage.  The 3 dormant ITC ledgers (2 Deferred Input Credit + 1
+SGST IN PUT) surface and can be ticked in one click via the
+Release 3.2 group-bulk action.
+
+### Files touched (additionally)
+- `backend/modules/clause44/service.py` — JSON+XLSX union loop in
+  `compute_suggestions`; new `_admit` helper; `rcm` synonym removed.
+- `backend/tests/test_clause44_release3_1.py` — updated `RCM 18%` test.
+- `backend/tests/test_clause44_release3_2.py` — 2 new tests:
+  `test_mis_mapped_subhead_does_not_hide_input_ledgers`,
+  `test_json_only_ledger_surfaces_when_xlsx_lacks_row`.
+
+### Tests · 60/60 unit + 16/16 live = 76 green · zero regressions
+
+
 ## Clause 44 — Release 3.2 · Naming-agnostic ITC detection (2026-05-04)
 
 User reported a recurring failure mode on real-world Tally JSON: the

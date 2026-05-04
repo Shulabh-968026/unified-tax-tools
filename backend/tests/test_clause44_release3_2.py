@@ -198,6 +198,50 @@ class TestSuggestionsIntegration:
         assert cands["Output CGST @ 2.5%"]["kind"] == "output"
         assert cands["Output CGST @ 2.5%"]["suggested"] is False
 
+    def test_mis_mapped_subhead_does_not_hide_input_ledgers(self):
+        # Real-world ABC Textile Mills bug: the auditor mis-mapped
+        # 'Input CGST @ 2.5%' to subhead 'Sundry Debtors' (in the
+        # exclude pool).  The engine must STILL surface it because the
+        # parent group 'INPUT CREDIT' is a strong signal.
+        xlsx = {
+            "Input CGST @ 2.5%": {
+                "name": "Input CGST @ 2.5%",
+                "bsOrPl": "B",
+                "subhead": "Sundry Debtors",   # ← auditor mis-mapping
+                "groupParent": "INPUT CREDIT",
+                "head": "Trade Receivables",
+                "closingBalance": 0,
+            },
+            "Sundry Debtor X": {
+                "name": "Sundry Debtor X",
+                "bsOrPl": "B",
+                "subhead": "Sundry Debtors",
+                "groupParent": "Sundry Debtors",
+                "head": "Trade Receivables",
+                "closingBalance": 0,
+            },
+        }
+        s = compute_suggestions(xlsx, [], [])
+        names = {c["name"] for c in s["itc_candidates"]}
+        assert "Input CGST @ 2.5%" in names, "Input ledger must surface despite mis-mapped subhead"
+        assert "Sundry Debtor X" not in names, "Real trade receivable must still be filtered"
+
+    def test_json_only_ledger_surfaces_when_xlsx_lacks_row(self):
+        # User uploads XLSX without mapping the ITC ledgers.  The JSON
+        # has them with parentGroup='INPUT CREDIT'.  Engine must take
+        # the union and surface them.
+        xlsx = _xlsx(("Some Other Ledger", "Misc", "Misc Group"))
+        json_ledgers = [
+            {"name": "Input CGST @ 9%", "parentGroup": "INPUT CREDIT", "bsOrPnl": "B"},
+            {"name": "Output IGST @ 5%", "parentGroup": "OUTPUT CREDIT", "bsOrPnl": "B"},
+        ]
+        s = compute_suggestions(xlsx, json_ledgers, [])
+        names = {c["name"]: c for c in s["itc_candidates"]}
+        assert "Input CGST @ 9%" in names
+        assert "Output IGST @ 5%" in names
+        assert names["Input CGST @ 9%"]["kind"] == "input"
+        assert names["Output IGST @ 5%"]["kind"] == "output"
+
 
 # ─────────────────────────────────────────────────────────────────────
 # 4. Coverage diagnostic in classify_vouchers summary

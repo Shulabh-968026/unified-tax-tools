@@ -28,8 +28,14 @@ class TestKindClassifier:
     def test_alt_names(self):
         assert _classify_itc_kind("RCM Input IGST", "", "")[0] == "input"
         assert _classify_itc_kind("ITC Input", "", "")[0] == "input"
-        assert _classify_itc_kind("RCM 18%", "", "")[0] == "input"
+        # "RCM 18%" alone (no input/output/group context) is too
+        # ambiguous to auto-tag — vendor names like "Rcm Apparels"
+        # should not be misclassified.  Auditor can tick manually.
+        assert _classify_itc_kind("RCM 18%", "", "")[0] == "other"
         assert _classify_itc_kind("RCM Output 18%", "", "")[0] == "output"
+        # But when the parent group is tax-related, RCM ledgers do surface.
+        assert _classify_itc_kind("RCM 18%", "", "Duties & Taxes")[0] == "other"  # group has no input keyword
+        assert _classify_itc_kind("RCM Tax", "", "Input Credit")[0] == "input"  # group says input
 
     def test_neutral_falls_back_to_other(self):
         assert _classify_itc_kind("Balance with GST Authorities", "", "")[0] == "other"
