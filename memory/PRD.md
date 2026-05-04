@@ -1,5 +1,82 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.1 · ITC seeding fix (2026-05-04)
+
+User-reported defect: bulk of expenditure on `run_0ef0127bba5c` was
+landing in Col 3 (Exempt) — ₹64.2 L of ₹78.4 L (82%).  Diagnosis:
+Output-side tax ledgers were being auto-ticked because the prior
+seeding heuristic only checked the BS-subhead.  Output ledgers fire on
+sales vouchers; they don't appear on purchase vouchers; with ITC
+inference ON, every registered-vendor purchase consequently missed the
+"has ITC ledger" check and routed to Col 3 via Input B.
+
+### Fix 1 — Smarter ITC seeding (per user direction)
+
+`modules/clause44/service.py` now exposes `_classify_itc_kind(name,
+subhead, group)` which inspects the ledger NAME pattern:
+
+- `Input ` / `Input-` / RCM-input / ITC-input → `kind = "input"`
+- `Output ` / `Output-` → `kind = "output"`
+- Otherwise → `kind = "other"`
+
+`compute_suggestions` returns each candidate with that `kind` field,
+and pre-ticks (`suggested=True`) only when **both** signals fire:
+subhead matches *and* `kind == "input"`.  Output ledgers stay in the
+candidate pool for manual selection but never ride the default tick.
+
+### Fix 3 — Silent first-load cleanup of historical runs (per choice 7A)
+
+`Clause44Run.jsx`'s first-load effect now strips Output-kind ledgers
+from any persisted `itc_selection` and re-saves the cleaned set via
+`PATCH /selections`.  A toast tells the auditor: "Removed N Output-side
+ledger(s) that were auto-ticked under the older heuristic.  Re-generate
+the report to refresh totals."  No admin migration needed; the next
+open of any affected run self-heals.
+
+### Better selection framework (per user request)
+
+`StepSpecialLedgers.jsx` ITC tab gains:
+
+- **Quick-filter strip** — *All / Input only / Output only / Other*
+  one-click chips above the picker.
+- **Inline `INPUT` / `OUTPUT · sales-side` chips** on every row of
+  `LedgerList` so the auditor sees the kind at a glance.
+- **Red `⚠ may misclassify Col 5` warning chip** when an Output-kind
+  ledger is selected.
+- **Persistent rose-banner** above the picker if any Output ledger is
+  ticked, listing exactly which ones, with copy: "Output ledgers fire
+  on sales vouchers, not purchases — they will not mark a purchase as
+  having ITC, so Input B will continue routing those purchases to
+  Col 3.  Untick these unless you have a specific reason."
+
+### Real-data verification (run_0ef0127bba5c)
+
+Before fix:  itc_selection = `[Output SGST @ 2.5%, Input SGST @ 9%, Output CGST @ 2.5%, Output IGST @ 5%]` → Col 3 = 82% of Col 2.
+
+After fix (cleaned to `[Input SGST @ 9%]` on first open):
+- Col 2 = 80.7L · Col 3 = 63.9L (still high — *underlying books only
+  expose one Input ledger; toggle OFF or add more Input ledgers in
+  Tally to fix data quality*).
+- With toggle OFF: Col 5 jumps to 65L (the strict ICAI Col-5 figure).
+
+The framework now signals this clearly to the auditor.
+
+### Files touched
+- `backend/modules/clause44/service.py` — new `_classify_itc_kind`;
+  updated `compute_suggestions`.
+- `frontend/src/pages/clause44/StepSpecialLedgers.jsx` — kind filter,
+  Output warning banner, kind chips wired through.
+- `frontend/src/pages/clause44/Clause44Run.jsx` — first-load Output-kind
+  strip + auto-save + toast.
+- `frontend/src/pages/clause44/LedgerList.jsx` — kind chips (INPUT /
+  OUTPUT · sales-side / ⚠ may misclassify Col 5).
+- `backend/tests/test_clause44_release3_1.py` — 9 new unit tests.
+- Testing agent: 8 new live-HTTP tests in
+  `tests/test_clause44_release3_1_live.py`.
+
+### Tests · 50 unit + 48 live = 98 green · zero regressions
+
+
 ## Clause 44 — Release 3 · Reading B + Col 8 + new disclaimer (2026-05-04)
 
 User-driven structural shift on the engine plus a complete rewrite of
