@@ -1,5 +1,21 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Tests · Auto-cleanup of seeded clients on session end (2026-05-04)
+
+Recurring DB drift: live test fixtures (e.g. `test_iteration4_modules_archive_period.py`) seed clients with file numbers like `ITER4_DUP_*`, `ITER4_PER_*`, `ITER4_ARCH_*`, `ITER4_DIV_*` and don't tear them down, so they accumulate across iterations and pollute the All Clients list.
+
+### Fix
+
+`backend/tests/conftest.py` adds a session-scoped `autouse` fixture that runs once after the entire pytest session and deletes any clients whose `file_number` matches `^(ITER\d|TEST_|R3[0-9]_|FORK_|QA_|FIXTURE_)`, plus their downstream artefacts in `runs`, `balance_confirmation_runs`, `fixed_assets_runs`, `fin_statement_runs`, `msme_runs`, `msme43bh_runs`, `gst_recon_runs`, `invoice_ocr_runs`. Test users / sessions seeded via `_bootstrap_session` are also wiped.
+
+The regex deliberately excludes real production file numbers (`A-504`, `V-904`, etc.) so live data is never touched. Cleanup is best-effort (try/except) so a failure during teardown never breaks the test summary.
+
+### Verified
+- Run any pytest → `[conftest cleanup] dropped N test client(s) + M run(s)` line appears in the session summary.
+- End-to-end proof: seeded fake `FIXTURE_PROOF_42` client + run, ran one test, both gone afterward.
+- Live API after session: 3 originals only (ABC Textile Mills · Allman Knitwear · Velav Garments India P Limited).
+
+
 ## Clause 44 — Release 3.4 · Readme inside the run wizard + content refresh (2026-05-04)
 
 User asked: "I don't find the Readme button anywhere. If you redo, redo
