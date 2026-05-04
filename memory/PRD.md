@@ -1,5 +1,81 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 2 · RCM polish · Para 79.20 columns · disclaimer UI · Readme rewrite (2026-05-04)
+
+Slices 2, 4, 5, 6 from the Release 2 plan.  All 4 shipped in one cut.
+69/69 tests green (27 unit + 14 live-API + 28 prior green in parent suites).
+
+### What landed
+
+**Slice 2 · RCM polish.**  Cohort Excel sheets now carry an explicit
+`RCM` column (Yes / blank) populated from the transaction's `is_rcm`
+flag.  Complements the existing cascade behaviour (RCM → Col 7) with
+working-paper visibility.
+
+**Slice 4 · Foreign supplier branch.**  `_classify_single_line` reason
+string now includes the country name, e.g. *"Foreign supplier 'AWS Inc'
+(Usa) — import, no Indian GSTIN"*.  Country is title-cased so the
+working paper is legible.
+
+**Slice 5 · ICAI Para 79.20 columns + editable disclaimer.**
+
+- Every cohort Excel sheet now carries the full 79.20 schema:
+  Date · Voucher Type · Voucher No · [Division] · Ledger · Party ·
+  Party GSTIN · Party Reg · **Country** · **RCM** · Amount ·
+  **Value Eligible for ITC** · Reason for NIL GST / Classification
+  Notes · **Auditor Remarks**.  Auto-filter enabled on the header row;
+  pivot-ready out of the box.
+- "Value Eligible for ITC" computed as `amount` iff the voucher has a
+  tagged ITC-input ledger AND is not RCM AND the line isn't Input A
+  (exempt-tagged).  Everything else shows zero.
+- A third tab "Disclaimer" added to the Report screen with a
+  textarea seeded from the default Para 79.21 boilerplate.  Edits
+  persist via `PATCH /api/runs/{id}/selections`.
+- Excel Reconciliation sheet stamps the run's disclaimer at the
+  bottom — dynamically inherited from the run document.
+
+**Slice 6 · Readme rewrite.**  `clause-44.html` Sections 1/2/4/5/6 +
+TOC + glossary + FAQ fully replaced.  Removed every false claim from
+the prior version:
+
+- ❌ "Non-GST cohort" — does not exist in our engine.
+- ❌ "200+ rule keyword set" — the cascade is 6 deterministic steps.
+- ❌ "92-97% accuracy on first pass" — engine is deterministic.
+- ❌ "Exceptions drawer" / "Suggest correction button" — no such UI.
+- ❌ "5-sheet workbook" — we ship 6 sheets.
+- ❌ "Prior-year mapping recall" — future release, not today.
+
+Added explicit enumeration of the JSON-data limitations in Section 1
+("What the books JSON does not carry"), documented cascade in Section 2,
+and tied edge-case narratives in Section 6 to real engine behaviour
+(RCM → Col 7, imports → Col 7, Sch III items → excluded + recon
+bucket, capex flows in per Para 79.18).
+
+### Database cleanup
+Removed 9 stale test clients (`Dup1`, `PeriodTest-*`, `ArchiveMe`,
+`MultiDedup`) from earlier iteration test runs.  DB now holds exactly
+the 3 originals: ABC Textile Mills, Allman Knitwear, Velav Garments.
+
+### Files touched
+- `backend/modules/clause44/exports.py` — cohort column schema +
+  auto-filter + recon sheet disclaimer block.
+- `backend/modules/clause44/service.py` — foreign supplier reason
+  enrichment.
+- `frontend/src/pages/clause44/StepReport.jsx` — new `DisclaimerEditor`
+  tab on the Report screen.
+- `backend/modules/docs/templates/clause-44.html` — full rewrite of
+  Sections 1/2/4/5/6 + TOC + glossary + FAQ.
+- `backend/tests/test_clause44_release2.py` — 7 new unit tests.
+- `backend/tests/test_clause44_iteration_patch.py` — updated footer-
+  column assertion for new column layout.
+
+### Tests · 34 unit + 14 live-API + 27 prior = 69 green
+No regressions.  The only failing tests in the broader sweep are
+pre-existing `test_clause44_backend.py` entries hard-coded to an old
+preview URL — unrelated to Release 2.
+
+
+
 ## Clause 44 — Release 1 · ICAI-aligned cascade + 5-line recon (2026-05-04)
 
 Biggest conceptual correctness fix so far.  Aligns the engine to the
