@@ -1,5 +1,56 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.3 · Clickable 7-tile KPI strip + bucket-filter pivot (2026-05-04)
+
+User asked: "make all 7 KPI tiles populated and clickable; on click, the
+table below should filter to that bucket's figures for both Expense-wise
+and Party-wise summaries."
+
+### Implementation
+
+`StepReport.jsx` — Schedule tab now renders **all 7 KPI tiles** (Col 2 ·
+Col 3 · Col 4 · Col 5 · Col 6 · Col 7 · Col 8) on a `lg:grid-cols-7`
+strip.  Each tile is a button with three visual states:
+
+* **Idle** — default colour-coded tile.
+* **Active** — black ring inset + un-dimmed; the column it represents
+  is highlighted in the pivot below (dark header background, bold cells).
+* **Dimmed** — 50% opacity; appears when *another* tile is active.
+
+A filter banner appears between the strip and the pivot:
+> "Filtered to · `<col label>` · pivot rows below show only ledgers /
+>  parties that contributed to this bucket · Clear filter ×"
+
+The pivot below applies the bucket filter to:
+* Hide rows where `row[bucket] === 0` (no contribution).
+* **Sort** rows by that bucket descending so the biggest contributors
+  surface at the top.
+* Highlight the active column header (black bg) and dim the others.
+* Footer "Aggregate (filtered)" recomputes the active column sum for
+  the *visible rows*, so the auditor can verify the KPI tile total
+  against the table footer at a glance.
+
+Column headers themselves are also clickable — same handler as KPI
+tiles — for power users who prefer to drive from the table.
+
+Toggle behaviour: clicking the active tile (or column header) clears
+the filter; clicking another tile switches the filter to that bucket.
+
+### Files touched
+- `frontend/src/pages/clause44/StepReport.jsx` —
+  * `Schedule` lifts `bucketFilter` state, renders 7-tile clickable strip + filter banner.
+  * `UnifiedPivot` accepts `bucketFilter` + `onColumnClick`; filters / sorts rows; highlights active col; re-computes filtered footer.
+  * `KPI` becomes a `<button>` with `active` / `dimmed` / `onClick` props.
+
+### Tests
+- 60/60 unit tests pass (no backend changes).
+- Live UI verified on `run_0ef0127bba5c`:
+  * baseline: all 7 tiles visible, 40 rows in pivot.
+  * click Col 5 → tile gains ring, banner appears, pivot drops to 20
+    rows sorted by Col 5 desc (Yarn Purchase A/c ₹37.83 L on top).
+  * Re-click Col 5 → filter clears, full 40 rows return.
+
+
 ## Clause 44 — Release 3.2.1 · ITC pool union & subhead-override (2026-05-04)
 
 User retest revealed that Release 3.2 still missed 8 of 9 expected ITC

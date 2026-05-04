@@ -153,9 +153,19 @@ export default function StepReport({ run }) {
 function Schedule({ run }) {
   const summary = run?.summary || {};
   const col2 = summary.col2_total || 0;
+  const col3 = summary.col3 || 0;
+  const col4 = summary.col4 || 0;
+  const col5 = summary.col5 || 0;
   const col6 = summary.col6 || 0;
   const col7 = summary.col7 || 0;
   const col8 = summary.col8 || 0;
+
+  // Bucket filter — clicking a KPI tile (or a column header) drills the
+  // pivot below into rows that contributed to that bucket.  The active
+  // column is highlighted; non-zero rows in that column are kept,
+  // others hidden.  null = no filter (default).
+  const [bucketFilter, setBucketFilter] = useState(null);
+  const toggleBucket = (b) => setBucketFilter((prev) => (prev === b ? null : b));
 
   // Ledger rows — one per expense head, with all 7 column values.
   const ledgerRows = useMemo(() => {
@@ -198,22 +208,61 @@ function Schedule({ run }) {
     }).sort((a, b) => b.col2_total - a.col2_total);
   }, [run]);
 
+  const KPI_TILES = [
+    { key: "col2_total", bucket: "col2", label: "Col 2 · Total expenditure (books)", amt: col2, accent: "slate" },
+    { key: "col3",       bucket: "col3", label: "Col 3 · Exempt",                    amt: col3, accent: "emerald" },
+    { key: "col4",       bucket: "col4", label: "Col 4 · Composition",               amt: col4, accent: "amber" },
+    { key: "col5",       bucket: "col5", label: "Col 5 · Other Registered",          amt: col5, accent: "emerald" },
+    { key: "col6",       bucket: "col6", label: "Col 6 · Aggregate registered (3+4+5)", amt: col6, accent: "emerald" },
+    { key: "col7",       bucket: "col7", label: "Col 7 · Unregistered",              amt: col7, accent: "rose" },
+    { key: "col8",       bucket: "col8", label: "Col 8 · Excluded",                  amt: col8, accent: "slate" },
+  ];
+
   return (
     <div data-testid="schedule-view">
-      {/* Aggregate KPI strip — 4 tiles: Col 2 · Col 6 · Col 7 · Col 8 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden mb-6">
-        <KPI label="Col 2 · Total expenditure (books)" amt={col2} accent="slate" testid="kpi-col2"/>
-        <KPI label="Col 6 · Aggregate registered (3+4+5)" amt={col6} accent="emerald" testid="kpi-col6"/>
-        <KPI label="Col 7 · Unregistered" amt={col7} accent="rose" testid="kpi-col7"/>
-        <KPI label="Col 8 · Excluded" amt={col8} accent="slate" testid="kpi-col8"/>
+      {/* All-7 clickable KPI strip — click any tile to filter the pivot
+          below to rows contributing to that bucket. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden mb-3" data-testid="kpi-strip">
+        {KPI_TILES.map((t) => (
+          <KPI
+            key={t.key}
+            label={t.label}
+            amt={t.amt}
+            accent={t.accent}
+            testid={`kpi-${t.bucket}`}
+            active={bucketFilter === t.key}
+            dimmed={bucketFilter && bucketFilter !== t.key}
+            onClick={() => toggleBucket(t.key)}
+          />
+        ))}
       </div>
+
+      {/* Active-filter advisory + clear */}
+      {bucketFilter && (
+        <div className="mb-4 flex items-center gap-2 flex-wrap" data-testid="bucket-filter-banner">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E]">Filtered to</span>
+          <Badge className="bg-[#0F172A] text-white rounded-sm shadow-none px-2 py-0.5 font-mono text-[10.5px]">
+            {KPI_TILES.find((t) => t.key === bucketFilter)?.label || bucketFilter}
+          </Badge>
+          <span className="font-mono text-[10.5px] text-[#8A8A83]">
+            · pivot rows below show only ledgers / parties that contributed to this bucket
+          </span>
+          <button
+            onClick={() => setBucketFilter(null)}
+            data-testid="bucket-filter-clear"
+            className="ml-2 font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E] hover:text-[#991B1B] underline-offset-2 hover:underline"
+          >
+            Clear filter ×
+          </button>
+        </div>
+      )}
 
       {/* ── Unified 7-column pivot with Expense-wise / Party-wise tabs ── */}
       <div className="border border-[#E5E5E0] rounded-sm bg-white" data-testid="unified-pivot-block">
         <div className="px-4 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
           <ChartPieSlice size={14} className="text-[#52524E]"/>
           <h3 className="font-heading text-base">Clause 44 Breakup</h3>
-          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#8A8A83]">Seven-column pivot · click any row to drill to vouchers</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#8A8A83]">Seven-column pivot · click a column header or KPI tile to drill</span>
         </div>
         <Tabs defaultValue="expense" className="w-full">
           <div className="px-4 pt-3">
@@ -230,12 +279,14 @@ function Schedule({ run }) {
             <UnifiedPivot
               rows={ledgerRows} summary={summary}
               headerLabel="Ledger" kind="ledger" runId={run.run_id}
+              bucketFilter={bucketFilter} onColumnClick={toggleBucket}
             />
           </TabsContent>
           <TabsContent value="party" className="mt-0">
             <UnifiedPivot
               rows={partyRows} summary={summary}
               headerLabel="Party" kind="party" runId={run.run_id}
+              bucketFilter={bucketFilter} onColumnClick={toggleBucket}
               extraCols={[
                 { key: "gstin", label: "GSTIN / Reg", align: "left", renderer: (r) => (
                   <span>
@@ -255,15 +306,24 @@ function Schedule({ run }) {
 
 /* Unified 7-column pivot — one row per ledger or per party.  Click a
    row to expand a sub-drawer with voucher-level detail (across all 7
-   columns). */
-function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] }) {
+   columns).  Click a column header (or a KPI tile above) to filter
+   the pivot to rows that contributed to that bucket — non-zero rows
+   are kept, sorted by that column descending; the active column is
+   highlighted, others dimmed. */
+function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [], bucketFilter = null, onColumnClick = null }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState({}); // { rowName: { loading, txns } }
   const s = summary || {};
   const filtered = useMemo(() => {
+    let r = rows;
+    if (bucketFilter) {
+      r = r.filter((row) => Math.abs(row[bucketFilter] || 0) > 0.005)
+           .slice()
+           .sort((a, b) => (b[bucketFilter] || 0) - (a[bucketFilter] || 0));
+    }
     const q2 = q.trim().toLowerCase();
-    return q2 ? rows.filter((r) => r.name.toLowerCase().includes(q2)) : rows;
-  }, [rows, q]);
+    return q2 ? r.filter((x) => x.name.toLowerCase().includes(q2)) : r;
+  }, [rows, q, bucketFilter]);
 
   const expand = async (rowName) => {
     setOpen((o) => {
@@ -296,7 +356,7 @@ function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] 
           />
         </div>
         <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm font-mono shadow-none ml-auto">
-          {filtered.length} rows
+          {filtered.length} rows{bucketFilter ? " · filtered" : ""}
         </Badge>
       </div>
       <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
@@ -308,14 +368,26 @@ function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] 
               {extraCols.map((c) => (
                 <th key={c.key} className={c.align === "right" ? "text-right whitespace-nowrap" : "whitespace-nowrap"}>{c.label}</th>
               ))}
-              {PIVOT_COLS.map((c) => (
-                <th key={c.key} className="text-right whitespace-nowrap">{c.label}</th>
-              ))}
+              {PIVOT_COLS.map((c) => {
+                const active = bucketFilter === c.key;
+                const dim = bucketFilter && !active;
+                return (
+                  <th
+                    key={c.key}
+                    onClick={onColumnClick ? () => onColumnClick(c.key) : undefined}
+                    className={`text-right whitespace-nowrap ${onColumnClick ? "cursor-pointer select-none" : ""} ${active ? "bg-[#0F172A] text-white" : ""} ${dim ? "opacity-40" : ""}`}
+                    data-testid={`pivot-header-${kind}-${c.bucket}`}
+                    title={onColumnClick ? "Click to filter rows by this column" : undefined}
+                  >
+                    {c.label}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={PIVOT_COLS.length + 2 + extraCols.length} className="text-center py-10 text-[#8A8A83] text-sm">No rows in this view.</td></tr>
+              <tr><td colSpan={PIVOT_COLS.length + 2 + extraCols.length} className="text-center py-10 text-[#8A8A83] text-sm">{bucketFilter ? "No rows contribute to this bucket." : "No rows in this view."}</td></tr>
             )}
             {filtered.map((row) => {
               const isOpen = !!open[row.name];
@@ -325,6 +397,7 @@ function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] 
                   key={row.name} row={row} isOpen={isOpen} info={info}
                   onExpand={() => expand(row.name)}
                   kind={kind} extraCols={extraCols}
+                  bucketFilter={bucketFilter}
                 />
               );
             })}
@@ -333,11 +406,28 @@ function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] 
             <tfoot>
               <tr className="bg-[#F3F4F1]">
                 <td></td>
-                <td className="font-medium">Aggregate</td>
+                <td className="font-medium">{bucketFilter ? "Aggregate (filtered)" : "Aggregate"}</td>
                 {extraCols.map((c) => <td key={c.key}/>) }
-                {PIVOT_COLS.map((c) => (
-                  <td key={c.key} className="cell-num font-medium">{formatINR(s[c.key])}</td>
-                ))}
+                {PIVOT_COLS.map((c) => {
+                  const active = bucketFilter === c.key;
+                  const dim = bucketFilter && !active;
+                  // When filtered, footer for the active column shows the
+                  // sum of the (filtered) rows so the auditor's eye lands
+                  // on the bucket they clicked.  Other columns show the
+                  // overall summary value, dimmed.
+                  const val = active
+                    ? filtered.reduce((acc, r) => acc + (r[c.key] || 0), 0)
+                    : s[c.key];
+                  return (
+                    <td
+                      key={c.key}
+                      className={`cell-num font-medium ${active ? "bg-[#0F172A] text-white" : ""} ${dim ? "opacity-40" : ""}`}
+                      data-testid={`pivot-footer-${kind}-${c.bucket}`}
+                    >
+                      {formatINR(val)}
+                    </td>
+                  );
+                })}
               </tr>
             </tfoot>
           )}
@@ -347,7 +437,7 @@ function UnifiedPivot({ rows, summary, headerLabel, kind, runId, extraCols = [] 
   );
 }
 
-function FragmentRow({ row, isOpen, info, onExpand, kind, extraCols }) {
+function FragmentRow({ row, isOpen, info, onExpand, kind, extraCols, bucketFilter = null }) {
   return (
     <>
       <tr
@@ -366,8 +456,14 @@ function FragmentRow({ row, isOpen, info, onExpand, kind, extraCols }) {
         ))}
         {PIVOT_COLS.map((c) => {
           const v = row[c.key] || 0;
+          const active = bucketFilter === c.key;
+          const dim = bucketFilter && !active;
           return (
-            <td key={c.key} className={`cell-num ${v === 0 ? "text-[#8A8A83]" : ""}`} data-testid={`pivot-cell-${kind}-${c.bucket}-${encodeURIComponent(row.name)}`}>
+            <td
+              key={c.key}
+              className={`cell-num ${v === 0 ? "text-[#8A8A83]" : ""} ${active ? "bg-[#0F172A]/5 font-semibold" : ""} ${dim ? "opacity-40" : ""}`}
+              data-testid={`pivot-cell-${kind}-${c.bucket}-${encodeURIComponent(row.name)}`}
+            >
               {formatINR(v)}
             </td>
           );
@@ -426,13 +522,24 @@ function DrillDrawer({ info }) {
 }
 
 /* ────────────── KPI tile for the Schedule header strip ─────────────── */
-function KPI({ label, amt, accent, testid }) {
+function KPI({ label, amt, accent, testid, active = false, dimmed = false, onClick = null }) {
   const a = ACCENTS[accent] || ACCENTS.slate;
+  const clickable = !!onClick;
   return (
-    <div className={`${a.bg} px-4 py-3`} style={{ borderTop: `2px solid ${a.fg}` }} data-testid={testid}>
+    <button
+      type="button"
+      onClick={onClick || undefined}
+      disabled={!clickable}
+      data-testid={testid}
+      data-active={active ? "true" : "false"}
+      className={`text-left ${a.bg} px-4 py-3 transition-all ${
+        clickable ? "cursor-pointer hover:brightness-95" : "cursor-default"
+      } ${active ? "ring-2 ring-[#0F172A] ring-inset z-[1]" : ""} ${dimmed ? "opacity-50" : ""}`}
+      style={{ borderTop: `2px solid ${a.fg}` }}
+    >
       <div className={`font-mono text-[10px] uppercase tracking-[0.12em] ${a.text}`}>{label}</div>
       <div className="mt-1.5 num text-[20px] tracking-tight font-medium">{formatINR(amt)}</div>
-    </div>
+    </button>
   );
 }
 
