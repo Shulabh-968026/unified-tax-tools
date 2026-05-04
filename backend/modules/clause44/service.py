@@ -211,49 +211,163 @@ def is_capex_ledger(ledger: Dict[str, Any], group_chains: Dict[str, str]) -> boo
     return "fixed asset" in chain
 
 
-def _classify_itc_kind(name: str, subhead: str, group_parent: str) -> str:
-    """Tag an ITC candidate as 'input' (typical Col 5 marker), 'output'
-    (sales-side, should NOT drive Col 5 inference), or 'other' (neutral
-    ITC-pool ledger that the auditor may still tag manually).
+_INPUT_SYNONYMS_NAME = ("itc", "cenvat", "input tax credit", "rcm")
 
-    Heuristic is name-prefix-driven because Tally consistently names
-    these ledgers `Input <tax>` / `Output <tax>` regardless of the
-    subhead they're filed under.  We *also* honour the subhead match so
-    blocks of "Balance with Revenue Authorities" sub-types still surface,
-    but classified as 'other' (neutral) when the name pattern is silent.
+
+def _alnum_lower(s: str) -> str:
+    """Collapse a string to lowercase alphanumerics only.  Lets us match
+    `IN PUT`, `In-Put`, `IN_PUT` etc. as `input` — real-world Tally data
+    has all of these variants depending on who keyed in the ledger name.
     """
-    n = (name or "").lower().strip()
-    if n.startswith("input ") or n.startswith("input-") or " input " in f" {n} ":
-        return "input"
-    if n.startswith("output ") or n.startswith("output-") or " output " in f" {n} ":
-        return "output"
-    # Cesses, RCM-input, ITC reversed — common alt-names
-    if "rcm input" in n or "itc input" in n or "input cess" in n or n.startswith("rcm "):
-        return "input"
-    if "rcm output" in n or "output cess" in n:
-        return "output"
-    return "other"
+    return "".join(ch for ch in (s or "").lower() if ch.isalnum())
 
 
-def compute_suggestions(ledgers_xlsx: Dict[str, Dict[str, Any]], ledgers_json: List[Dict[str, Any]]):
+def _classify_itc_kind(name: str, subhead: str, group_parent: str) -> tuple:
+    """Tag an ITC candidate by *name signal* as 'input' (typical Col 5
+    marker), 'output' (sales-side — should NOT drive Col 5 inference) or
+    'other' (neutral, awaits voucher-usage inference downstream).
+
+    Returns ``(kind, source)`` where ``source`` records *why* the
+    classifier landed where it did so the UI can show a provenance chip:
+        - ``"name"``   → the ledger name itself contained the marker
+        - ``"group"``  → the parent group name contained the marker
+        - ``"subhead"``→ the books-XLSX subhead contained the marker
+        - ``""``       → no name-based signal (kind = 'other')
+
+    Multi-signal upgrade (Release 3.2):
+      * Whitespace-collapsed comparison so `SGST IN PUT` is recognised.
+      * `parentGroup` and `subhead` are checked alongside the name —
+        Tally users very commonly file ITC ledgers under groups like
+        ``INPUT CREDIT`` or ``Defrerred Input Credit`` regardless of how
+        the leaf ledger is named.
+      * `output` always wins when present anywhere — sales-side ledgers
+        must never be auto-treated as ITC markers.
+    """
+    n = _alnum_lower(name)
+    g = _alnum_lower(group_parent)
+    s = _alnum_lower(subhead)
+
+    # 1) Output wins unambiguously if present in ANY of the three signals.
+    if "output" in n:
+        return "output", "name"
+    if "output" in g:
+        return "output", "group"
+    if "output" in s:
+        return "output", "subhead"
+
+    # 2) Input — direct token match
+    if "input" in n:
+        return "input", "name"
+    # 3) Input — alt-name on ledger
+    if any(k.replace(" ", "") in n for k in _INPUT_SYNONYMS_NAME):
+        return "input", "name"
+    # 4) Input — group / subhead signal
+    if "input" in g or "rcminput" in g:
+        return "input", "group"
+    if "input" in s or "rcminput" in s:
+        return "input", "subhead"
+
+    return "other", ""
+
+
+def compute_voucher_usage_kinds(
+    candidates: List[Dict[str, Any]],
+    vouchers: List[Dict[str, Any]],
+    *,
+    min_appearances: int = 3,
+    dominance_ratio: float = 3.0,
+) -> Dict[str, Dict[str, Any]]:
+    """**Voucher-usage classifier (Release 3.2 / option B).**
+
+    Walks every voucher and tallies, per ledger:
+      - ``n_purchase``  : appearances on Purchase / Debit Note / Journal-
+        purchase vouchers (the universe where ITC is *availed*)
+      - ``n_sales``     : appearances on Sales / Credit Note vouchers
+        (the universe where Output tax fires)
+      - ``n_voucher``   : total vouchers touched
+
+    Scores each ledger:
+      - 'input'  if ``n_purchase ≥ min_appearances`` and dominant over
+        sales by ``dominance_ratio``.
+      - 'output' if ``n_sales ≥ min_appearances`` and dominant over
+        purchases by ``dominance_ratio``.
+      - 'neutral' otherwise (mixed or dormant — let the name signal lead).
+
+    This is naming-agnostic: even a ledger called ``Tax-Cr-Misc-A2`` will
+    be auto-flagged ``input`` if it consistently fires on purchase
+    vouchers.  Critical for large datasets with bespoke client naming.
+    """
+    cand_names = {c["name"] for c in candidates}
+    counters: Dict[str, Dict[str, int]] = {
+        n: {"n_purchase": 0, "n_sales": 0, "n_voucher": 0}
+        for n in cand_names
+    }
+    PURCHASE_TYPES = ("purchase", "debit note", "purchase order")
+    SALES_TYPES = ("sales", "credit note")
+
+    for v in vouchers:
+        vtype = (v.get("voucherTypeName") or "").strip().lower()
+        is_purchase = any(k in vtype for k in PURCHASE_TYPES) and "credit note" not in vtype
+        is_sales = any(k in vtype for k in SALES_TYPES) and "debit note" not in vtype
+        seen_in_voucher: set = set()
+        for e in v.get("ledgerEntries", []) or []:
+            lname = e.get("ledger", "")
+            if lname not in cand_names:
+                continue
+            seen_in_voucher.add(lname)
+        for lname in seen_in_voucher:
+            c = counters[lname]
+            c["n_voucher"] += 1
+            if is_purchase:
+                c["n_purchase"] += 1
+            elif is_sales:
+                c["n_sales"] += 1
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, c in counters.items():
+        np_, ns = c["n_purchase"], c["n_sales"]
+        kind = "neutral"
+        if np_ >= min_appearances and np_ >= dominance_ratio * max(ns, 1):
+            kind = "input"
+        elif ns >= min_appearances and ns >= dominance_ratio * max(np_, 1):
+            kind = "output"
+        out[name] = {**c, "usage_kind": kind}
+    return out
+
+
+def compute_suggestions(
+    ledgers_xlsx: Dict[str, Dict[str, Any]],
+    ledgers_json: List[Dict[str, Any]],
+    vouchers: List[Dict[str, Any]] | None = None,
+):
     """Build the two pools the Mapping screen needs.
 
     ITC candidate pool  — every BS-side ledger except those whose subhead is
     in `ITC_POOL_EXCLUDE_SUBHEADS` (trade payables/receivables/fixed assets/
-    cash/bank).  Each candidate carries a `kind` ∈ {input, output, other}
-    classification so the UI can render warnings on Output-side picks.
+    cash/bank).  Each candidate carries:
+      * ``kind``         ∈ {input, output, other} — final merged signal.
+      * ``kind_source``  ∈ {name, group, subhead, usage, ""} — provenance
+        chip for the UI ("why did the engine think this was input?").
+      * ``name_kind``    — what the *name* heuristic alone said.
+      * ``usage_kind``   — what voucher-walking inferred (input/output/
+        neutral) — only present when ``vouchers`` is supplied.
+      * ``n_purchase`` / ``n_sales`` / ``n_voucher`` — usage telemetry the
+        UI can render as a "fires on N purchase vouchers" chip.
 
-    Pre-selection rule (`suggested=True`) — fires only for ledgers whose
-    subhead matches the target list AND whose `kind` == "input".  This is
-    the Release-3.1 fix: prior versions also pre-ticked Output-side
-    ledgers (Output CGST / SGST / IGST), which over-fed Input B and
-    swept registered-vendor purchases into Col 3.  The auditor can still
-    add Output-side ledgers manually if they have a justification.
+    Pre-selection rule (`suggested=True`) — fires when the merged kind is
+    ``"input"`` AND any one of these holds:
+      (a) the books-XLSX subhead matches one of ``ITC_SUGGEST_SUBHEADS``
+          (legacy strict path), OR
+      (b) voucher-usage tagged this ledger as input — even on bespoke
+          client naming the engine still auto-detects when the ledger is
+          actually used on purchase vouchers.
 
-    Expenditure-exclusion pool — every P&L ledger, with `suggested=True`
-    for those whose NAME hints at non-supply items.
+    Output ledgers stay in the candidate pool but are never pre-ticked.
     """
-    itc_candidates = []
+    # Build the candidate skeleton first so we can run usage-detection
+    # against the names that actually qualify (skips trade
+    # payables/receivables/fixed assets which we'd never count anyway).
+    skeleton = []
     for name, rec in ledgers_xlsx.items():
         if rec.get("bsOrPl") != "B":
             continue
@@ -262,19 +376,74 @@ def compute_suggestions(ledgers_xlsx: Dict[str, Dict[str, Any]], ledgers_json: L
         head = rec.get("head", "") or ""
         if _fields_match(ITC_POOL_EXCLUDE_SUBHEADS, subhead, group_parent, head):
             continue
-        kind = _classify_itc_kind(name, subhead, group_parent)
-        # Pre-tick only when the target subhead matches AND kind is
-        # "input" — Output ledgers stay un-ticked even if their subhead
-        # would otherwise qualify.
-        suggested = (
-            _subhead_matches(subhead, ITC_SUGGEST_SUBHEADS) and kind == "input"
-        )
-        itc_candidates.append({
+        name_kind, kind_source = _classify_itc_kind(name, subhead, group_parent)
+        skeleton.append({
             "name": name,
             "groupParent": group_parent,
             "subhead": subhead,
+            "head": head,
             "closingBalance": rec.get("closingBalance"),
+            "name_kind": name_kind,
+            "kind_source": kind_source,
+        })
+
+    # Voucher-usage detection (option B) — only if vouchers were passed.
+    usage_map: Dict[str, Dict[str, Any]] = {}
+    if vouchers:
+        usage_map = compute_voucher_usage_kinds(skeleton, vouchers)
+
+    itc_candidates = []
+    for c in skeleton:
+        usage = usage_map.get(c["name"], {})
+        usage_kind = usage.get("usage_kind", "neutral")
+        n_purchase = usage.get("n_purchase", 0)
+        n_sales = usage.get("n_sales", 0)
+        n_voucher = usage.get("n_voucher", 0)
+
+        # Merge name-kind with usage-kind.
+        # Rule: name signal is authoritative when it's not 'other'; the
+        # usage signal only fires for 'other'-named ledgers (the "unknown"
+        # bucket where naming gives us nothing).  This keeps Output-named
+        # ledgers from ever being upgraded to Input via voucher counts.
+        kind = c["name_kind"]
+        kind_source = c["kind_source"]
+        if kind == "other" and usage_kind in ("input", "output"):
+            kind = usage_kind
+            kind_source = "usage"
+
+        # Conflict flag: name says 'input' but vouchers don't back it up
+        # AND the ledger never appeared on a purchase voucher.  We still
+        # honour the name (auditor sees the chip), but expose the conflict
+        # so the UI can show a soft "looks unused on purchases" advisory.
+        usage_conflict = (
+            c["name_kind"] == "input"
+            and n_voucher > 0
+            and n_purchase == 0
+            and n_sales > 0
+        )
+
+        # Pre-tick: legacy subhead match OR voucher-usage match.
+        suggested = (
+            kind == "input"
+            and (
+                _subhead_matches(c["subhead"], ITC_SUGGEST_SUBHEADS)
+                or usage_kind == "input"
+            )
+        )
+
+        itc_candidates.append({
+            "name": c["name"],
+            "groupParent": c["groupParent"],
+            "subhead": c["subhead"],
+            "closingBalance": c["closingBalance"],
             "kind": kind,
+            "kind_source": kind_source,
+            "name_kind": c["name_kind"],
+            "usage_kind": usage_kind if vouchers else None,
+            "n_purchase": n_purchase,
+            "n_sales": n_sales,
+            "n_voucher": n_voucher,
+            "usage_conflict": usage_conflict,
             "suggested": suggested,
         })
 
@@ -358,6 +527,12 @@ def classify_vouchers(
     by_ledger: Dict[str, Dict[str, float]] = {}
     by_party: Dict[str, Dict[str, Any]] = {}
     col3_source_totals = {"input_a": 0.0, "input_b": 0.0}
+    # Coverage diagnostic (Release 3.2 / option C) — if registered-vendor
+    # vouchers don't carry an ITC ledger entry, the auditor probably hasn't
+    # tagged all their input ledgers.  We surface this in the summary so
+    # the UI can show a yellow advisory banner on the Report screen.
+    cov_eligible = 0   # vouchers from regular-registered party with GSTIN
+    cov_with_itc = 0   # of those, how many had any selected ITC ledger
 
     for v in vouchers:
         entries = v.get("ledgerEntries", []) or []
@@ -382,6 +557,18 @@ def classify_vouchers(
         party_reg = ((party.get("gstRegistrationType") or "")).strip().lower()
         party_country = (party.get("country") or "").strip().lower()
         is_import = bool(party_country) and party_country != "india"
+
+        # Coverage diagnostic — count vouchers where ITC *should* exist:
+        # registered-regular vendor with GSTIN, India-domestic, non-RCM.
+        if (
+            party_reg == "regular"
+            and party_gstin
+            and not is_rcm
+            and not is_import
+        ):
+            cov_eligible += 1
+            if has_itc:
+                cov_with_itc += 1
 
         for lname, amt in exp_lines:
             bucket, reason, col3_src = _classify_single_line(
@@ -455,6 +642,12 @@ def classify_vouchers(
         "import_total": import_total,
         "col3_from_input_a": col3_source_totals.get("input_a", 0.0),
         "col3_from_input_b": col3_source_totals.get("input_b", 0.0),
+        # Coverage diagnostic — auditor advisory.
+        "itc_coverage_eligible": cov_eligible,
+        "itc_coverage_with_itc": cov_with_itc,
+        "itc_coverage_pct": (
+            round(100.0 * cov_with_itc / cov_eligible, 1) if cov_eligible else None
+        ),
     }
     return {"summary": summary, "transactions": txns, "by_ledger": by_ledger, "by_party": by_party}
 

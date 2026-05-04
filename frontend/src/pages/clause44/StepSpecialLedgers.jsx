@@ -214,7 +214,7 @@ export default function StepSpecialLedgers({
               </button>
             ))}
             <span className="ml-auto font-mono text-[10px] text-[#8A8A83]">
-              Pre-tick rule: only <span className="text-emerald-800">INPUT</span>-kind + matching subhead
+              Pre-tick: <span className="text-emerald-800">INPUT</span>-kind + (subhead match · or · voucher usage)
             </span>
           </div>
 
@@ -238,6 +238,7 @@ export default function StepSpecialLedgers({
                 : itcItems.filter((x) => (x.kind || "other") === itcKindFilter)
             }
             selected={itcSelected}
+            setSelected={setItcSelected}
             onToggle={toggleItc}
             onSelectAll={() => setItcSelected(new Set(itcItems.filter((x) => x.suggested).map((x) => x.name)))}
             onClear={() => setItcSelected(new Set())}
@@ -246,6 +247,8 @@ export default function StepSpecialLedgers({
             emptyHint="No BS-side ledgers available — check your books upload."
             testidPrefix="itc"
             showSubhead={true}
+            showUsageControls={true}
+            showGroupBulk={true}
           />
         </TabsContent>
       </Tabs>

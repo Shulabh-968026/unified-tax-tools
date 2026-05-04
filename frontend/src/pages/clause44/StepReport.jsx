@@ -41,6 +41,17 @@ export default function StepReport({ run }) {
   const useItcInf = run?.use_itc_inference !== false;
   const col3HasSplit = col3FromA > 0 || col3FromB > 0;
 
+  // Coverage diagnostic — Release 3.2 / option C.  When fewer than 70%
+  // of registered-vendor purchase vouchers carried an ITC ledger, we
+  // surface a yellow advisory because Input B is almost certainly
+  // sweeping value into Col 3 due to mis-tagged ITC ledgers, not real
+  // exempt supplies.  Only show when ITC inference is ON (the toggle
+  // that drives the issue) and there's a meaningful denominator.
+  const covEligible = run?.summary?.itc_coverage_eligible || 0;
+  const covWith = run?.summary?.itc_coverage_with_itc || 0;
+  const covPct = run?.summary?.itc_coverage_pct;
+  const showCoverageBanner = useItcInf && covEligible >= 5 && covPct !== null && covPct < 70;
+
   return (
     <section className="mx-auto max-w-[1200px]" data-testid="step-report">
       <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8A8A83]">Step 04 / 04</div>
@@ -52,9 +63,31 @@ export default function StepReport({ run }) {
         before you export.
       </p>
 
-      {/* Release-1 contextual strip — makes the Col 3 attribution + RCM
-          / import posture visible to the auditor at a glance.  Only
-          renders once there's actual detail to show. */}
+      {/* Coverage diagnostic banner — naming-agnostic safety net for
+          Release 3.2 / option C.  Yellow advisory shown when registered-
+          vendor purchase vouchers don't carry ITC ledger entries — a
+          strong indicator the auditor missed tagging some input ledgers. */}
+      {showCoverageBanner && (
+        <div
+          className="mt-4 p-3 bg-amber-50 border border-amber-300 rounded-sm text-[11.5px] text-amber-950 flex items-start gap-2.5"
+          data-testid="itc-coverage-banner"
+        >
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-amber-800 mt-0.5">⚠ Heads up</span>
+          <p className="leading-snug flex-1 min-w-0">
+            <strong>ITC coverage is low: {covPct}%</strong> ({covWith} of {covEligible} registered-vendor purchase vouchers carry an ITC ledger).
+            With ITC inference ON, the remaining {covEligible - covWith} vouchers will route to <span className="font-mono">Col 3</span> (Input B).
+            If your client charges GST normally, this usually means some <strong>input-tax ledgers haven't been tagged</strong> on the previous step.
+            <button
+              onClick={() => window.history.back()}
+              className="ml-2 underline font-medium hover:text-amber-700"
+              data-testid="coverage-banner-review-link"
+            >
+              Review ITC selection →
+            </button>
+          </p>
+        </div>
+      )}
+
       {(col3HasSplit || rcmCount > 0 || importTotal > 0) && (
         <div className="mt-4 p-3 bg-[#FAFAF7] border border-[#E5E5E0] rounded-sm text-[11.5px] text-[#52524E] flex flex-wrap gap-x-6 gap-y-1" data-testid="report-info-strip">
           {col3HasSplit && (

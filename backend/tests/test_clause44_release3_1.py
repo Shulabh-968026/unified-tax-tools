@@ -19,21 +19,21 @@ from modules.clause44.service import compute_suggestions, _classify_itc_kind
 class TestKindClassifier:
     def test_input_prefixed_names(self):
         for n in ["Input CGST @ 9%", "Input SGST", "Input IGST 18%", "Input-Cess"]:
-            assert _classify_itc_kind(n, "", "") == "input"
+            assert _classify_itc_kind(n, "", "")[0] == "input"
 
     def test_output_prefixed_names(self):
         for n in ["Output CGST @ 2.5%", "Output IGST 5%", "Output SGST", "Output-Cess"]:
-            assert _classify_itc_kind(n, "", "") == "output"
+            assert _classify_itc_kind(n, "", "")[0] == "output"
 
     def test_alt_names(self):
-        assert _classify_itc_kind("RCM Input IGST", "", "") == "input"
-        assert _classify_itc_kind("ITC Input", "", "") == "input"
-        assert _classify_itc_kind("RCM 18%", "", "") == "input"
-        assert _classify_itc_kind("RCM Output 18%", "", "") == "output"
+        assert _classify_itc_kind("RCM Input IGST", "", "")[0] == "input"
+        assert _classify_itc_kind("ITC Input", "", "")[0] == "input"
+        assert _classify_itc_kind("RCM 18%", "", "")[0] == "input"
+        assert _classify_itc_kind("RCM Output 18%", "", "")[0] == "output"
 
     def test_neutral_falls_back_to_other(self):
-        assert _classify_itc_kind("Balance with GST Authorities", "", "") == "other"
-        assert _classify_itc_kind("Statutory Dues Payable", "", "") == "other"
+        assert _classify_itc_kind("Balance with GST Authorities", "", "")[0] == "other"
+        assert _classify_itc_kind("Statutory Dues Payable", "", "")[0] == "other"
 
 
 class TestSeedingHeuristic:

@@ -88,17 +88,34 @@ export default function Clause44Run() {
         if (noPriorExc) {
           (r.pl_ledgers || []).forEach((x) => { if (x.suggested) excSeed.add(x.name); });
         }
+        // Release 3.2 — fold in newly-detected usage-based ITC ledgers
+        // for runs uploaded under the older heuristic.  These are rows
+        // whose engine-suggested flag is NOW true via voucher-usage but
+        // weren't in the auditor's saved selection (the engine simply
+        // didn't know about them).  We add silently and notify.
+        const newlyDetectedFromUsage = (r.itc_candidates || []).filter(
+          (x) => x.suggested && x.kind_source === "usage" && !rawItc.includes(x.name),
+        );
+        newlyDetectedFromUsage.forEach((x) => itcSeed.add(x.name));
         // Exempt purchases — never pre-ticked; auditor must opt-in consciously.
         setItc(itcSeed);
         setExempt(exemptSeed);
         setExc(excSeed);
         setUseItcInf(r.use_itc_inference !== false);  // default true
-        if (droppedOutput.length > 0) {
-          // Persist the cleanup + show a one-time notice to the auditor.
+        const needsPersist = droppedOutput.length > 0 || newlyDetectedFromUsage.length > 0;
+        if (needsPersist) {
           await saveSelections(runId, { itc_ledgers: Array.from(itcSeed) }).catch(() => {});
+        }
+        if (droppedOutput.length > 0) {
           toast.message("ITC selection auto-corrected", {
             description: `Removed ${droppedOutput.length} Output-side ledger(s) that were auto-ticked under the older heuristic. Re-generate the report to refresh totals.`,
             duration: 8000,
+          });
+        }
+        if (newlyDetectedFromUsage.length > 0) {
+          toast.message("Additional ITC ledgers detected", {
+            description: `Auto-tagged ${newlyDetectedFromUsage.length} ledger(s) as ITC based on voucher usage: ${newlyDetectedFromUsage.slice(0,3).map(x => x.name).join(", ")}${newlyDetectedFromUsage.length > 3 ? "…" : ""}. Re-generate the report to refresh totals.`,
+            duration: 9000,
           });
         }
       } catch (e) {

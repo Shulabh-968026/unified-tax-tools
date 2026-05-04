@@ -269,7 +269,15 @@
       <h4>Tab A · Exempt Purchases (Input A)</h4>
       <p>Scroll your P&amp;L ledger list; tick the ones whose underlying supplies are <strong>exempt from GST by nature</strong> — typical examples: Petroleum Purchase, Alcohol Stock, Life Insurance Premium, specified agricultural produce, notified exempt services. Any voucher line hitting these ledgers goes to <strong>Col 3</strong>, overriding every other rule.</p>
       <h4>Tab B · ITC Ledgers (Input B)</h4>
-      <p>Same BS-side picker as the old behaviour. Pre-ticked: ledgers whose <em>Map to Subhead</em> is <em>Balance with Revenue Authorities</em> or <em>Statutory Dues Payable</em>. You can search, add, or remove.</p>
+      <p>BS-side picker showing every balance-sheet ledger that <em>could</em> be an input-tax-credit ledger (trade payables / receivables / fixed assets / cash / bank are filtered out). Each row carries up to four chips:</p>
+      <ul>
+        <li><strong>INPUT</strong> / <strong>OUTPUT</strong> — the engine's classification of the ledger.</li>
+        <li><strong>via name match · group match · subhead match · voucher usage</strong> — provenance, telling you <em>why</em> the engine flagged it. "voucher usage" means the ledger consistently fires on Purchase or Sales vouchers regardless of how it was named.</li>
+        <li><strong>N purchase · N sales</strong> — voucher-usage telemetry. Confidence at a glance.</li>
+        <li><strong>unused</strong> — the ledger never appeared in any voucher this period.</li>
+      </ul>
+      <p>Pre-ticked = <strong>INPUT</strong>-kind AND (books-XLSX subhead is <em>Balance with Revenue Authorities</em> / <em>Statutory Dues Payable</em>, OR voucher usage scored input). The "Used in vouchers only" toggle hides dormant ledgers; group headers carry a one-click "Tick all" button so you can bulk-select an entire branch (e.g. all ledgers under <em>INPUT CREDIT</em>).</p>
+      <p>Output ledgers are <em>never</em> pre-ticked — they fire on sales vouchers, not purchases, so tagging them as "ITC marker" sweeps registered-vendor purchases into Col 3 incorrectly. A red banner appears if any output ledger is ticked.</p>
       <h4>The "Use ITC inference for Col 3" toggle (default ON)</h4>
       <ul>
         <li><strong>ON</strong> — a voucher from a Regular-registered vendor that carries <em>no</em> ITC-ledger entry is presumed an exempt supply and routes to Col 3 (Input B). Reflects long-standing CA practice.</li>

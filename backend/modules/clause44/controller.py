@@ -208,7 +208,11 @@ async def upload_run(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {e}")
 
-    suggestions = compute_suggestions(ledgers_xlsx, accounting.get("ledgers", []))
+    suggestions = compute_suggestions(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     company_name = books_company or accounting_json.filename
 
@@ -288,7 +292,9 @@ async def get_run(
     # classifier-policy change pick up the new behaviour without re-upload.
     ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
     accounting = run.get("accounting", {}) or {}
-    suggestions = (compute_suggestions(ledgers_xlsx, accounting.get("ledgers", []))
+    suggestions = (compute_suggestions(ledgers_xlsx,
+                                        accounting.get("ledgers", []),
+                                        accounting.get("vouchers", []))
                    if ledgers_xlsx else
                    {"itc_candidates": run.get("itc_candidates", []),
                     "pl_ledgers":     run.get("pl_ledgers", [])})
