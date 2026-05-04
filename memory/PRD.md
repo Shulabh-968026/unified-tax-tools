@@ -1,5 +1,115 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.2 · Naming-agnostic ITC detection (2026-05-04)
+
+User reported a recurring failure mode on real-world Tally JSON: the
+3.1 heuristic missed ITC ledgers like `SGST IN PUT` (embedded space)
+and would generally miss any client using bespoke ledger names.  Picked
+combo (c) = A + B + C + D from the recommendation framework.
+
+### Fix A — Multi-signal `_classify_itc_kind`
+
+`modules/clause44/service.py` now collapses each input string to
+lowercase alphanumerics (`_alnum_lower`) before matching, and checks
+**three signals** with priority `output` > `input` > `other`:
+
+1. ledger NAME (existing — `Input ...`, `RCM ...`, `ITC ...`, `Cenvat`)
+2. parentGroup NAME (NEW — catches `INPUT CREDIT`, `OUTPUT CREDIT`,
+   `Defrerred Input Credit` typo from the user's books)
+3. books-XLSX subhead (NEW — same patterns)
+
+`_classify_itc_kind` now returns `(kind, source)` where `source` ∈
+{`name`, `group`, `subhead`, `""`} so the UI can render a provenance
+chip ("via name match", "via group match", etc.).
+
+### Fix B — Voucher-usage classifier
+
+New function `compute_voucher_usage_kinds(candidates, vouchers)` walks
+every voucher and tallies per-candidate-ledger:
+* `n_purchase` — appearances on Purchase / Debit Note vouchers
+* `n_sales`    — appearances on Sales / Credit Note vouchers
+* `n_voucher`  — total vouchers touched
+
+Scores `usage_kind`:
+* `input`  if `n_purchase ≥ 3` and dominant over sales by 3:1
+* `output` if `n_sales ≥ 3` and dominant over purchases by 3:1
+* `neutral` otherwise (mixed / dormant / below threshold)
+
+`compute_suggestions` then **merges** name-kind with usage-kind: name
+signal wins when ≠ "other", usage promotes only the "other" bucket.
+This blocks an Output-named ledger from being flipped to Input by stray
+purchase entries while still auto-detecting cryptically-named ledgers
+like `Tax-Cr-Misc-A2`.  Pre-tick rule extended: `kind == "input"` AND
+(legacy subhead match OR `usage_kind == "input"`).
+
+### Fix C — Coverage diagnostic
+
+`classify_vouchers` now adds three fields to its summary:
+* `itc_coverage_eligible` — count of registered-vendor purchase vouchers
+* `itc_coverage_with_itc`  — of those, how many had an ITC ledger
+* `itc_coverage_pct`        — ratio (or `None` when denominator is 0)
+
+`StepReport.jsx` renders a yellow **advisory banner** when ITC inference
+is ON, denominator ≥ 5, and `coverage_pct < 70`.  Banner copy:
+"ITC coverage is low: X% — N vouchers will route to Col 3 via Input B.
+Some input-tax ledgers may not be tagged.  Review ITC selection →".
+
+### Fix D — Manual override UI
+
+`LedgerList.jsx` (ITC tab only) gains:
+* **Provenance chip** — `via name match` / `group match` / `subhead match` /
+  `voucher usage` — auditor sees *why* the engine flagged a row.
+* **Usage telemetry chip** — "N purchase · N sales" (or "unused").
+* **Conflict advisory chip** — "⚠ name vs usage" when name says input
+  but ledger fired only on sales vouchers.
+* **"Used in vouchers only" toggle** — hides dormant ledgers (often
+  >50% of the BS pool on large datasets).
+* **Group-bulk select** — every parent-group row carries a one-click
+  "Tick all" / "Untick all" button (e.g. tick all 7 ledgers under
+  `INPUT CREDIT` in one click).
+
+`Clause44Run.jsx` first-load logic extended to silently fold in any
+**newly-detected usage-based** ITC ledgers on existing runs uploaded
+under the older heuristic, with a separate toast notification.
+
+### Real-data verification (ABC Textile Mills JSON · 280 ledgers · 1,119 vouchers)
+
+| Group | Ledger | Before 3.2 | After 3.2 |
+|---|---|---|---|
+| INPUT CREDIT | Input CGST/SGST @ 2.5/6/9% (×6) | input | input |
+| INPUT CREDIT | **SGST IN PUT** (space) | other ❌ | **input ✅** |
+| Defrerred Input Credit | CGST/SGST Deferred Input Credit (×2) | input | input |
+| OUTPUT CREDIT | Output CGST/SGST/IGST (×3) | output | output |
+
+12/12 GST ledgers correctly classified.
+
+### Files touched
+- `backend/modules/clause44/service.py` — `_alnum_lower`, expanded
+  `_classify_itc_kind` (returns tuple), new `compute_voucher_usage_kinds`,
+  upgraded `compute_suggestions` (vouchers param), coverage diagnostic
+  in `classify_vouchers`.
+- `backend/modules/clause44/controller.py` — pass vouchers to
+  `compute_suggestions` on upload + GET.
+- `backend/modules/docs/templates/clause-44.html` — Step 2 / Tab B
+  copy rewritten to document provenance chips + usage chips + group
+  bulk + "Used in vouchers only" filter.
+- `frontend/src/pages/clause44/LedgerList.jsx` — provenance chip,
+  usage chip, used-only filter, group-bulk action.
+- `frontend/src/pages/clause44/StepSpecialLedgers.jsx` — wires
+  `showUsageControls`, `showGroupBulk`, `setSelected` on ITC tab.
+- `frontend/src/pages/clause44/StepReport.jsx` — coverage advisory
+  banner.
+- `frontend/src/pages/clause44/Clause44Run.jsx` — fold-in newly-
+  detected usage-based ITC ledgers + toast.
+- `backend/tests/test_clause44_release3_1.py` — assertions updated
+  for tuple return type.
+- `backend/tests/test_clause44_release3_2.py` — 19 NEW unit tests.
+- `backend/tests/test_clause44_release3_2_live.py` (testing-agent) —
+  9 NEW live-HTTP tests using the real ABC Textile Mills JSON.
+
+### Tests · 45/45 green (29 unit + 16 live · zero regressions)
+
+
 ## Clause 44 — Release 3.1 · ITC seeding fix (2026-05-04)
 
 User-reported defect: bulk of expenditure on `run_0ef0127bba5c` was
