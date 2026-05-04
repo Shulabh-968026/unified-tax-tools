@@ -1,5 +1,56 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 3.4 · Readme inside the run wizard + content refresh (2026-05-04)
+
+User asked: "I don't find the Readme button anywhere. If you redo, redo
+the same in line with ICAI guidance note and the logic we have
+implemented so far."
+
+### Fix 1 — Surface Readme inside the run
+
+`Clause44Run.jsx` sticky top bar now carries a small **Readme** pill
+right after the breadcrumb (`← ABC TEXTILE MILLS · CLAUSE 44 FY 2023-24
+· 📖 README · …`).  It links to `/api/docs/clause-44`, opens in a new
+tab, and is visible from every step (Special Ledgers / Exclusions /
+Report).  The existing client-home Readme button stays intact.
+
+### Fix 2 — Readme content refreshed for everything we've shipped
+
+`backend/modules/docs/templates/clause-44.html` updated:
+
+* **Regulatory primer (§1)** — Col 8 added to the column list with the
+  identity **`Col 2 = Col 6 + Col 7 + Col 8`** (was previously stated
+  as Col 2 = Col 6 + Col 7).  Note clarifies Col 8 is engine-internal /
+  recon-only; the 3CD form prints Cols 1–7 only.
+* **Cascade (§2)** re-ordered to match the actual engine: Col 8
+  excluded → RCM → Input A → import → composition → registered (Input
+  B) → URD.
+* **New callout — "How the engine surfaces ITC ledgers (multi-signal)"**
+  documents the JSON+XLSX union, the 3-signal classifier (name → group
+  → voucher usage with whitespace collapsing), and the subhead
+  override that admits ledgers mis-mapped to Sundry Debtors / Trade
+  Receivables.
+* **New callout — "Coverage diagnostic on the Schedule tab"** explains
+  the `itc_coverage_pct` advisory banner that fires when registered-
+  vendor purchase vouchers don't carry ITC ledgers.
+* **Walkthrough Step 5** rewritten to describe the **7-tile clickable
+  KPI strip** (Col 2 · Col 3 · Col 4 · Col 5 · Col 6 · Col 7 · Col 8),
+  click-to-filter behaviour, active-column highlighting, dim/clear
+  states, and the per-line override on the Reconciliation tab for Col
+  8 sub-buckets.
+* Cohort waterfall caption updated to the 3-term identity.
+
+### Files touched
+- `frontend/src/pages/clause44/Clause44Run.jsx` — Readme pill in sticky bar.
+- `backend/modules/docs/templates/clause-44.html` — primer + cascade + callouts + Step 5 + figcaption.
+
+### Verified
+- Live curl on `/api/docs/clause-44` renders 200; new tokens present:
+  `Col 8`, `multi-signal`, `coverage`, `union`, `voucher usage`.
+- Screenshot: Readme button shows on every step; pivot KPI strip with
+  7 tiles unchanged.
+
+
 ## Clause 44 — Release 3.3 · Clickable 7-tile KPI strip + bucket-filter pivot (2026-05-04)
 
 User asked: "make all 7 KPI tiles populated and clickable; on click, the

@@ -93,17 +93,19 @@
     supplier — followed by ICAI Guidance Note on Tax Audit (Revised 2025)
     Paragraphs 79.1 – 79.21.
   </p>
-  <p>The statutory table has seven columns:</p>
+  <p>The statutory table has seven columns; the engine maintains an
+  <strong>internal Col 8</strong> for excluded items so the recon ties cleanly:</p>
   <ol>
     <li><strong>Col 1</strong> · serial number (auto-assigned; always 1 for the aggregate row).</li>
-    <li><strong>Col 2</strong> · total amount of expenditure incurred during the year &mdash; includes capital additions per ICAI Para 79.18.</li>
+    <li><strong>Col 2</strong> · total amount of expenditure incurred during the year &mdash; <em>gross</em> books total per ICAI Para 79.4 (includes capital additions per Para 79.18 and the Col 8 exclusions before they're netted out).</li>
     <li><strong>Col 3</strong> · expenditure relating to goods or services <strong>exempt</strong> from GST.</li>
     <li><strong>Col 4</strong> · expenditure on entities under the <strong>Composition</strong> scheme.</li>
     <li><strong>Col 5</strong> · expenditure on <strong>other registered</strong> entities (taxable supplies under regular GST).</li>
     <li><strong>Col 6</strong> · total expenditure on registered entities &mdash; <em>arithmetic: Col 3 + Col 4 + Col 5</em>.</li>
-    <li><strong>Col 7</strong> · expenditure on entities <strong>not registered</strong> under GST.</li>
+    <li><strong>Col 7</strong> · expenditure on entities <strong>not registered</strong> under GST (URD / consumer / RCM / imports).</li>
+    <li><strong>Col 8</strong> (engine internal) · auditor-elected exclusions &mdash; non-cash charges, Sch III items, money / money-securities, capex add-backs (per ICAI Para 79.4 sub-buckets).</li>
   </ol>
-  <p>Col 2 ties back as <em>Col 2 = Col 6 + Col 7</em> after the ICAI Para 79.4 recon (see section 5).</p>
+  <p>Identity: <strong>Col 2 = Col 6 + Col 7 + Col 8</strong>. The 3CD form itself prints only Cols 1 – 7; Col 8 lives on the Reconciliation sheet so the auditor can defend Col 2.</p>
 
   <div class="callout callout--note">
     <span class="callout__title">What the books JSON does <em>not</em> carry</span>
@@ -127,6 +129,7 @@
   <p>Clause 44's four reportable cohorts (Col 3 / Col 4 / Col 5 / Col 7) are mutually exclusive and mutually exhaustive across reportable expenditure. Below is the cascade this engine runs <strong>per expense line</strong> (not per voucher — one voucher can contribute to multiple cohorts if it has multiple expense debits):</p>
 
   <ol style="line-height: 1.9;">
+    <li><strong>Auditor-excluded ledger</strong> (Step 3 tick) → <strong>Col 8</strong>. Wins above everything; lets the recon present per ICAI Para 79.4 (non-cash / Sch III / money / other / capex add-back).</li>
     <li><strong>RCM voucher type</strong> (voucherTypeName == "Reverse Charge") → <strong>Col 7</strong> with an <code>is_rcm</code> flag. ICAI is silent on RCM-specific reporting; CA practice is to treat and disclose separately.</li>
     <li><strong>Input A — auditor-tagged exempt purchase ledger</strong> → <strong>Col 3</strong>. The auditor ticks purchase ledgers whose nature is exempt-from-GST (petroleum products, alcoholic liquor for human consumption, life insurance, notified exempt services, etc.) during the wizard's Step 2.</li>
     <li><strong>Foreign supplier / import</strong> (party <code>country</code> set and ≠ India) → <strong>Col 7</strong> with an <code>is_import</code> flag. Defensible: no Indian GSTIN on the supplier side.</li>
@@ -139,6 +142,22 @@
     </li>
     <li><strong>Everything else</strong> (URD, Consumer, blank registration, or no party linked) → <strong>Col 7</strong>.</li>
   </ol>
+
+  <div class="callout callout--note">
+    <span class="callout__title">How the engine surfaces ITC ledgers (multi-signal)</span>
+    Step 2 / Tab B's candidate pool is built from the <strong>union</strong> of the books-XLSX mapping and the Tally JSON ledger list, so an ITC ledger that wasn't mapped in the XLSX still appears in the picker. Each candidate is classified <code>input</code> / <code>output</code> / <code>other</code> using three signals, in order of priority:
+    <ol style="margin-top: 8px; margin-bottom: 8px;">
+      <li><strong>Name</strong> — pattern match on <code>Input ...</code>, <code>Output ...</code>, <code>ITC ...</code>, <code>Cenvat ...</code>, with whitespace collapsed (so <code>SGST IN PUT</code> matches <code>SGST INPUT</code>).</li>
+      <li><strong>Parent group</strong> — Tally users frequently file ledgers under groups like <code>INPUT CREDIT</code>, <code>OUTPUT CREDIT</code>, <code>Defrerred Input Credit</code> regardless of how the leaf is named.</li>
+      <li><strong>Voucher usage</strong> — the engine walks the daybook and tallies how many <em>purchase</em> vs <em>sales</em> vouchers each candidate ledger appears on. A 3:1 dominance with ≥ 3 appearances flips an otherwise-neutral ledger to <code>input</code> (auto-detected even if its name is bespoke like <code>Tax-Cr-Misc-A2</code>).</li>
+    </ol>
+    <strong>Subhead override:</strong> when name or parent-group strongly signal input/output, the candidate is admitted to the pool <em>regardless</em> of whether the auditor mis-mapped its books-XLSX subhead to <code>Sundry Debtors</code> / <code>Trade Receivables</code> (a common real-world mistake).
+  </div>
+
+  <div class="callout callout--note">
+    <span class="callout__title">Coverage diagnostic on the Schedule tab</span>
+    After Generate, the engine reports the share of <em>registered-vendor purchase vouchers</em> that actually carried an ITC ledger (<code>itc_coverage_pct</code>). When ITC inference is ON and coverage falls below 70%, a yellow advisory banner appears: most likely the auditor missed tagging some input ledgers, so Input B is sweeping value into Col 3 incorrectly. The banner links back to Step 2 with one click.
+  </div>
 
   <div class="callout callout--note">
     <span class="callout__title">Why Input A wins over Input B</span>
@@ -203,7 +222,7 @@
       <text x="698" y="50"  class="lab" text-anchor="middle">Col 7 · URD</text>
       <text x="698" y="225" class="num" text-anchor="middle">₹ 14</text>
     </svg>
-    <figcaption>Illustrative ₹100 of reportable expenditure &mdash; Col 2 = Col 6 + Col 7</figcaption>
+    <figcaption>Illustrative ₹100 of <em>reportable</em> expenditure &mdash; Col 2 (gross) = Col 6 + Col 7 + Col 8; the diagram assumes Col 8 = 0 for clarity.</figcaption>
   </figure>
   {{ section_fb('cohorts') }}
 </section>
@@ -317,8 +336,8 @@
       <h3>Review the Report</h3>
       <p>Three tabs:</p>
       <ul>
-        <li><strong>Schedule</strong> — KPI strip, six-column per-ledger pivot, and 4 cohort drill-downs (each with Expense-wise &amp; Party-wise views). A header chip shows the Col 3 split (Input A vs B), RCM voucher count, and imports total at a glance.</li>
-        <li><strong>Reconciliation</strong> — ICAI 5-line format. Every excluded ledger carries an auto-detected bucket + per-line override dropdown.</li>
+        <li><strong>Schedule</strong> — a 7-tile <strong>clickable</strong> KPI strip across the top (<code>Col 2 · Col 3 · Col 4 · Col 5 · Col 6 · Col 7 · Col 8</code>), the seven-column per-ledger / per-party pivot below, and voucher-level drill-downs on every row. <strong>Click any KPI tile</strong> (or any column header in the pivot) to filter the table to rows that contributed to that bucket — non-zero rows only, sorted by that bucket descending; the active column is highlighted, others dim. A filter banner with a <em>Clear filter</em> link appears between the strip and the pivot. A contextual chip line above the strip shows the Col 3 split (Input A vs B), RCM voucher count, imports total, and the coverage advisory when applicable.</li>
+        <li><strong>Reconciliation</strong> — ICAI 5-line format. Every excluded ledger (Col 8) carries an auto-detected sub-bucket (non-cash · Sch III · money · capex add-back · other) with a per-line override dropdown.</li>
         <li><strong>Disclaimer</strong> — free-text editor seeded with the default Para 79.21 boilerplate. Edit per client; the final text is stamped onto the Excel reconciliation sheet on every export.</li>
       </ul>
     </div>

@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, CheckCircle, DownloadSimple, Lightning } from "@phosphor-icons/react";
+import { ArrowLeft, CheckCircle, DownloadSimple, Lightning, BookOpen } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
 import { generateRun, getRun, saveSelections, exportRunUrl } from "@/lib/api";
@@ -210,6 +210,16 @@ export default function Clause44Run() {
           <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">
             Clause 44 {periodTag}{divisionTag}
           </div>
+          <a
+            href="/api/docs/clause-44"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-[#E5E5E0] rounded-sm bg-white hover:bg-[#0F172A] hover:text-white hover:border-[#0F172A] text-[#0F172A] font-mono text-[10px] uppercase tracking-[0.1em] transition-colors"
+            data-testid="readme-clause-44-run"
+            title="Open the Clause 44 user guide in a new tab"
+          >
+            <BookOpen size={11}/> Readme
+          </a>
 
           {/* Stepper pills */}
           <ol className="hidden md:flex items-center gap-1 ml-auto mr-auto">
