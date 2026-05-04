@@ -177,21 +177,26 @@ class TestRecon:
         assert categorise_exclusion("Mystery Ledger", {}) == "other"
 
     def test_5_line_recon_arithmetic_ties(self):
-        # Build a small full-result and exclude two ledgers.
+        # Build a small full-result and exclude two ledgers.  Under Release 3
+        # the classifier routes excluded ledgers to Col 8 directly; the test
+        # fixture mirrors that (Dep + Salary sit in by_ledger[x].col8).
         full = {
-            "summary": {"col2_total": 900, "col3": 300, "col4": 100, "col5": 400, "col6": 800, "col7": 100},
+            "summary": {
+                "col2_total": 1025, "col3": 300, "col4": 100, "col5": 400,
+                "col6": 800, "col7": 100, "col8": 125, "reportable_total": 900,
+            },
             "transactions": [
                 {"voucher_id": "1", "ledger_name": "Purchase",  "bucket": "col5", "amount": 400, "party_name": "A"},
                 {"voucher_id": "2", "ledger_name": "Purchase",  "bucket": "col3", "amount": 300, "party_name": "B"},
                 {"voucher_id": "3", "ledger_name": "Purchase",  "bucket": "col4", "amount": 100, "party_name": "C"},
                 {"voucher_id": "4", "ledger_name": "Purchase",  "bucket": "col7", "amount": 100, "party_name": ""},
-                {"voucher_id": "5", "ledger_name": "Depreciation", "bucket": "col7", "amount": 50, "party_name": ""},
-                {"voucher_id": "6", "ledger_name": "Salary Exp",   "bucket": "col7", "amount": 75, "party_name": ""},
+                {"voucher_id": "5", "ledger_name": "Depreciation", "bucket": "col8", "amount": 50, "party_name": ""},
+                {"voucher_id": "6", "ledger_name": "Salary Exp",   "bucket": "col8", "amount": 75, "party_name": ""},
             ],
             "by_ledger": {
-                "Purchase":     {"col3": 300, "col4": 100, "col5": 400, "col7": 100, "total": 900},
-                "Depreciation": {"col3": 0,   "col4": 0,   "col5": 0,   "col7": 50,  "total": 50},
-                "Salary Exp":   {"col3": 0,   "col4": 0,   "col5": 0,   "col7": 75,  "total": 75},
+                "Purchase":     {"col3": 300, "col4": 100, "col5": 400, "col7": 100, "col8": 0,   "total": 900},
+                "Depreciation": {"col3": 0,   "col4": 0,   "col5": 0,   "col7": 0,   "col8": 50,  "total": 50},
+                "Salary Exp":   {"col3": 0,   "col4": 0,   "col5": 0,   "col7": 0,   "col8": 75,  "total": 75},
             },
             "by_party": {},
         }
@@ -212,17 +217,21 @@ class TestRecon:
         # Dep auto-cats non_cash (50), Salary auto-cats sch3 (75)
         assert rc["non_cash_total"] == 50
         assert rc["sch3_total"] == 75
-        # 1025 − 125 = 900 reportable, matches Col 2
+        # Col 8 total should equal the sum of sub-buckets
+        assert rc["col8_total"] == 125
+        # Reportable is surfaced from summary
         assert rc["reportable_total"] == 900
-        assert out["summary"]["col2_total"] == 900
 
     def test_auditor_override_moves_line_between_buckets(self):
         full = {
-            "summary": {"col2_total": 0, "col3": 0, "col4": 0, "col5": 0, "col6": 0, "col7": 100},
+            "summary": {
+                "col2_total": 100, "col3": 0, "col4": 0, "col5": 0, "col6": 0,
+                "col7": 0, "col8": 100, "reportable_total": 0,
+            },
             "transactions": [
-                {"voucher_id": "1", "ledger_name": "Mystery", "bucket": "col7", "amount": 100, "party_name": ""},
+                {"voucher_id": "1", "ledger_name": "Mystery", "bucket": "col8", "amount": 100, "party_name": ""},
             ],
-            "by_ledger": {"Mystery": {"col3": 0, "col4": 0, "col5": 0, "col7": 100, "total": 100}},
+            "by_ledger": {"Mystery": {"col3": 0, "col4": 0, "col5": 0, "col7": 0, "col8": 100, "total": 100}},
             "by_party": {},
         }
         out = compute_recon_and_filter(

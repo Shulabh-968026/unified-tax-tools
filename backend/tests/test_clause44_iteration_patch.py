@@ -97,7 +97,7 @@ def _sample_run():
 
 
 class TestExcelExport:
-    def test_workbook_has_6_sheets(self):
+    def test_workbook_has_7_sheets(self):
         body = _read_export_bytes(_sample_run())
         wb = openpyxl.load_workbook(io.BytesIO(body))
         assert wb.sheetnames == [
@@ -107,13 +107,14 @@ class TestExcelExport:
             "Col 4 · Composition",
             "Col 5 · Other Reg ITC",
             "Col 7 · Unregistered",
+            "Col 8 · Excluded",
         ]
 
-    def test_summary_has_six_col_pivot(self):
+    def test_summary_has_seven_col_pivot(self):
         body = _read_export_bytes(_sample_run())
         wb = openpyxl.load_workbook(io.BytesIO(body))
         ws = wb["Clause 44 Summary"]
-        header_values = [ws.cell(row=5, column=c).value for c in range(1, 8)]
+        header_values = [ws.cell(row=5, column=c).value for c in range(1, 9)]
         assert header_values[0] == "Particulars"
         assert "Col 2" in header_values[1]
         assert "Col 3" in header_values[2]
@@ -121,6 +122,7 @@ class TestExcelExport:
         assert "Col 5" in header_values[4]
         assert "Col 6" in header_values[5]
         assert "Col 7" in header_values[6]
+        assert "Col 8" in header_values[7]
 
     def test_cohort_sheets_contain_only_own_bucket(self):
         body = _read_export_bytes(_sample_run())

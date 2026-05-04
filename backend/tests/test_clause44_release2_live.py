@@ -74,7 +74,7 @@ class TestCohortPara7920Columns:
         return _fetch_workbook(session)
 
     def test_six_sheets(self, workbook):
-        assert len(workbook.sheetnames) == 6, workbook.sheetnames
+        assert len(workbook.sheetnames) == 7, workbook.sheetnames
 
     def test_new_columns_present_on_all_cohort_sheets(self, workbook):
         for sheet in COHORT_SHEETS:

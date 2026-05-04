@@ -1,0 +1,59 @@
+{
+  "summary": "Backend-only validation of Clause 44 Release 3 (Col 8 'Excluded' as a first-class classification bucket + 7-column summary pivot + Col 8 Excel sheet + new DEFAULT_DISCLAIMER verbatim text + transactions endpoint accepting bucket=col8). Wrote 16 NEW live HTTP tests in /app/backend/tests/test_clause44_release3_live.py — all pass. Combined Clause 44 regression suite (R1 unit + R1 live + R2 unit + R2 live + R3 unit + R3 live + iteration_patch) = 81/81 passed in 6.66s. End-to-end against the seeded run_8d427d1f97e0 (ABC Textile Mills) on the preview env — Col 2 (gross) identity = Col 3+4+5+7+8 holds when 3 ledgers are elected as exclusions across non_cash/sch3/other sub-buckets. Excel workbook now ships 7 sheets (added 'Col 8 · Excluded' with ICAI sub-bucket band headers + grand total row). DEFAULT_DISCLAIMER round-trips verbatim through PATCH /selections → /export.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "tests/test_clause44_release1_live.py + test_clause44_release2_live.py", "issue": "Both files asserted len(workbook.sheetnames) == 6 — stale after R3 added the 7th 'Col 8 · Excluded' sheet. Fixed by updating both assertions to == 7 and adding sheet-presence check (test-script-fix scope only)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "release3_live_pytest": "16/16 passed (test_clause44_release3_live.py)",
+    "release3_unit_pytest": "7/7 passed (test_clause44_release3.py)",
+    "combined_clause44_suite": "81/81 (R1 unit + R1 live + R2 unit + R2 live + R3 unit + R3 live + iteration_patch)",
+    "step0_excluded_wins": "When 3 ledgers (Wages A/c, Salary Exp, Interest on Bank O/D) are elected as excluded with sub-bucket categories (non_cash/sch3/other), each shows col8 > 0 and col7 == 0 — Step 0 beats every other cascade step.",
+    "gross_identity_col2": "summary.col2_total == col3 + col4 + col5 + col7 + col8 (within rounding) on live ABC Textile run with exclusions elected.",
+    "reportable_identity": "summary.reportable_total == col6 + col7 (Col 8 explicitly excluded from Reportable).",
+    "run_get_returns_col8": "GET /api/runs/{id} returns summary.col8, summary.reportable_total, recon.col8_total, and recon.excluded_lines split into non_cash / sch3 / other sub-buckets.",
+    "transactions_bucket_col8": "GET /api/runs/{id}/transactions?bucket=col8 returns ONLY col8 vouchers (regex pattern accepts col8). Invalid 'col9' rejected with 422.",
+    "excel_seven_sheets": "Workbook ships exactly 7 sheets: Clause 44 Summary, Reconciliation, Col 3 · Exempt, Col 4 · Composition, Col 5 · Other Reg ITC, Col 7 · Unregistered, Col 8 · Excluded.",
+    "summary_seven_col_pivot": "Clause 44 Summary sheet header carries Col 2 / Col 3 / Col 4 / Col 5 / Col 6 / Col 7 / Col 8 labels (verified by openpyxl scan on live workbook).",
+    "col8_sheet_band_headers": "Col 8 · Excluded sheet contains ICAI sub-bucket band headers ('Non-cash charges', 'Schedule III items', 'Other exclusions') plus a final 'Col 8 Total' grand total row, and lists each elected ledger by name.",
+    "default_disclaimer_verbatim": "controller.DEFAULT_DISCLAIMER contains all 8 user-dictated phrases (classification of expenditure under Clause 44; based solely on the books of account; purchase ledgers internally designated by the entity as exempt-supply ledgers; absence of an ITC-input ledger; both as adopted and affirmed by management; RCM vouchers and purchases from foreign suppliers are reported under Column 7; true and complete extract of its books; (Ref: ICAI Guidance Note on Tax Audit, Para 79.20 / 79.21.)).",
+    "disclaimer_round_trip_to_excel": "PATCH /selections {disclaimer_text=DEFAULT_DISCLAIMER} → GET /export → Reconciliation sheet contains both anchor phrases verbatim.",
+    "regression_no_client_leak": "GET /api/clients still returns exactly the 3 original clients (Velav Garments India P Limited, Allman Knitwear, ABC Textile Mills).",
+    "teardown_state": "After test run, run_8d427d1f97e0 has exclusion_selection=[], exclusion_categories={}, col8=0, reportable_total=col2_total=80,72,786.27 — DB is back to baseline."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_clause44_release3_live.py",
+    "/app/backend/tests/test_clause44_release3.py",
+    "/app/test_reports/pytest/iteration_20_live.xml",
+    "/app/test_reports/pytest/iteration_20_full.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "controller.py — `_run_classification` correctly threads `excluded_ledgers` and `exclusion_categories` from the run doc into both classify_vouchers (Step 0) and compute_recon_and_filter (sub-bucket detail). The deletion of the old filter step in compute_recon_and_filter is faithful to the new contract: Col 8 is now reported, not stripped.",
+    "controller.py — transactions endpoint regex `^(col2|col3|col4|col5|col6|col7|col8|all)$` correctly accepts col8 and rejects unknowns with FastAPI 422.",
+    "controller.py — DEFAULT_DISCLAIMER is the verbatim user-approved text. The round-trip path via PATCH /selections {disclaimer_text} → GET /export confirms persistence.",
+    "exports.py — Summary sheet now carries 7 data columns and the new 'Col 8 · Excluded' sheet groups by ICAI sub-bucket band headers (Non-cash charges / Schedule III items / Money / Securities / Capex add-back / Other exclusions) with a final 'Col 8 Total · Excluded expenditure' row.",
+    "service.py — `_classify_single_line` Step 0 (excluded ledger → col8) is checked first, beating Input A / RCM / URD / inference. Verified live — elected ledgers no longer surface in col7.",
+    "(minor / test hygiene only) test_clause44_release1_live.py and test_clause44_release2_live.py used hard-coded `== 6` sheet count. Both updated to `== 7` to align with the R3 contract. Recommend folding these into a single shared fixture/constant in conftest.py to avoid drift on future column additions."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_clause44_release3_live.py (NEW — 16 live HTTP tests)",
+    "/app/backend/tests/test_clause44_release1_live.py (test-only fix: 6 → 7 sheet assertion + Col 8 sheet presence check)",
+    "/app/backend/tests/test_clause44_release2_live.py (test-only fix: 6 → 7 sheet assertion)"
+  ],
+  "success_rate": {
+    "backend_release3_live": "100% (16/16)",
+    "backend_release3_unit": "100% (7/7)",
+    "backend_combined_clause44": "100% (81/81)",
+    "frontend": "n/a (backend-only per request)"
+  },
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin, qa-bot@transformautomations.com) — valid",
+  "seed_data_creation": "None. Used the existing seeded run_8d427d1f97e0 / cli_ad137f29aebb (ABC Textile Mills). The with_exclusions fixture re-generates the run with 3 elected exclusions for the duration of the test module; the baseline_run fixture's teardown POSTs another /generate with excluded_ledgers=[] + exclusion_categories={} so the DB ends in a clean baseline (col8=0, reportable=col2). No test clients created. DB still holds exactly the 3 original clients.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Release 3 live regression suite is /app/backend/tests/test_clause44_release3_live.py (16 tests, ~2s). It elects 3 exclusions (Wages A/c→non_cash, Salary Exp→sch3, Interest on Bank O/D→other) on run_8d427d1f97e0, validates Col 8 cascade + 7-col summary pivot + Col 8 Excel sheet + transactions?bucket=col8 + DEFAULT_DISCLAIMER round-trip, and tears down via /generate with empty exclusions. Combined with R1/R2 unit+live + R3 unit + iteration_patch = 81 green tests. The previous iter19 minor items (test_clause44_backend.py hardcoded URL + test_docs.py idempotent_upsert seed hygiene) are still pre-existing — not addressed in this iteration since out of R3 scope.",
+  "rca of the issue": "n/a — no Release 3 bugs found. The two pre-existing failures in test_clause44_release1_live.py / test_clause44_release2_live.py were stale `== 6 sheets` assertions (test-data drift, not a product bug); both updated to `== 7` to match the R3 contract."
+}

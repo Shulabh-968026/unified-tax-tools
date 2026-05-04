@@ -32,8 +32,19 @@ BUCKET_META = [
     ("col4", "Col 4 · Composition",   "Col 4 — Composition"),
     ("col5", "Col 5 · Other Reg ITC", "Col 5 — Other Registered (ITC)"),
     ("col7", "Col 7 · Unregistered",  "Col 7 — Unregistered"),
+    ("col8", "Col 8 · Excluded",      "Col 8 — Excluded from Col 3-7 reporting"),
 ]
 BUCKET_LABEL = {k: long for k, _, long in BUCKET_META}
+
+# Sub-bucket labels within Col 8 — mirror the recon ICAI buckets so the
+# working paper tells the reviewer why each line was excluded.
+COL8_SUB_BUCKETS = [
+    ("non_cash", "Non-cash charges"),
+    ("sch3", "Schedule III items"),
+    ("money", "Money / Securities"),
+    ("capex_addback", "Capex add-back"),
+    ("other", "Other exclusions"),
+]
 
 
 def _style_header_row(ws, row_idx: int, n_cols: int):
@@ -63,7 +74,7 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
 
     ws["A1"] = "Clause 44 of Form 3CD — Expenditure Summary"
     ws["A1"].font = TITLE_FONT
-    ws.merge_cells("A1:G1")
+    ws.merge_cells("A1:H1")
     ws["A2"] = f"Company: {run.get('company_name','')}"
     ws["A3"] = f"Generated: {run.get('generated_at','')}"
 
@@ -75,9 +86,10 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
         "Col 5: Other Registered (ITC)",
         "Col 6: Total (3+4+5)",
         "Col 7: Unregistered",
+        "Col 8: Excluded",
     ]
 
-    # Aggregate row
+    # Aggregate row — Col 2 is now the gross total per books.
     ws.append([])
     ws.append(headers)
     _style_header_row(ws, ws.max_row, len(headers))
@@ -89,11 +101,12 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
         summary.get("col5", 0),
         summary.get("col6", 0),
         summary.get("col7", 0),
+        summary.get("col8", 0),
     ])
 
-    # Per-ledger pivot
+    # Per-ledger pivot (7 data columns).
     ws.append([])
-    ws.append(["Per-Ledger Breakdown (six-column pivot)"])
+    ws.append(["Per-Ledger Breakdown (seven-column pivot)"])
     ws.cell(ws.max_row, 1).font = TITLE_FONT
     ws.append(headers)
     pivot_header_row = ws.max_row
@@ -104,21 +117,21 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
         col4 = row.get("col4", 0) or 0
         col5 = row.get("col5", 0) or 0
         col7 = row.get("col7", 0) or 0
-        total = row.get("total", 0) or (col3 + col4 + col5 + col7)
+        col8 = row.get("col8", 0) or 0
+        total = row.get("total", 0) or (col3 + col4 + col5 + col7 + col8)
         ws.append([
             lname,
             total,
             col3, col4, col5,
             col3 + col4 + col5,
-            col7,
+            col7, col8,
         ])
 
     ws.column_dimensions["A"].width = 36
-    for col_letter in ["B", "C", "D", "E", "F", "G"]:
+    for col_letter in ["B", "C", "D", "E", "F", "G", "H"]:
         ws.column_dimensions[col_letter].width = 22
-    _apply_indian_fmt(ws, min_row=5, cols=[2, 3, 4, 5, 6, 7])
+    _apply_indian_fmt(ws, min_row=5, cols=[2, 3, 4, 5, 6, 7, 8])
 
-    # Freeze the pivot header row so scrolling keeps it visible.
     ws.freeze_panes = ws.cell(row=pivot_header_row + 1, column=2)
 
 
@@ -281,21 +294,142 @@ def _write_cohort_sheet(wb, sheet_name: str, long_label: str, txns: List[Dict[st
     ws.auto_filter.ref = f"{ws.cell(row=header_row, column=1).coordinate}:{ws.cell(row=header_row, column=len(headers)).coordinate}"
 
 
+def _write_col8_sheet(wb, run: Dict[str, Any]):
+    """Col 8 — Excluded sheet with ICAI sub-buckets (option ii).
+
+    Vouchers grouped by Non-cash / Sch III / Money / Capex add-back /
+    Other so the reviewer can see *why* each line was excluded.  Within
+    each group, the standard Para 79.20 column set applies.
+    """
+    txns = [t for t in (run.get("transactions") or []) if t.get("bucket") == "col8"]
+    recon = run.get("recon") or {}
+
+    # Build lookup: excluded ledger → sub-bucket (via recon line detail)
+    ledger_to_sub: Dict[str, str] = {}
+    for sub_key, _ in COL8_SUB_BUCKETS:
+        for line in recon.get(f"{sub_key}_lines") or []:
+            ledger_to_sub[line["name"]] = sub_key
+    # Anything not in the recon lookup → "other"
+    sub_tx: Dict[str, List[Dict[str, Any]]] = {k: [] for k, _ in COL8_SUB_BUCKETS}
+    for t in txns:
+        sub = ledger_to_sub.get(t.get("ledger_name", ""), "other")
+        sub_tx.setdefault(sub, []).append(t)
+
+    ws = wb.create_sheet("Col 8 · Excluded")
+    ws["A1"] = "Col 8 — Excluded from Col 3-7 reporting · ICAI recon sub-buckets"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:L1")
+
+    has_division = any(t.get("division_name") for t in txns)
+    headers = ["Date", "Voucher Type", "Voucher No"]
+    if has_division:
+        headers.append("Division")
+    headers += [
+        "Ledger", "Party", "Party GSTIN", "Party Reg.", "Country",
+        "RCM", "Amount", "Classification Notes", "Auditor Remarks",
+    ]
+    idx = {h: i + 1 for i, h in enumerate(headers)}
+    amount_col = idx["Amount"]
+
+    ws.append([])
+
+    overall_total = 0.0
+    for sub_key, sub_label in COL8_SUB_BUCKETS:
+        rows = sub_tx.get(sub_key) or []
+        if not rows:
+            continue
+        # Sub-bucket header band
+        ws.append([f"{sub_label}  ·  sub-bucket"])
+        band = ws.cell(row=ws.max_row, column=1)
+        band.font = Font(bold=True, color="FFFFFF")
+        band.fill = PatternFill("solid", fgColor="0F172A")
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=len(headers))
+
+        # Column headers
+        ws.append(headers)
+        hr = ws.max_row
+        _style_header_row(ws, hr, len(headers))
+
+        subtotal = 0.0
+        for t in rows:
+            row = [t.get("date", ""), t.get("voucher_type", ""), t.get("voucher_number", "")]
+            if has_division:
+                row.append(t.get("division_name", "—"))
+            amt = float(t.get("amount") or 0)
+            subtotal += amt
+            row += [
+                t.get("ledger_name", ""),
+                t.get("party_name", ""),
+                t.get("party_gstin", ""),
+                t.get("party_reg", ""),
+                t.get("party_country", ""),
+                "Yes" if t.get("is_rcm") else "",
+                amt,
+                t.get("reason", ""),
+                "",
+            ]
+            ws.append(row)
+
+        # Sub-total row
+        foot = ["Sub-total · " + sub_label] + [""] * (len(headers) - 1)
+        foot[amount_col - 1] = subtotal
+        ws.append(foot)
+        last = ws.max_row
+        for col in range(1, len(headers) + 1):
+            c = ws.cell(row=last, column=col)
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="F3F4F1")
+            c.border = BORDER
+        overall_total += subtotal
+
+        _apply_indian_fmt(ws, min_row=hr + 1, cols=[amount_col])
+        ws.append([])  # blank row between groups
+
+    # Overall total
+    if overall_total:
+        foot = ["Col 8 Total · Excluded expenditure"] + [""] * (len(headers) - 1)
+        foot[amount_col - 1] = overall_total
+        ws.append(foot)
+        last = ws.max_row
+        for col in range(1, len(headers) + 1):
+            c = ws.cell(row=last, column=col)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="0F172A")
+            c.border = BORDER
+
+    if not txns:
+        ws.append(["— No vouchers classified into Col 8 (no exclusions elected) —"])
+
+    # Column widths
+    base_widths = [12, 14, 14]
+    if has_division:
+        base_widths.append(16)
+    base_widths += [28, 28, 18, 14, 14, 8, 16, 60, 28]
+    for i, w in enumerate(base_widths[:len(headers)], 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    ws.freeze_panes = ws.cell(row=2, column=1)
+
+
 def build_export_response(run: Dict[str, Any], fname_prefix: str):
     txns = run.get("transactions", []) or []
 
     wb = openpyxl.Workbook()
 
-    # Sheet 1 — Summary + per-ledger pivot
+    # Sheet 1 — Summary + per-ledger 7-col pivot
     _write_summary_sheet(wb, run)
 
-    # Sheet 2 — Reconciliation
+    # Sheet 2 — Reconciliation (ICAI 5-line format)
     _write_recon_sheet(wb, run)
 
-    # Sheets 3-6 — One per cohort column
+    # Sheets 3-6 — Col 3/4/5/7 cohort sheets with Para 79.20 columns
     for key, short, long_label in BUCKET_META:
+        if key == "col8":
+            continue  # handled separately with sub-bucket grouping
         cohort_txns = [t for t in txns if t.get("bucket") == key]
         _write_cohort_sheet(wb, short, long_label, cohort_txns)
+
+    # Sheet 7 — Col 8 · Excluded (sub-bucketed per ICAI recon)
+    _write_col8_sheet(wb, run)
 
     buf = io.BytesIO()
     wb.save(buf)

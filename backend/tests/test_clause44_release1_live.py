@@ -193,8 +193,10 @@ class TestExcelExport:
         return load_workbook(io.BytesIO(r.content), data_only=False)
 
     def test_six_sheets(self, workbook):
+        # R3 adds a 7th sheet ("Col 8 · Excluded"). Original 6 must still be present.
         names = workbook.sheetnames
-        assert len(names) == 6, f"Expected 6 sheets, got {names}"
+        assert len(names) == 7, f"Expected 7 sheets (R3 added Col 8), got {names}"
+        assert "Col 8 · Excluded" in names
 
     def test_recon_sheet_present(self, workbook):
         # Find recon sheet — name typically contains 'Reconciliation'

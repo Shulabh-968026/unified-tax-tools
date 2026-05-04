@@ -296,34 +296,36 @@ def classify_vouchers(
     party_lookup: Dict[str, Dict[str, Any]],
     *,
     exempt_ledgers: set | None = None,
+    excluded_ledgers: set | None = None,
     use_itc_inference: bool = True,
 ) -> Dict[str, Any]:
-    """Classify each expense line into Col 3/4/5/7.
+    """Classify each expense line into Col 3/4/5/7/8.
 
     Cascade (per ICAI, adapted to the JSON we actually have):
-      0. `voucherTypeName == "Reverse Charge"`              → Col 7 (RCM flag)
-      1. **Input A** — line's ledger is in `exempt_ledgers`  → Col 3
-      2. Foreign supplier (party country set & not India)   → Col 7 (import flag)
-      3. Party reg type == "composition"                    → Col 4
-      4. Party reg type == "regular" AND has GSTIN
-         · **Input B** — if `use_itc_inference` and voucher
-           carries NO ITC-ledger entry, classify as Col 3
-           (presumed exempt supply on a registered vendor)
+      0. Ledger in `excluded_ledgers`                      → **Col 8**
+         (auditor-elected exclusion, wins over everything)
+      1. `voucherTypeName == "Reverse Charge"`              → Col 7 (RCM)
+      2. **Input A** — line's ledger in `exempt_ledgers`   → Col 3
+      3. Foreign supplier (non-India country)              → Col 7 (import)
+      4. Party reg type == "composition"                   → Col 4
+      5. Party reg type == "regular" + GSTIN
+         · **Input B** — `use_itc_inference` ON & no ITC
+           ledger on voucher → Col 3
          · Otherwise                                        → Col 5
-      5. Everything else (URD / consumer / blank reg)       → Col 7
+      6. Else (URD / consumer / blank)                     → Col 7
 
-    Input A takes precedence over Input B — a ledger tagged as exempt
-    will always be Col 3 regardless of vendor ITC behaviour, and the same
-    voucher can never be counted twice in Col 3 because classification is
-    per-expense-line: once line X is set via Input A, it's final for that
-    line only.
+    **Important — what changed in Release 3:** the auditor-excluded
+    ledgers are now classified to **Col 8** (not filtered out).  Col 2 in
+    Clause 44 is the *gross* total expenditure per books (per ICAI Para
+    79.4); Col 3–7 report only the portion that is not Sch III / non-cash
+    / money / money-securities; the residual is Col 8.
     """
     exempt_ledgers = exempt_ledgers or set()
+    excluded_ledgers = excluded_ledgers or set()
 
     txns: List[Dict[str, Any]] = []
     by_ledger: Dict[str, Dict[str, float]] = {}
     by_party: Dict[str, Dict[str, Any]] = {}
-    # Per-line Col 3 attribution tallies for the disclaimer footer.
     col3_source_totals = {"input_a": 0.0, "input_b": 0.0}
 
     for v in vouchers:
@@ -350,12 +352,12 @@ def classify_vouchers(
         party_country = (party.get("country") or "").strip().lower()
         is_import = bool(party_country) and party_country != "india"
 
-        # Per-line classification (Input A wins line-by-line).
         for lname, amt in exp_lines:
             bucket, reason, col3_src = _classify_single_line(
                 lname, party_name, party_reg, party_gstin,
                 is_rcm=is_rcm, is_import=is_import, has_itc=has_itc,
                 exempt_ledgers=exempt_ledgers,
+                excluded_ledgers=excluded_ledgers,
                 use_itc_inference=use_itc_inference,
                 party_country=party_country,
             )
@@ -381,14 +383,13 @@ def classify_vouchers(
                 "has_itc_ledger": has_itc,
                 "col3_source": col3_src if bucket == "col3" else "",
             })
-            row = by_ledger.setdefault(lname, {"col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0})
+            row = by_ledger.setdefault(lname, {"col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "col8": 0.0, "total": 0.0})
             row[bucket] += amt
             row["total"] += amt
 
-            # "— Cash / No Party —" synthetic bucket for empty party names.
             p_key = party_name or "— Cash / No Party —"
             prow = by_party.setdefault(p_key, {
-                "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0,
+                "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "col8": 0.0, "total": 0.0,
                 "party_gstin": party_gstin, "party_reg": party_reg, "vouchers": 0,
             })
             prow[bucket] += amt
@@ -398,8 +399,6 @@ def classify_vouchers(
             if party_reg:
                 prow["party_reg"] = party_reg
 
-        # Count each voucher once per party (done after the loop so we
-        # don't inflate the count by # of expense lines on the voucher).
         p_key = party_name or "— Cash / No Party —"
         if p_key in by_party:
             by_party[p_key]["vouchers"] += 1
@@ -408,13 +407,18 @@ def classify_vouchers(
     col4 = sum(t["amount"] for t in txns if t["bucket"] == "col4")
     col5 = sum(t["amount"] for t in txns if t["bucket"] == "col5")
     col7 = sum(t["amount"] for t in txns if t["bucket"] == "col7")
+    col8 = sum(t["amount"] for t in txns if t["bucket"] == "col8")
     rcm_total = sum(t["amount"] for t in txns if t.get("is_rcm"))
     import_total = sum(t["amount"] for t in txns if t.get("is_import"))
     summary = {
-        "col2_total": col3 + col4 + col5 + col7,
+        # Col 2 is the GROSS total per books (includes Col 8).  Per ICAI
+        # Para 79.4 the Clause 44 Col 2 headline is the assessee's total
+        # expenditure for the year; Cols 3-7 are the reportable split and
+        # Col 8 is the excluded residual.
+        "col2_total": col3 + col4 + col5 + col7 + col8,
         "col3": col3, "col4": col4, "col5": col5,
-        "col6": col3 + col4 + col5, "col7": col7,
-        # Memo counters for the report header / disclaimer
+        "col6": col3 + col4 + col5, "col7": col7, "col8": col8,
+        "reportable_total": col3 + col4 + col5 + col7,  # Col 6 + Col 7
         "rcm_total": rcm_total,
         "rcm_vouchers": sum(1 for t in txns if t.get("is_rcm")),
         "import_total": import_total,
@@ -427,19 +431,25 @@ def classify_vouchers(
 def _classify_single_line(
     lname: str, party_name: str, party_reg: str, party_gstin: str,
     *, is_rcm: bool, is_import: bool, has_itc: bool,
-    exempt_ledgers: set, use_itc_inference: bool,
+    exempt_ledgers: set, excluded_ledgers: set, use_itc_inference: bool,
     party_country: str = "",
 ) -> tuple:
     """Return (bucket, reason, col3_source).  col3_source is 'input_a' |
     'input_b' | '' (non-Col-3 lines)."""
-    # 0) RCM — bucketed to Col 7 per team choice (ICAI silent; CAs typically
-    # disclose RCM separately).
+    # 0) Excluded — auditor has explicitly ticked this ledger as not
+    # reportable under Clause 44.  Land in Col 8 regardless of vendor
+    # status; the ICAI recon sub-buckets (Non-cash / Sch III / Money /
+    # Other / Capex add-back) apply at the recon screen via the
+    # auto-categoriser.
+    if lname in excluded_ledgers:
+        return "col8", f"Ledger '{lname}' excluded from Col 3-7 reporting (Col 8)", ""
+    # 1) RCM
     if is_rcm:
         return "col7", "RCM voucher — supplier typically unregistered", ""
-    # 1) Input A — ledger explicitly tagged as exempt-supply purchase.
+    # 2) Input A
     if lname in exempt_ledgers:
         return "col3", f"Ledger '{lname}' tagged as exempt-supply purchase (Input A)", "input_a"
-    # 2) Foreign supplier — import.
+    # 3) Foreign supplier
     if is_import:
         country_label = party_country.title() if party_country else "non-India"
         return (
@@ -447,10 +457,10 @@ def _classify_single_line(
             f"Foreign supplier '{party_name}' ({country_label}) — import, no Indian GSTIN",
             "",
         )
-    # 3) Composition.
+    # 4) Composition
     if party_reg == "composition":
         return "col4", f"Party '{party_name}' is Composition dealer", ""
-    # 4) Registered vendor.
+    # 5) Registered
     if party_reg == "regular" and party_gstin:
         if use_itc_inference and not has_itc:
             return (
@@ -460,7 +470,7 @@ def _classify_single_line(
                 "input_b",
             )
         return "col5", f"Party '{party_name}' is Regular (GSTIN: {party_gstin})", ""
-    # 5) URD / Consumer / blank.
+    # 6) URD / Consumer / blank
     if not party_name:
         return "col7", "No party ledger associated — treated as Unregistered", ""
     return "col7", f"Party '{party_name}' — {party_reg or 'unregistered / no GSTIN'}", ""
@@ -474,82 +484,39 @@ def compute_recon_and_filter(
     group_chains: Dict[str, str] | None = None,
     exclusion_categories: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """Produce the ICAI 5-line recon + filter transactions/by_ledger/by_party.
+    """Attach the ICAI 5-line recon to the classification result.
 
-    Recon math follows Para 79.4::
+    **Release 3 change:** this function no longer *filters* transactions
+    (excluded ledgers are now classified to Col 8 inside
+    `classify_vouchers`).  It only computes the recon layout so the UI
+    can present it per ICAI Para 79.4.
 
-        Total P&L expenditure
-      + Capex additions                      (items in Fixed Assets group)
-      − Non-cash charges                     (depreciation, provisions)
-      − Schedule III items                   (salary, dividend, land sale…)
-      − Money / Securities                   (interest, TDS, investments)
-      − Other exclusions                     (residual auditor tick)
-      = Reportable expenditure (Col 2)
+    The recon still shows:
 
-    `ledgers_xlsx` + `group_chains` feed the auto-categoriser.
-    `exclusion_categories` is the auditor's per-line override map
-    (ledger name → bucket); missing entries fall back to the
-    auto-category.
+        Total P&L expenditure (Col 2, including excluded)
+        + Capex additions (memo — already in Col 2)
+        − Non-cash charges                     \\
+        − Schedule III items                    |  Σ = Col 8
+        − Money / Securities                    |
+        − Other exclusions                      /
+        = Reportable expenditure (Col 6 + Col 7)
+
+    Auto-categorisation of each excluded ledger into its ICAI sub-bucket
+    is done via `categorise_exclusion`; auditor can override per line
+    through `exclusion_categories`.
     """
     ledgers_xlsx = ledgers_xlsx or {}
     group_chains = group_chains or {}
     exclusion_categories = exclusion_categories or {}
 
-    full_by_ledger: Dict[str, Dict[str, float]] = full_result["by_ledger"]
-    full_txns: List[Dict[str, Any]] = full_result["transactions"]
+    by_ledger: Dict[str, Dict[str, float]] = full_result["by_ledger"]
+    summary: Dict[str, Any] = full_result["summary"]
 
-    filtered_by_ledger = {l: v for l, v in full_by_ledger.items() if l not in excluded_set}
-    filtered_txns = [t for t in full_txns if t["ledger_name"] not in excluded_set]
-
-    # Re-build by_party from the filtered transactions so excluded-ledger
-    # amounts don't leak into the party breakup.
-    filtered_by_party: Dict[str, Dict[str, Any]] = {}
-    voucher_seen: Dict[str, set] = {}
-    for t in filtered_txns:
-        p_key = t.get("party_name") or "— Cash / No Party —"
-        row = filtered_by_party.setdefault(p_key, {
-            "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0,
-            "party_gstin": t.get("party_gstin", "") or "",
-            "party_reg": t.get("party_reg", "") or "",
-            "vouchers": 0,
-        })
-        row[t["bucket"]] += t["amount"]
-        row["total"] += t["amount"]
-        if t.get("party_gstin"):
-            row["party_gstin"] = t["party_gstin"]
-        if t.get("party_reg"):
-            row["party_reg"] = t["party_reg"]
-        seen = voucher_seen.setdefault(p_key, set())
-        if t.get("voucher_id") and t["voucher_id"] not in seen:
-            seen.add(t["voucher_id"])
-            row["vouchers"] += 1
-
-    # Summary — rebuilt from filtered transactions
-    col3 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col3")
-    col4 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col4")
-    col5 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col5")
-    col7 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col7")
-    rcm_total = sum(t["amount"] for t in filtered_txns if t.get("is_rcm"))
-    import_total = sum(t["amount"] for t in filtered_txns if t.get("is_import"))
-    col3_a = sum(t["amount"] for t in filtered_txns if t.get("col3_source") == "input_a")
-    col3_b = sum(t["amount"] for t in filtered_txns if t.get("col3_source") == "input_b")
-    summary = {
-        "col2_total": col3 + col4 + col5 + col7,
-        "col3": col3, "col4": col4, "col5": col5,
-        "col6": col3 + col4 + col5, "col7": col7,
-        "rcm_total": rcm_total,
-        "rcm_vouchers": sum(1 for t in filtered_txns if t.get("is_rcm")),
-        "import_total": import_total,
-        "col3_from_input_a": col3_a,
-        "col3_from_input_b": col3_b,
-    }
-
-    # ── ICAI 5-line recon ──────────────────────────────────────────────
-    # Split total books (= all classified expenditure before exclusions)
-    # into P&L expenditure vs Capex based on ledger group chain.
+    # Split the gross Col 2 into P&L vs capex based on ledger group chain
+    # — capex is a memo line in the ICAI recon (already inside Col 2).
     pl_total = 0.0
     capex_total = 0.0
-    for lname, vals in full_by_ledger.items():
+    for lname, vals in by_ledger.items():
         total = float(vals.get("total", 0) or 0)
         rec = ledgers_xlsx.get(lname, {}) or {}
         group_parent = (rec.get("groupParent") or "").lower()
@@ -559,14 +526,15 @@ def compute_recon_and_filter(
         else:
             pl_total += total
 
-    # Bucket each excluded ledger using per-line override (auditor) with
-    # auto-category fallback. `bucket_lines` groups the line detail by
-    # bucket for the UI.
+    # Bucket the excluded ledgers into ICAI sub-buckets for the recon +
+    # for the new Col 8 Excel sheet.  Each excluded ledger's Col 8 amount
+    # is the total on its row in `by_ledger` (post-Release 3 these rows
+    # live entirely in Col 8).
     bucket_lines: Dict[str, List[Dict[str, Any]]] = {b: [] for b in RECON_BUCKETS}
     for l in sorted(excluded_set):
-        if l not in full_by_ledger:
+        if l not in by_ledger:
             continue
-        amt = float(full_by_ledger[l].get("total", 0) or 0)
+        amt = float(by_ledger[l].get("col8", 0) or 0)
         if not amt:
             continue
         bucket = exclusion_categories.get(l)
@@ -575,28 +543,22 @@ def compute_recon_and_filter(
         bucket_lines[bucket].append({"name": l, "amount": amt, "bucket": bucket})
 
     bucket_totals = {b: sum(x["amount"] for x in bucket_lines[b]) for b in RECON_BUCKETS}
-    # Capex add-back: any excluded FA lines *plus* the capex already inside
-    # `capex_total` isn't double-counted — the auditor excluding a FA
-    # ledger just moves it from "reportable" into the "+" side of the
-    # recon as an explicit add-back.
-    subtracted = bucket_totals["non_cash"] + bucket_totals["sch3"] + bucket_totals["money"] + bucket_totals["other"]
-    reportable = pl_total + capex_total - subtracted
+    col8_total = float(summary.get("col8", 0) or 0)
+    reportable = float(summary.get("reportable_total", 0) or 0)
 
-    # Flat list for backwards-compatibility (old UI / exports).
     excluded_lines_flat = [
         {"name": x["name"], "amount": x["amount"], "bucket": x["bucket"]}
         for bucket in RECON_BUCKETS
         for x in bucket_lines[bucket]
     ]
-    excluded_total = sum(x["amount"] for x in excluded_lines_flat)
 
     return {
         "summary": summary,
-        "by_ledger": filtered_by_ledger,
-        "by_party": filtered_by_party,
-        "transactions": filtered_txns,
+        "by_ledger": by_ledger,
+        "by_party": full_result["by_party"],
+        "transactions": full_result["transactions"],
         "recon": {
-            # ICAI 5-line
+            # ICAI Para 79.4 presentation
             "pl_total": pl_total,
             "capex_total": capex_total,
             "capex_addback_total": bucket_totals["capex_addback"],
@@ -604,18 +566,18 @@ def compute_recon_and_filter(
             "sch3_total": bucket_totals["sch3"],
             "money_total": bucket_totals["money"],
             "other_total": bucket_totals["other"],
+            "col8_total": col8_total,
             "reportable_total": reportable,
-            # Per-bucket line detail (for the recon table UI)
+            # Per-bucket line detail (recon table + Col 8 Excel sheet)
             "non_cash_lines": bucket_lines["non_cash"],
             "sch3_lines": bucket_lines["sch3"],
             "money_lines": bucket_lines["money"],
             "other_lines": bucket_lines["other"],
             "capex_addback_lines": bucket_lines["capex_addback"],
-            # Legacy keys kept for backwards-compat with older pages /
-            # Excel exports that still read them.
+            # Legacy keys retained for exports/code still referencing them
             "total_books": pl_total + capex_total,
             "excluded_lines": excluded_lines_flat,
-            "excluded_total": excluded_total,
+            "excluded_total": col8_total,
             "balance": reportable,
         },
     }

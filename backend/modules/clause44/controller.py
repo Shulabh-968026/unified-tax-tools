@@ -96,17 +96,20 @@ async def _fetch_run(run_id: str) -> Dict[str, Any]:
 # first opens the report step.
 # ─────────────────────────────────────────────────────────────────────────
 DEFAULT_DISCLAIMER = (
-    "Classification under Clause 44 is derived solely from the accounting "
-    "data (books JSON) made available.  Where the books do not carry "
-    "nature-of-supply, Section 17(5) eligibility, supplier status at the "
-    "time of supply, or bill-of-supply markers, the engine relies on "
-    "(a) auditor-tagged exempt-supply purchase ledgers (\"Input A\"), "
-    "and (b) if enabled, the absence of an ITC-input ledger on a "
-    "voucher from a registered vendor as a presumptive marker of exempt "
-    "supply (\"Input B / ITC inference\").  RCM-type vouchers are treated "
-    "as Col 7 (Unregistered) for reporting; imports (non-Indian suppliers) "
-    "are also reported under Col 7.  Readers are referred to ICAI "
-    "Guidance Note on Tax Audit Para 79.20 / 79.21."
+    "The classification of expenditure under Clause 44 is based solely on "
+    "the books of account maintained by the entity.  Where the records do "
+    "not capture nature of supply, supplier registration status, or "
+    "bill-of-supply indicators, the classification relies on (a) purchase "
+    "ledgers internally designated by the entity as exempt-supply ledgers, "
+    "and (b) where applicable, the absence of an ITC-input ledger on a "
+    "registered-vendor voucher as a presumptive marker of exempt supply — "
+    "both as adopted and affirmed by management.  RCM vouchers and "
+    "purchases from foreign suppliers are reported under Column 7.  The "
+    "entity confirms that the data made available is a true and complete "
+    "extract of its books for the relevant financial year, and any "
+    "limitations arising from incomplete or absent GST-specific attributes "
+    "in the underlying records are acknowledged by management.  "
+    "(Ref: ICAI Guidance Note on Tax Audit, Para 79.20 / 79.21.)"
 )
 
 
@@ -132,7 +135,9 @@ def _run_classification(run: Dict[str, Any]) -> Dict[str, Any]:
 
     full_result = classify_vouchers(
         vouchers, full_exp_ledgers, itc_set, party_lookup,
-        exempt_ledgers=exempt_set, use_itc_inference=use_itc_inf,
+        exempt_ledgers=exempt_set,
+        excluded_ledgers=excluded,
+        use_itc_inference=use_itc_inf,
     )
     return compute_recon_and_filter(
         full_result, excluded,
@@ -448,7 +453,7 @@ async def save_selections(
 async def get_transactions(
     run_id: str,
     request: Request,
-    bucket: Optional[str] = Query(default=None, pattern="^(col2|col3|col4|col5|col6|col7|all)$"),
+    bucket: Optional[str] = Query(default=None, pattern="^(col2|col3|col4|col5|col6|col7|col8|all)$"),
     ledger: Optional[str] = Query(default=None),
     party: Optional[str] = Query(default=None),
     session_token: Optional[str] = Cookie(default=None),
