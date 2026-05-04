@@ -1,10 +1,12 @@
 """Runs router — workspace-shared. Records created_by + generated_by attribution."""
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Cookie, Header, Query
 from pydantic import BaseModel, Field
+from rapidfuzz import fuzz
 
 from core.db import db
 from modules.auth.controller import get_current_user
@@ -17,6 +19,59 @@ from modules.clause44.service import (
 from modules.clause44.exports import build_export_response
 
 router = APIRouter()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────
+_COMMON_SUFFIXES = re.compile(
+    r"\b(p\.?|pvt\.?|private|ltd\.?|limited|llp|co\.?|company|inc\.?|corp\.?|corporation|and|&)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_company_name(accounting: Dict[str, Any]) -> str:
+    """Pull a company name out of the uploaded books JSON — tolerating both the
+    Tally/legacy `company.name` and the newer `company.companyName` key."""
+    comp = accounting.get("company") or {}
+    if not isinstance(comp, dict):
+        return ""
+    for key in ("name", "companyName", "company_name"):
+        v = comp.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _normalise_name(s: str) -> str:
+    """Lower-case + strip corporate suffixes + collapse whitespace for a
+    tolerant fuzzy-match baseline (so 'Velav Garments India P Ltd' ≈
+    'Velav Garments India Private Limited')."""
+    s = (s or "").lower()
+    s = _COMMON_SUFFIXES.sub(" ", s)
+    s = re.sub(r"[^a-z0-9\s]+", " ", s)
+    return " ".join(s.split())
+
+
+def _company_names_match(client_name: str, books_name: str) -> bool:
+    """Return True if the books company clearly belongs to this client file.
+
+    Strategy: normalise both names (drop common corporate suffixes) and
+    require ≥ 80 on token-sort-ratio. Empty `books_name` is allowed (we can't
+    verify what isn't there) — the hard block only fires on a confident
+    mismatch. Empty `client_name` is also allowed (shouldn't happen but
+    don't block).
+    """
+    if not books_name or not client_name:
+        return True
+    a = _normalise_name(client_name)
+    b = _normalise_name(books_name)
+    if not a or not b:
+        return True
+    # Token-set handles word-order + extra words; token-sort guards against
+    # one name being a proper subset of the other. Pick the best.
+    score = max(fuzz.token_set_ratio(a, b), fuzz.token_sort_ratio(a, b))
+    return score >= 80
 
 
 class GenerateRequest(BaseModel):
@@ -70,6 +125,21 @@ async def upload_run(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
 
+    # Guard against the classic "wrong books uploaded into wrong file"
+    # mistake — if the JSON declares a company name and it clearly doesn't
+    # belong to this client, abort early so a run for "ABC Textile Mills"
+    # can't slip inside the "Velav Garments" file.
+    books_company = _extract_company_name(accounting)
+    if books_company and not _company_names_match(cli.get("name", ""), books_company):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The uploaded books belong to “{books_company}”, but this "
+                f"file is for “{cli.get('name')}”. Please open the correct "
+                f"client file or upload the matching books."
+            ),
+        )
+
     try:
         ledgers_xlsx = parse_ledger_xlsx(await ledger_xlsx.read())
     except HTTPException:
@@ -79,7 +149,7 @@ async def upload_run(
 
     suggestions = compute_suggestions(ledgers_xlsx, accounting.get("ledgers", []))
     run_id = f"run_{uuid.uuid4().hex[:12]}"
-    company_name = (accounting.get("company") or {}).get("name", accounting_json.filename)
+    company_name = books_company or accounting_json.filename
 
     doc = {
         "run_id": run_id,

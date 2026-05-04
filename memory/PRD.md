@@ -1,5 +1,53 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — iteration patch (2026-05-04)
+
+Three-point iteration on the freshly-shipped stepper:
+
+1. **Cross-client books leak fixed.** `POST /api/runs` now compares the
+   uploaded books' company name (new `companyName` key is honoured alongside
+   the legacy `name`) with the client file it's being uploaded into using
+   RapidFuzz token-set/token-sort scoring (≥ 80 threshold, after stripping
+   common corporate suffixes like "P Ltd" / "Private Limited" / "& Co."). A
+   clear mismatch hard-aborts with a 400 pointing the user to the right
+   file. Empty `companyName` still passes (can't verify what isn't there).
+   One orphan run (ABC Textile Mills books sitting inside Velav Garments
+   file) was cleaned up from Mongo.
+
+2. **Report page — classic 6-col pivot restored + drill-downs kept.** The
+   Schedule tab now stacks:
+   - KPI strip (Col 2 · Col 6 · Col 7).
+   - **Per-Ledger Breakdown** — the legacy six-column pivot, read-only,
+     searchable, with a footer aggregate row. Mirrors what the printed 3CD
+     schedule looks like so partners can eyeball the tie-out.
+   - **Cohort Drill-down** — the 4 expandable rows (Col 3/4/5/7) with
+     Expense-wise / Party-wise tabs from the new stepper UI, untouched.
+
+3. **Excel rebuilt into 6 sheets.** `modules/clause44/exports.py` rewritten:
+   - Sheet 1 `Clause 44 Summary` — aggregate row + per-ledger six-column
+     pivot (the "consolidated pivotable list"). Frozen header row.
+   - Sheet 2 `Reconciliation` — Books → Clause 44 tie-out.
+   - Sheets 3-6 — one per cohort (`Col 3 · Exempt`, `Col 4 · Composition`,
+     `Col 5 · Other Reg ITC`, `Col 7 · Unregistered`) with the raw vouchers,
+     header-frozen, totaled footer, Indian number formatting.
+
+### Tests
+`/app/backend/tests/test_clause44_iteration_patch.py` — 12 assertions:
+company-name matcher (exact, Pvt/P-Ltd variant, clear mismatch blocks, both
+empty-name edge cases pass), normaliser drops suffixes, JSON extractor
+handles both legacy/new keys, Excel has exactly 6 sheets in the right
+order, pivot sheet carries all 6 column headers, each cohort sheet contains
+only its own bucket's vouchers with a correct footer total. All GREEN.
+
+### Files touched
+- `backend/modules/clause44/controller.py` — helpers + upload-time guard.
+- `backend/modules/clause44/exports.py` — full rewrite.
+- `frontend/src/pages/clause44/StepReport.jsx` — added `PivotTable`, kept
+  cohort drill-downs.
+- `backend/tests/test_clause44_iteration_patch.py` — new.
+
+
+
 ## Clause 44 — stepper refactor (2026-05-04)
 
 ### Team feedback addressed

@@ -1,34 +1,71 @@
-"""Excel export builder for single + consolidated runs."""
+"""Excel export builder for single + consolidated runs.
+
+Workbook layout (user-requested):
+  1.  Clause 44 Summary   — Aggregate + per-ledger six-column pivot (the
+                            "consolidated pivotable list").
+  2.  Reconciliation      — Books → Schedule tie-out.
+  3.  Col 3 · Exempt      — vouchers classified into Col 3.
+  4.  Col 4 · Composition — vouchers classified into Col 4.
+  5.  Col 5 · Other Reg.  — vouchers classified into Col 5 (ITC).
+  6.  Col 7 · Unregistered — vouchers classified into Col 7.
+
+Each cohort sheet can be pivoted in Excel (all columns present, no merged
+cells inside the data region) so auditors can slice further without going
+back to the app.
+"""
 import io
-from typing import Dict, Any
+from typing import Dict, Any, List
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from fastapi.responses import StreamingResponse
 
 INDIAN_FMT = "[>=10000000]##\\,##\\,##\\,##0.00;[>=100000]##\\,##\\,##0.00;##,##0.00"
 
+BOLD_WHITE = Font(bold=True, color="FFFFFF")
+HEADER_FILL = PatternFill("solid", fgColor="0F172A")
+THIN = Side(style="thin", color="D4D4D0")
+BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+TITLE_FONT = Font(bold=True, size=14)
 
-def build_export_response(run: Dict[str, Any], fname_prefix: str):
+BUCKET_META = [
+    ("col3", "Col 3 · Exempt",        "Col 3 — Exempt"),
+    ("col4", "Col 4 · Composition",   "Col 4 — Composition"),
+    ("col5", "Col 5 · Other Reg ITC", "Col 5 — Other Registered (ITC)"),
+    ("col7", "Col 7 · Unregistered",  "Col 7 — Unregistered"),
+]
+BUCKET_LABEL = {k: long for k, _, long in BUCKET_META}
+
+
+def _style_header_row(ws, row_idx: int, n_cols: int):
+    for col in range(1, n_cols + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.font = BOLD_WHITE
+        c.fill = HEADER_FILL
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER
+
+
+def _apply_indian_fmt(ws, min_row: int, cols: List[int]):
+    max_col = max(cols)
+    min_col = min(cols)
+    for row in ws.iter_rows(min_row=min_row, min_col=min_col, max_col=max_col):
+        for c in row:
+            if c.column in cols and isinstance(c.value, (int, float)):
+                c.number_format = INDIAN_FMT
+
+
+def _write_summary_sheet(wb, run: Dict[str, Any]):
     summary = run.get("summary", {}) or {}
     by_ledger = run.get("by_ledger", {}) or {}
-    txns = run.get("transactions", []) or []
-    recon = run.get("recon") or {}
 
-    wb = openpyxl.Workbook()
-    ws1 = wb.active
-    ws1.title = "Clause 44"
+    ws = wb.active
+    ws.title = "Clause 44 Summary"
 
-    bold = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="0F172A")
-    thin = Side(style="thin", color="D4D4D0")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    title_font = Font(bold=True, size=14)
-
-    ws1["A1"] = "Clause 44 of Form 3CD — Expenditure Summary"
-    ws1["A1"].font = title_font
-    ws1.merge_cells("A1:G1")
-    ws1["A2"] = f"Company: {run.get('company_name','')}"
-    ws1["A3"] = f"Generated: {run.get('generated_at','')}"
+    ws["A1"] = "Clause 44 of Form 3CD — Expenditure Summary"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:G1")
+    ws["A2"] = f"Company: {run.get('company_name','')}"
+    ws["A3"] = f"Generated: {run.get('generated_at','')}"
 
     headers = [
         "Particulars",
@@ -39,17 +76,12 @@ def build_export_response(run: Dict[str, Any], fname_prefix: str):
         "Col 6: Total (3+4+5)",
         "Col 7: Unregistered",
     ]
-    ws1.append([])
-    ws1.append(headers)
-    hr = ws1.max_row
-    for col in range(1, len(headers) + 1):
-        c = ws1.cell(row=hr, column=col)
-        c.font = bold
-        c.fill = header_fill
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = border
 
-    ws1.append([
+    # Aggregate row
+    ws.append([])
+    ws.append(headers)
+    _style_header_row(ws, ws.max_row, len(headers))
+    ws.append([
         "Aggregate (All Expenditure)",
         summary.get("col2_total", 0),
         summary.get("col3", 0),
@@ -59,106 +91,135 @@ def build_export_response(run: Dict[str, Any], fname_prefix: str):
         summary.get("col7", 0),
     ])
 
-    ws1.append([])
-    ws1.append(["Per-Ledger Breakdown"])
-    ws1.cell(ws1.max_row, 1).font = title_font
-    ws1.append(headers)
-    hr = ws1.max_row
-    for col in range(1, len(headers) + 1):
-        c = ws1.cell(row=hr, column=col)
-        c.font = bold
-        c.fill = header_fill
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = border
+    # Per-ledger pivot
+    ws.append([])
+    ws.append(["Per-Ledger Breakdown (six-column pivot)"])
+    ws.cell(ws.max_row, 1).font = TITLE_FONT
+    ws.append(headers)
+    pivot_header_row = ws.max_row
+    _style_header_row(ws, pivot_header_row, len(headers))
 
     for lname, row in sorted(by_ledger.items(), key=lambda kv: kv[1].get("total", 0), reverse=True):
-        ws1.append([
+        col3 = row.get("col3", 0) or 0
+        col4 = row.get("col4", 0) or 0
+        col5 = row.get("col5", 0) or 0
+        col7 = row.get("col7", 0) or 0
+        total = row.get("total", 0) or (col3 + col4 + col5 + col7)
+        ws.append([
             lname,
-            row.get("total", 0),
-            row.get("col3", 0),
-            row.get("col4", 0),
-            row.get("col5", 0),
-            row.get("col3", 0) + row.get("col4", 0) + row.get("col5", 0),
-            row.get("col7", 0),
+            total,
+            col3, col4, col5,
+            col3 + col4 + col5,
+            col7,
         ])
 
-    ws1.column_dimensions["A"].width = 36
+    ws.column_dimensions["A"].width = 36
     for col_letter in ["B", "C", "D", "E", "F", "G"]:
-        ws1.column_dimensions[col_letter].width = 22
+        ws.column_dimensions[col_letter].width = 22
+    _apply_indian_fmt(ws, min_row=5, cols=[2, 3, 4, 5, 6, 7])
 
-    for row in ws1.iter_rows(min_row=5, min_col=2, max_col=7):
-        for c in row:
-            if isinstance(c.value, (int, float)):
-                c.number_format = INDIAN_FMT
+    # Freeze the pivot header row so scrolling keeps it visible.
+    ws.freeze_panes = ws.cell(row=pivot_header_row + 1, column=2)
 
-    # Sheet 2 - Reconciliation
-    ws_r = wb.create_sheet("Reconciliation")
-    ws_r["A1"] = "Reconciliation — Books to Clause 44"
-    ws_r["A1"].font = title_font
-    ws_r.merge_cells("A1:B1")
-    ws_r.append([])
-    ws_r.append(["Particulars", "Amount"])
-    hr = ws_r.max_row
-    for col in (1, 2):
-        c = ws_r.cell(row=hr, column=col)
-        c.font = bold
-        c.fill = header_fill
-        c.alignment = Alignment(horizontal="left", vertical="center")
-        c.border = border
 
-    ws_r.append(["Total Expenditure as per Books", recon.get("total_books", 0)])
-    ws_r.append(["Less : Expenditures excluded from Clause 44 Report", None])
+def _write_recon_sheet(wb, run: Dict[str, Any]):
+    recon = run.get("recon") or {}
+    ws = wb.create_sheet("Reconciliation")
+    ws["A1"] = "Reconciliation — Books to Clause 44"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:B1")
+    ws.append([])
+    ws.append(["Particulars", "Amount"])
+    _style_header_row(ws, ws.max_row, 2)
+
+    ws.append(["Total Expenditure as per Books", recon.get("total_books", 0)])
+    ws.append(["Less : Expenditures excluded from Clause 44 Report", None])
     for line in (recon.get("excluded_lines") or []):
-        ws_r.append([f"   • {line['name']}", -float(line.get("amount") or 0)])
-    ws_r.append(["Expenditure as per Clause 44 Report", recon.get("balance", 0)])
-    last_row = ws_r.max_row
+        ws.append([f"   • {line['name']}", -float(line.get("amount") or 0)])
+    ws.append(["Expenditure as per Clause 44 Report", recon.get("balance", 0)])
+
+    last_row = ws.max_row
     for col in (1, 2):
-        c = ws_r.cell(row=last_row, column=col)
+        c = ws.cell(row=last_row, column=col)
         c.font = Font(bold=True)
         c.fill = PatternFill("solid", fgColor="F3F4F1")
-        c.border = border
-    ws_r.column_dimensions["A"].width = 60
-    ws_r.column_dimensions["B"].width = 22
-    for row in ws_r.iter_rows(min_row=4, min_col=2, max_col=2):
-        for c in row:
-            if isinstance(c.value, (int, float)):
-                c.number_format = INDIAN_FMT
+        c.border = BORDER
 
-    # Sheet 3 - Audit trail
-    ws2 = wb.create_sheet("Transaction Audit Trail")
-    headers2 = ["Date", "Voucher Type", "Voucher No", "Ledger", "Party", "Party GSTIN", "Party Reg.", "Amount", "Bucket", "Reason"]
-    if any(t.get("division_name") for t in txns):
-        headers2.insert(3, "Division")
-    ws2.append(headers2)
-    for col in range(1, len(headers2) + 1):
-        c = ws2.cell(row=1, column=col)
-        c.font = bold
-        c.fill = header_fill
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = border
+    ws.column_dimensions["A"].width = 60
+    ws.column_dimensions["B"].width = 22
+    _apply_indian_fmt(ws, min_row=4, cols=[2])
 
-    bucket_label = {"col3": "Col 3 — Exempt", "col4": "Col 4 — Composition", "col5": "Col 5 — Other Registered (ITC)", "col7": "Col 7 — Unregistered"}
-    has_div = "Division" in headers2
+
+def _write_cohort_sheet(wb, sheet_name: str, long_label: str, txns: List[Dict[str, Any]]):
+    ws = wb.create_sheet(sheet_name)
+    ws["A1"] = f"{long_label} — Transaction Breakup"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:I1")
+
+    has_division = any(t.get("division_name") for t in txns)
+    headers = ["Date", "Voucher Type", "Voucher No"]
+    if has_division:
+        headers.append("Division")
+    headers += ["Ledger", "Party", "Party GSTIN", "Party Reg.", "Amount", "Reason"]
+
+    ws.append([])
+    ws.append(headers)
+    header_row = ws.max_row
+    _style_header_row(ws, header_row, len(headers))
+
+    amount_col = 9 if has_division else 8
+    total = 0.0
     for t in txns:
         row = [t.get("date", ""), t.get("voucher_type", ""), t.get("voucher_number", "")]
-        if has_div:
+        if has_division:
             row.append(t.get("division_name", "—"))
+        amt = float(t.get("amount") or 0)
+        total += amt
         row += [
             t.get("ledger_name", ""), t.get("party_name", ""), t.get("party_gstin", ""),
-            t.get("party_reg", ""), t.get("amount", 0),
-            bucket_label.get(t.get("bucket"), t.get("bucket", "")), t.get("reason", ""),
+            t.get("party_reg", ""), amt, t.get("reason", ""),
         ]
-        ws2.append(row)
-    base_widths = [12, 14, 14, 28, 28, 18, 14, 16, 26, 60]
-    if has_div:
-        base_widths.insert(3, 16)
+        ws.append(row)
+
+    if txns:
+        footer = ["Total"] + [""] * (amount_col - 2) + [total] + [""] * (len(headers) - amount_col)
+        ws.append(footer)
+        last_row = ws.max_row
+        for col in range(1, len(headers) + 1):
+            c = ws.cell(row=last_row, column=col)
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="F3F4F1")
+            c.border = BORDER
+    else:
+        ws.append(["— No vouchers classified into this cohort —"])
+
+    base_widths = [12, 14, 14]
+    if has_division:
+        base_widths.append(16)
+    base_widths += [28, 28, 18, 14, 16, 60]
     for i, w in enumerate(base_widths, 1):
-        ws2.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
-    amount_col = 9 if has_div else 8
-    for row in ws2.iter_rows(min_row=2, min_col=amount_col, max_col=amount_col):
-        for c in row:
-            if isinstance(c.value, (int, float)):
-                c.number_format = INDIAN_FMT
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[amount_col])
+
+    # Freeze the header row so auditors can pivot comfortably.
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+
+def build_export_response(run: Dict[str, Any], fname_prefix: str):
+    txns = run.get("transactions", []) or []
+
+    wb = openpyxl.Workbook()
+
+    # Sheet 1 — Summary + per-ledger pivot
+    _write_summary_sheet(wb, run)
+
+    # Sheet 2 — Reconciliation
+    _write_recon_sheet(wb, run)
+
+    # Sheets 3-6 — One per cohort column
+    for key, short, long_label in BUCKET_META:
+        cohort_txns = [t for t in txns if t.get("bucket") == key]
+        _write_cohort_sheet(wb, short, long_label, cohort_txns)
 
     buf = io.BytesIO()
     wb.save(buf)

@@ -1,10 +1,13 @@
 /**
  * Step 4 — Clause 44 Schedule + Reconciliation.
  *
- * No more drill-down pop-up — each cohort tile (Col 3-7) expands inline,
- * revealing an [ Expense-wise | Party-wise ] tab strip.  Clicking a row in
- * either tab lazy-loads the individual vouchers for that (bucket × ledger)
- * or (bucket × party).
+ * Layout:
+ *   1. KPI strip (Col 2 · Col 6 · Col 7 aggregate)
+ *   2. Classic six-column per-ledger table — read-only pivot that
+ *      mirrors the 3CD schedule (restored from legacy UI on user request).
+ *   3. Four cohort drill-downs (Col 3, 4, 5, 7) with Expense-wise /
+ *      Party-wise tabs & voucher-level popovers.
+ *   4. Reconciliation tab ties books → schedule.
  */
 import { useMemo, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -13,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { formatINR, formatDate } from "@/lib/format";
 import { getTransactions } from "@/lib/api";
 import { ACCENTS, COL_ACCENTS } from "@/lib/colors";
-import { CaretDown, CaretRight, MagnifyingGlass, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, MagnifyingGlass, ArrowUp, ArrowDown, ChartPieSlice } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import ReconTable from "@/pages/ReconTable";
 
@@ -24,17 +27,26 @@ const COHORTS = [
   { key: "col7", label: "Col 7 · Unregistered",           desc: "No GSTIN / consumer / no party" },
 ];
 
+// Columns for the classic 6-column per-ledger pivot (read-only).
+const PIVOT_COLS = [
+  { key: "col2_total", label: "Col 2 · Total",        bucket: "col2" },
+  { key: "col3",       label: "Col 3 · Exempt",       bucket: "col3" },
+  { key: "col4",       label: "Col 4 · Composition",  bucket: "col4" },
+  { key: "col5",       label: "Col 5 · Other Reg.",   bucket: "col5" },
+  { key: "col6",       label: "Col 6 · Total (3+4+5)", bucket: "col6" },
+  { key: "col7",       label: "Col 7 · Unregistered", bucket: "col7" },
+];
+
 export default function StepReport({ run }) {
   return (
     <section className="mx-auto max-w-[1200px]" data-testid="step-report">
       <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8A8A83]">Step 04 / 04</div>
       <h2 className="mt-1 font-heading text-2xl tracking-tight">Clause 44 Schedule</h2>
       <p className="mt-2 text-sm text-[#52524E] max-w-3xl">
-        Drill into any cohort — amount is split across the expense head
-        (what was bought) and the party (who it was bought from). Clicking
-        a line unveils the underlying voucher transactions. Use the
-        <strong> Reconciliation</strong> tab to tie books to schedule before
-        you export.
+        Review the classic six-column schedule, then drill into any cohort
+        to see which expense heads and parties contributed to that bucket.
+        Use the <strong>Reconciliation</strong> tab to tie books to schedule
+        before you export.
       </p>
 
       <div className="mt-8">
@@ -59,52 +71,147 @@ export default function StepReport({ run }) {
   );
 }
 
-/* ─────────────────── Schedule tab — 4 expandable cohort rows ────────── */
+/* ─────────────────── Schedule tab — KPI + Pivot + Drill-downs ────────── */
 function Schedule({ run }) {
   const summary = run?.summary || {};
   const [open, setOpen] = useState(null); // "col3" | ... | null
 
-  // Header KPIs
   const col2 = summary.col2_total || 0;
   const col6 = summary.col6 || 0;
 
+  // Row set for the classic pivot
+  const ledgerRows = useMemo(() => {
+    if (!run?.by_ledger) return [];
+    return Object.entries(run.by_ledger).map(([name, v]) => {
+      const col3 = v.col3 || 0;
+      const col4 = v.col4 || 0;
+      const col5 = v.col5 || 0;
+      const col7 = v.col7 || 0;
+      const total = v.total != null ? v.total : col3 + col4 + col5 + col7;
+      return {
+        name,
+        col3, col4, col5, col7,
+        col6: col3 + col4 + col5,
+        col2_total: total,
+      };
+    }).sort((a, b) => b.col2_total - a.col2_total);
+  }, [run]);
+
   return (
     <div data-testid="schedule-view">
-      {/* Aggregate strip */}
+      {/* Aggregate KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden mb-6">
         <KPI label="Col 2 · Total expenditure" amt={col2} accent="slate"/>
         <KPI label="Col 6 · Aggregate registered (3+4+5)" amt={col6} accent="emerald"/>
         <KPI label="Col 7 · Unregistered" amt={summary.col7 || 0} accent="rose"/>
       </div>
 
-      {/* 4 cohort rows */}
-      <div className="border border-[#E5E5E0] rounded-sm bg-white divide-y divide-[#E5E5E0]">
-        {COHORTS.map((c) => {
-          const amt = summary[c.key] || 0;
-          const a = ACCENTS[COL_ACCENTS[c.key]] || ACCENTS.slate;
-          const isOpen = open === c.key;
-          const pct = col2 > 0 ? (amt / col2) * 100 : 0;
-          return (
-            <div key={c.key} data-testid={`cohort-row-${c.key}`}>
-              <button
-                className="w-full flex items-center gap-4 px-5 py-4 hover:bg-[#FAFAF7] text-left"
-                onClick={() => setOpen(isOpen ? null : c.key)}
-                data-testid={`cohort-toggle-${c.key}`}
-              >
-                {isOpen ? <CaretDown size={14} weight="bold" className={a.text}/> : <CaretRight size={14} weight="bold" className="text-[#8A8A83]"/>}
-                <div className="flex-1">
-                  <div className={`font-mono text-[11px] uppercase tracking-[0.12em] ${a.text}`}>{c.label}</div>
-                  <div className="text-[11px] text-[#52524E] mt-0.5">{c.desc}</div>
-                </div>
-                <div className="text-right">
-                  <div className="num text-[18px] tracking-tight font-medium">{formatINR(amt)}</div>
-                  <div className="font-mono text-[10px] text-[#8A8A83]">{pct.toFixed(1)}% of Col 2</div>
-                </div>
-              </button>
-              {isOpen && <CohortBody run={run} cohort={c.key}/>}
-            </div>
-          );
-        })}
+      {/* ── Classic 6-column per-ledger pivot (read-only) ── */}
+      <PivotTable summary={summary} rows={ledgerRows}/>
+
+      {/* ── 4 cohort drill-downs ── */}
+      <div className="mt-8">
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="font-heading text-base tracking-tight">Cohort Drill-down</h3>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">Expand any cohort to see expense-wise and party-wise breakup</span>
+        </div>
+        <div className="border border-[#E5E5E0] rounded-sm bg-white divide-y divide-[#E5E5E0]">
+          {COHORTS.map((c) => {
+            const amt = summary[c.key] || 0;
+            const a = ACCENTS[COL_ACCENTS[c.key]] || ACCENTS.slate;
+            const isOpen = open === c.key;
+            const pct = col2 > 0 ? (amt / col2) * 100 : 0;
+            return (
+              <div key={c.key} data-testid={`cohort-row-${c.key}`}>
+                <button
+                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-[#FAFAF7] text-left"
+                  onClick={() => setOpen(isOpen ? null : c.key)}
+                  data-testid={`cohort-toggle-${c.key}`}
+                >
+                  {isOpen ? <CaretDown size={14} weight="bold" className={a.text}/> : <CaretRight size={14} weight="bold" className="text-[#8A8A83]"/>}
+                  <div className="flex-1">
+                    <div className={`font-mono text-[11px] uppercase tracking-[0.12em] ${a.text}`}>{c.label}</div>
+                    <div className="text-[11px] text-[#52524E] mt-0.5">{c.desc}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="num text-[18px] tracking-tight font-medium">{formatINR(amt)}</div>
+                    <div className="font-mono text-[10px] text-[#8A8A83]">{pct.toFixed(1)}% of Col 2</div>
+                  </div>
+                </button>
+                {isOpen && <CohortBody run={run} cohort={c.key}/>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Classic 6-column read-only pivot — mirrors the printed 3CD schedule. */
+function PivotTable({ summary, rows }) {
+  const [q, setQ] = useState("");
+  const s = summary || {};
+  const filtered = useMemo(() => {
+    const q2 = q.trim().toLowerCase();
+    return q2 ? rows.filter((r) => r.name.toLowerCase().includes(q2)) : rows;
+  }, [rows, q]);
+  return (
+    <div className="border border-[#E5E5E0] rounded-sm bg-white" data-testid="pivot-table-block">
+      <div className="px-4 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
+        <ChartPieSlice size={14} className="text-[#52524E]"/>
+        <h3 className="font-heading text-base">Per-Ledger Breakdown</h3>
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#8A8A83]">Six-column pivot</span>
+        <div className="ml-auto flex items-center gap-2 border border-[#E5E5E0] rounded-sm px-2 h-8 w-full sm:w-72">
+          <MagnifyingGlass size={14} className="text-[#8A8A83]"/>
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter ledger…"
+            className="h-7 border-0 shadow-none focus-visible:ring-0 px-0 text-sm"
+            data-testid="pivot-search"
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="fiscal-table w-full" data-testid="pivot-table">
+          <thead>
+            <tr>
+              <th className="min-w-[260px]">Ledger</th>
+              {PIVOT_COLS.map((c) => (
+                <th key={c.key} className="text-right whitespace-nowrap">{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={PIVOT_COLS.length + 1} className="text-center py-10 text-[#8A8A83] text-sm">No expenditure ledgers in this run.</td></tr>
+            )}
+            {filtered.map((row) => (
+              <tr key={row.name} data-testid={`pivot-row-${encodeURIComponent(row.name)}`}>
+                <td className="font-medium">{row.name}</td>
+                {PIVOT_COLS.map((c) => {
+                  const v = row[c.key] || 0;
+                  return (
+                    <td key={c.key} className={`cell-num ${v === 0 ? "text-[#8A8A83]" : ""}`} data-testid={`pivot-cell-${c.bucket}-${encodeURIComponent(row.name)}`}>
+                      {formatINR(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+          {filtered.length > 0 && (
+            <tfoot>
+              <tr className="bg-[#F3F4F1]">
+                <td className="font-medium">Aggregate</td>
+                {PIVOT_COLS.map((c) => (
+                  <td key={c.key} className="cell-num font-medium">{formatINR(s[c.key])}</td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
+        </table>
       </div>
     </div>
   );
