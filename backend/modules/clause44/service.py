@@ -12,6 +12,69 @@ EXCLUSION_HINT_KEYWORDS = (
     "drawing", "capital", "depreciation",
 )
 
+# ─────────────────────────────────────────────────────────────────────────
+# ITC suggestion policy  (driven by the `Map to Subhead` column in the
+# books XLSX — NOT by Group Parent or ledger-name keywords)
+#
+# • Ledgers whose subhead matches one of ITC_SUGGEST_SUBHEADS are shown
+#   pre-selected on the ITC step.
+# • Ledgers whose subhead matches one of ITC_POOL_EXCLUDE_SUBHEADS are
+#   hidden from the ITC candidate pool altogether (trade payables /
+#   receivables / fixed assets / cash / bank cannot be ITC ledgers).
+# • Every other BS-side ledger is shown un-selected so the auditor can
+#   search & tick any that the two-subhead heuristic misses.
+# ─────────────────────────────────────────────────────────────────────────
+ITC_SUGGEST_SUBHEADS = (
+    "balance with revenue authorities",
+    "statutory dues payable",
+)
+ITC_POOL_EXCLUDE_SUBHEADS = (
+    "trade receivables",
+    "trade payables",
+    "sundry debtors",
+    "sundry creditors",
+    "creditors for expenses",
+    "creditors for capital goods",
+    "fixed assets",
+    "cash in hand",
+    "cash on hand",
+    "cash and cash equivalents",
+    "bank accounts",
+    "bank balances",
+    "bank od",
+    "bank overdraft",
+)
+
+
+def _norm(s: str) -> str:
+    return " ".join((s or "").lower().split())
+
+
+def _subhead_matches(subhead: str, candidates: tuple) -> bool:
+    """Case-insensitive + substring match. A ledger's subhead is considered
+    a match if any candidate phrase appears inside the (normalised) subhead,
+    OR the subhead is fully contained in the candidate (for pluralisation
+    variants like 'Trade Payable' vs 'Trade Payables')."""
+    s = _norm(subhead)
+    if not s:
+        return False
+    for c in candidates:
+        cn = _norm(c)
+        if cn in s or s in cn:
+            return True
+    return False
+
+
+def _fields_match(candidates: tuple, *fields: str) -> bool:
+    """Match any of the given classification fields (subhead, groupParent,
+    head) against the candidate list — used for the ITC exclude pool so
+    granular Tally subheads like 'Buildings' / 'Furniture' still get caught
+    by a Fixed-Assets rule on their parent group."""
+    for f in fields:
+        if _subhead_matches(f, candidates):
+            return True
+    return False
+
 # Period validation: accepts 2023-24, 2023-2024, FY 2023-24, Q1 FY2023-24, H1 2023-24, etc.
 PERIOD_REGEX = re.compile(
     r"^(?:(?:Q[1-4]|H[12])[\s-]?)?(?:FY[\s-]?)?\d{4}[-/]\d{2,4}$",
@@ -102,25 +165,52 @@ def is_capex_ledger(ledger: Dict[str, Any], group_chains: Dict[str, str]) -> boo
 
 
 def compute_suggestions(ledgers_xlsx: Dict[str, Dict[str, Any]], ledgers_json: List[Dict[str, Any]]):
+    """Build the two pools the Mapping screen needs.
+
+    ITC candidate pool  — every BS-side ledger except those whose subhead is
+    in `ITC_POOL_EXCLUDE_SUBHEADS` (trade payables/receivables/fixed assets/
+    cash/bank).  Within this pool, `suggested=True` is set only for ledgers
+    whose subhead matches one of `ITC_SUGGEST_SUBHEADS` (Balance with
+    Revenue Authorities / Statutory Dues Payable).  Everything else is
+    shown un-ticked but searchable.
+
+    Expenditure-exclusion pool — every P&L ledger, with `suggested=True`
+    for those whose NAME hints at non-supply items (salaries, PF, interest,
+    depreciation, etc.).
+    """
     itc_candidates = []
     for name, rec in ledgers_xlsx.items():
-        if rec.get("bsOrPl") == "B" and _is_gst_input_ledger(name):
-            itc_candidates.append({
-                "name": name,
-                "groupParent": rec.get("groupParent", ""),
-                "closingBalance": rec.get("closingBalance"),
-                "suggested": True,
-            })
+        if rec.get("bsOrPl") != "B":
+            continue
+        subhead = rec.get("subhead", "") or ""
+        group_parent = rec.get("groupParent", "") or ""
+        head = rec.get("head", "") or ""
+        # Exclude check walks subhead + groupParent + head so Tally's
+        # granular subheads (Buildings, Furniture, etc.) still get caught
+        # by the Fixed-Assets rule on their parent group.
+        if _fields_match(ITC_POOL_EXCLUDE_SUBHEADS, subhead, group_parent, head):
+            continue
+        itc_candidates.append({
+            "name": name,
+            "groupParent": group_parent,
+            "subhead": subhead,
+            "closingBalance": rec.get("closingBalance"),
+            # Pre-selection is still strictly driven by the two target subheads
+            # — group-parent ambiguity must not auto-select an ITC ledger.
+            "suggested": _subhead_matches(subhead, ITC_SUGGEST_SUBHEADS),
+        })
 
     pl_ledgers = []
     for name, rec in ledgers_xlsx.items():
-        if rec.get("bsOrPl") == "P":
-            pl_ledgers.append({
-                "name": name,
-                "groupParent": rec.get("groupParent", ""),
-                "closingBalance": rec.get("closingBalance"),
-                "suggested": _is_exclusion_hint(name),
-            })
+        if rec.get("bsOrPl") != "P":
+            continue
+        pl_ledgers.append({
+            "name": name,
+            "groupParent": rec.get("groupParent", ""),
+            "subhead": rec.get("subhead", ""),
+            "closingBalance": rec.get("closingBalance"),
+            "suggested": _is_exclusion_hint(name),
+        })
 
     return {"itc_candidates": itc_candidates, "pl_ledgers": pl_ledgers}
 
@@ -160,6 +250,7 @@ def classify_vouchers(
 ) -> Dict[str, Any]:
     txns: List[Dict[str, Any]] = []
     by_ledger: Dict[str, Dict[str, float]] = {}
+    by_party: Dict[str, Dict[str, Any]] = {}
 
     for v in vouchers:
         entries = v.get("ledgerEntries", []) or []
@@ -199,6 +290,9 @@ def classify_vouchers(
             else:
                 reason = f"Party '{party_name}' marked as {party_reg or 'Unregistered'}"
 
+        # Party-wise bucket key — empty party name collapses to "— Cash / No Party —"
+        p_key = party_name or "— Cash / No Party —"
+
         for lname, amt in exp_lines:
             txns.append({
                 "voucher_id": v.get("voucherId", ""),
@@ -217,6 +311,23 @@ def classify_vouchers(
             row[bucket] += amt
             row["total"] += amt
 
+            prow = by_party.setdefault(p_key, {
+                "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0,
+                "party_gstin": party_gstin, "party_reg": party_reg, "vouchers": 0,
+            })
+            prow[bucket] += amt
+            prow["total"] += amt
+            # Most-recent GSTIN / reg type wins — values are tied to party master
+            if party_gstin:
+                prow["party_gstin"] = party_gstin
+            if party_reg:
+                prow["party_reg"] = party_reg
+
+        # Count each voucher once per party (done after the loop so we don't
+        # inflate the count by # of expense lines on the voucher).
+        if p_key in by_party:
+            by_party[p_key]["vouchers"] += 1
+
     col3 = sum(t["amount"] for t in txns if t["bucket"] == "col3")
     col4 = sum(t["amount"] for t in txns if t["bucket"] == "col4")
     col5 = sum(t["amount"] for t in txns if t["bucket"] == "col5")
@@ -226,7 +337,7 @@ def classify_vouchers(
         "col3": col3, "col4": col4, "col5": col5,
         "col6": col3 + col4 + col5, "col7": col7,
     }
-    return {"summary": summary, "transactions": txns, "by_ledger": by_ledger}
+    return {"summary": summary, "transactions": txns, "by_ledger": by_ledger, "by_party": by_party}
 
 
 def compute_recon_and_filter(full_result: Dict[str, Any], excluded_set: set) -> Dict[str, Any]:
@@ -235,6 +346,29 @@ def compute_recon_and_filter(full_result: Dict[str, Any], excluded_set: set) -> 
 
     filtered_by_ledger = {l: v for l, v in full_by_ledger.items() if l not in excluded_set}
     filtered_txns = [t for t in full_txns if t["ledger_name"] not in excluded_set]
+
+    # Re-build by_party from the filtered transactions so excluded-ledger
+    # amounts don't leak into the party breakup.
+    filtered_by_party: Dict[str, Dict[str, Any]] = {}
+    voucher_seen: Dict[str, set] = {}
+    for t in filtered_txns:
+        p_key = t.get("party_name") or "— Cash / No Party —"
+        row = filtered_by_party.setdefault(p_key, {
+            "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0,
+            "party_gstin": t.get("party_gstin", "") or "",
+            "party_reg": t.get("party_reg", "") or "",
+            "vouchers": 0,
+        })
+        row[t["bucket"]] += t["amount"]
+        row["total"] += t["amount"]
+        if t.get("party_gstin"):
+            row["party_gstin"] = t["party_gstin"]
+        if t.get("party_reg"):
+            row["party_reg"] = t["party_reg"]
+        seen = voucher_seen.setdefault(p_key, set())
+        if t.get("voucher_id") and t["voucher_id"] not in seen:
+            seen.add(t["voucher_id"])
+            row["vouchers"] += 1
 
     col3 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col3")
     col4 = sum(t["amount"] for t in filtered_txns if t["bucket"] == "col4")
@@ -256,6 +390,7 @@ def compute_recon_and_filter(full_result: Dict[str, Any], excluded_set: set) -> 
     return {
         "summary": summary,
         "by_ledger": filtered_by_ledger,
+        "by_party": filtered_by_party,
         "transactions": filtered_txns,
         "recon": {
             "total_books": total_books,
@@ -269,6 +404,7 @@ def compute_recon_and_filter(full_result: Dict[str, Any], excluded_set: set) -> 
 def merge_runs_for_consolidation(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     summary = {"col2_total": 0.0, "col3": 0.0, "col4": 0.0, "col5": 0.0, "col6": 0.0, "col7": 0.0}
     by_ledger: Dict[str, Dict[str, float]] = {}
+    by_party: Dict[str, Dict[str, Any]] = {}
     transactions: List[Dict[str, Any]] = []
     excluded_acc: Dict[str, float] = {}
     total_books = 0.0
@@ -282,6 +418,20 @@ def merge_runs_for_consolidation(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             row = by_ledger.setdefault(lname, {"col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0})
             for k, v in vals.items():
                 row[k] = (row.get(k, 0.0) or 0.0) + float(v or 0)
+        for pname, vals in (r.get("by_party") or {}).items():
+            row = by_party.setdefault(pname, {
+                "col3": 0.0, "col4": 0.0, "col5": 0.0, "col7": 0.0, "total": 0.0,
+                "party_gstin": vals.get("party_gstin", "") or "",
+                "party_reg": vals.get("party_reg", "") or "",
+                "vouchers": 0,
+            })
+            for k in ("col3", "col4", "col5", "col7", "total"):
+                row[k] = (row.get(k, 0.0) or 0.0) + float(vals.get(k) or 0)
+            row["vouchers"] += int(vals.get("vouchers") or 0)
+            if vals.get("party_gstin"):
+                row["party_gstin"] = vals["party_gstin"]
+            if vals.get("party_reg"):
+                row["party_reg"] = vals["party_reg"]
         for t in (r.get("transactions") or []):
             tt = dict(t)
             tt["division_name"] = r.get("division_name") or "—"
@@ -302,6 +452,7 @@ def merge_runs_for_consolidation(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "summary": summary,
         "by_ledger": by_ledger,
+        "by_party": by_party,
         "transactions": transactions,
         "recon": {
             "total_books": total_books,

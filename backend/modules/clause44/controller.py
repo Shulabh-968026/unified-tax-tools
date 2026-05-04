@@ -153,6 +153,14 @@ async def get_run(
 ):
     await get_current_user(request, session_token, authorization)
     run = await _fetch_run(run_id)
+    # Recompute ITC / P&L suggestions on every GET so runs uploaded before a
+    # classifier-policy change pick up the new behaviour without re-upload.
+    ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
+    accounting = run.get("accounting", {}) or {}
+    suggestions = (compute_suggestions(ledgers_xlsx, accounting.get("ledgers", []))
+                   if ledgers_xlsx else
+                   {"itc_candidates": run.get("itc_candidates", []),
+                    "pl_ledgers":     run.get("pl_ledgers", [])})
     return {
         "run_id": run["run_id"],
         "created_at": run["created_at"],
@@ -171,14 +179,15 @@ async def get_run(
         "xlsx_filename": run.get("xlsx_filename"),
         "vouchers_count": len(run.get("accounting", {}).get("vouchers", [])),
         "ledgers_count": len(run.get("accounting", {}).get("ledgers", [])),
-        "itc_candidates": run.get("itc_candidates", []),
-        "pl_ledgers": run.get("pl_ledgers", []),
+        "itc_candidates": suggestions["itc_candidates"],
+        "pl_ledgers":     suggestions["pl_ledgers"],
         "generated": run.get("generated", False),
         "generated_at": run.get("generated_at"),
         "generated_by_name": run.get("generated_by_name"),
         "generated_by_email": run.get("generated_by_email"),
         "summary": run.get("summary"),
         "by_ledger": run.get("by_ledger"),
+        "by_party": run.get("by_party"),
         "recon": run.get("recon"),
         "itc_selection": run.get("itc_selection", []),
         "exclusion_selection": run.get("exclusion_selection", []),
@@ -220,6 +229,7 @@ async def generate_run(
             "exclusion_selection": list(excluded),
             "summary": final["summary"],
             "by_ledger": final["by_ledger"],
+            "by_party": final["by_party"],
             "transactions": final["transactions"],
             "recon": final["recon"],
             "expenditure_ledgers": list(full_exp_ledgers.keys()),
@@ -233,9 +243,40 @@ async def generate_run(
         "run_id": run_id,
         "summary": final["summary"],
         "by_ledger": final["by_ledger"],
+        "by_party": final["by_party"],
         "recon": final["recon"],
         "transactions_count": len(final["transactions"]),
     }
+
+
+class SelectionsRequest(BaseModel):
+    itc_ledgers: Optional[List[str]] = None
+    excluded_ledgers: Optional[List[str]] = None
+
+
+@router.patch("/runs/{run_id}/selections")
+async def save_selections(
+    run_id: str,
+    body: SelectionsRequest,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Persist ITC / exclusion picks across stepper navigation — without
+    running classification. Step 2 and Step 3 of the stepper call this on
+    "Proceed" so a user can safely go Back without losing state."""
+    await get_current_user(request, session_token, authorization)
+    await _fetch_run(run_id)
+    update: Dict[str, Any] = {}
+    if body.itc_ledgers is not None:
+        update["itc_selection"] = list(set(body.itc_ledgers))
+    if body.excluded_ledgers is not None:
+        update["exclusion_selection"] = list(set(body.excluded_ledgers))
+    if not update:
+        return {"run_id": run_id, "saved": False}
+    update["last_selections_saved_at"] = datetime.now(timezone.utc).isoformat()
+    await db.runs.update_one({"run_id": run_id}, {"$set": update})
+    return {"run_id": run_id, "saved": True, **update}
 
 
 @router.get("/runs/{run_id}/transactions")
@@ -244,6 +285,7 @@ async def get_transactions(
     request: Request,
     bucket: Optional[str] = Query(default=None, pattern="^(col2|col3|col4|col5|col6|col7|all)$"),
     ledger: Optional[str] = Query(default=None),
+    party: Optional[str] = Query(default=None),
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -256,7 +298,13 @@ async def get_transactions(
         txns = [t for t in txns if t["bucket"] in ("col3", "col4", "col5")]
     if ledger:
         txns = [t for t in txns if t["ledger_name"] == ledger]
-    return {"run_id": run_id, "bucket": bucket or "all", "ledger": ledger, "transactions": txns}
+    if party:
+        # "— Cash / No Party —" is the synthetic bucket for empty party names.
+        if party == "— Cash / No Party —":
+            txns = [t for t in txns if not (t.get("party_name") or "")]
+        else:
+            txns = [t for t in txns if t.get("party_name") == party]
+    return {"run_id": run_id, "bucket": bucket or "all", "ledger": ledger, "party": party, "transactions": txns}
 
 
 @router.post("/runs/{run_id}/archive")

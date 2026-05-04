@@ -55,6 +55,8 @@ export const uploadRun = ({ jsonFile, xlsxFile, clientId, period, divisionId, on
 export const archiveRun = (id) => http.post(`/runs/${id}/archive`).then((r) => r.data);
 export const getRun = (id) => http.get(`/runs/${id}`).then((r) => r.data);
 export const generateRun = (id, payload) => http.post(`/runs/${id}/generate`, payload).then((r) => r.data);
-export const getTransactions = (id, bucket, ledger) =>
-  http.get(`/runs/${id}/transactions`, { params: { bucket, ledger } }).then((r) => r.data);
+export const getTransactions = (id, bucket, ledger, party) =>
+  http.get(`/runs/${id}/transactions`, { params: { bucket, ledger, party } }).then((r) => r.data);
+export const saveSelections = (id, payload) =>
+  http.patch(`/runs/${id}/selections`, payload).then((r) => r.data);
 export const exportRunUrl = (id) => `${API}/runs/${id}/export`;

@@ -1,5 +1,34 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — stepper refactor (2026-05-04)
+
+### Team feedback addressed
+1. **Stepper format** with top-right Proceed button, 4 steps: Import · ITC · Exclusions · Report. Replaces the old two-pane StepMapping + standalone Report screens.
+2. **ITC auto-select** restricted to **Balance with Revenue Authorities** and **Statutory Dues Payable** subheads (substring match on `Map to Subhead`). Old keyword heuristic (`gst|input|cgst…`) retired.
+3. **BS candidate pool** widened to every BS-side ledger *except* Trade Payables / Receivables / Sundry Debtors / Creditors / Fixed Assets / Cash / Bank / Bank OD — walks subhead + groupParent + head so granular Tally subheads (Buildings, Furniture, Plant &amp; Machinery) still get caught.
+4. **Report** has a top Tabs: [Schedule, Reconciliation]. Schedule = 3 hero KPIs + 4 expandable cohort rows. Each cohort body carries its own [Expense-wise | Party-wise] tabs; clicking a row inline-drills to the transactions for that (bucket × ledger) OR (bucket × party) — no more pop-up Sheet.
+
+### Backend changes
+- `service.py` — replaced `compute_suggestions()`, added `_subhead_matches()` + `_fields_match()`, `ITC_SUGGEST_SUBHEADS`, `ITC_POOL_EXCLUDE_SUBHEADS`. `classify_vouchers()` now emits `by_party` alongside `by_ledger`. `compute_recon_and_filter()` rebuilds `by_party` from filtered transactions so excluded ledgers don't leak. `merge_runs_for_consolidation()` also merges `by_party`.
+- `controller.py` — new `PATCH /runs/{run_id}/selections` for incremental persistence across stepper navigation. `GET /runs/{run_id}/transactions` accepts optional `?party=` filter. `GET /runs/{run_id}` recomputes ITC/P&L suggestions on every fetch so runs uploaded before this change immediately benefit. Storage of `by_party` on the run document.
+
+### Frontend changes
+- New stepper under `pages/clause44/`:
+  - `Clause44Run.jsx` — shell with sticky top bar (stepper pills + Proceed/Back/Export), URL-driven step via `?step=itc|exclusion|report`. Legacy `/runs/:id/report` defaults to the report step.
+  - `StepItc.jsx` — single-column ITC picker with selected-chip tray + suggested badges.
+  - `StepExclusion.jsx` — single-column P&L picker.
+  - `StepReport.jsx` — schedule with hero KPIs, expand-in-place cohort rows, inline expense/party tabs + voucher drill.
+  - `LedgerList.jsx` — shared ledger-picker primitive.
+- Retired `pages/StepMapping.jsx`, `pages/StepReport.jsx`, `pages/Dashboard.jsx` (the wrappers that hosted them).
+- `lib/api.js` — added `saveSelections()` + extended `getTransactions()` with party filter.
+
+### Tests
+- Backend unit harness (inline in this run): 12 assertions across subhead matcher, ITC pool filter (pre-select only the 2 target subheads, excludes trade pay/rec/FA/cash/bank), `by_party` shape + cross-tie to `by_ledger`, `compute_recon_and_filter` rebuilds `by_party`. All GREEN.
+- `/api/runs/{id}/analytics`, `PATCH /selections`, `GET /transactions?bucket=col3&party=...` verified live against existing Velav Garments run (68 parties, 40 ledgers, drill = 3 txns for `Nmu Apparels Pvt Ltd`).
+- Frontend: five visual checkpoints captured — Step 02 ITC, Schedule top, expense-wise drill, party-wise drill, party-drill to voucher rows. All render as designed.
+
+
+
 ## Docs feedback widget — heatmap-ready (2026-05-03)
 
 ### Why

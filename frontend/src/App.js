@@ -9,7 +9,7 @@ import ProtectedRoute from "@/pages/ProtectedRoute";
 import ClientList from "@/pages/ClientList";
 import ClientUtilities from "@/pages/ClientUtilities";
 import ClientHome from "@/pages/ClientHome";
-import { MappingDashboard, ReportDashboard } from "@/pages/Dashboard";
+import Clause44Run from "@/pages/clause44/Clause44Run";
 import Consolidated from "@/pages/Consolidated";
 import AdminUsers from "@/pages/AdminUsers";
 import Msme43bhLanding from "@/pages/msme43bh/Landing";
@@ -46,8 +46,8 @@ function AppRouter() {
       <Route path="/dashboard/clients/:clientId/utilities/fixed-assets/runs/:rid" element={<ProtectedRoute><FixedAssetsLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/fin-statement" element={<ProtectedRoute><FsDesignerLanding/></ProtectedRoute>}/>
       <Route path="/dashboard/clients/:clientId/utilities/fin-statement/runs/:rid" element={<ProtectedRoute><FsRunPage/></ProtectedRoute>}/>
-      <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><MappingDashboard/></ProtectedRoute>}/>
-      <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><ReportDashboard/></ProtectedRoute>}/>
+      <Route path="/dashboard/runs/:runId" element={<ProtectedRoute><Clause44Run/></ProtectedRoute>}/>
+      <Route path="/dashboard/runs/:runId/report" element={<ProtectedRoute><Clause44Run/></ProtectedRoute>}/>
       <Route path="*" element={<Navigate to="/dashboard" replace/>}/>
     </Routes>
   );
