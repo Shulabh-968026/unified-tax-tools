@@ -90,6 +90,9 @@ export default function StepReport({ run }) {
             <TabsTrigger value="recon" className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white" data-testid="tab-recon">
               Reconciliation
             </TabsTrigger>
+            <TabsTrigger value="disclaimer" className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white" data-testid="tab-disclaimer">
+              Disclaimer
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="schedule" className="mt-6">
             <Schedule run={run}/>
@@ -107,6 +110,9 @@ export default function StepReport({ run }) {
                 }
               }}
             />
+          </TabsContent>
+          <TabsContent value="disclaimer" className="mt-6">
+            <DisclaimerEditor run={run}/>
           </TabsContent>
         </Tabs>
       </div>
@@ -480,6 +486,73 @@ function BreakupTable({ rows, kind, headerLabel, cohort, runId, fetchKey }) {
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+
+/* ─────────────────── Disclaimer editor (tab 3) ───────────────────────── */
+function DisclaimerEditor({ run }) {
+  const [text, setText] = useState(run?.disclaimer_text || "");
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveSelections(run.run_id, { disclaimer_text: text });
+      setDirty(false);
+      toast.success("Disclaimer saved — will be stamped on the next Excel export");
+    } catch {
+      toast.error("Failed to save disclaimer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = () => {
+    setText(run?.disclaimer_text || "");
+    setDirty(false);
+  };
+
+  return (
+    <div className="border border-[#E5E5E0] bg-white rounded-sm p-6 max-w-3xl" data-testid="disclaimer-editor-block">
+      <h3 className="font-heading text-lg tracking-tight">Working-paper Disclaimer</h3>
+      <p className="mt-2 text-[12.5px] text-[#52524E] leading-snug max-w-2xl">
+        Per <strong>ICAI Guidance Note Para 79.21</strong>, where the underlying books
+        don't carry complete nature-of-supply / ITC-eligibility data, the tax auditor
+        should attach a qualified disclosure.  The text below is stamped into the
+        Reconciliation sheet of every Excel export.  Edit per client, then save.
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => { setText(e.target.value); setDirty(true); }}
+        rows={10}
+        className="mt-4 w-full font-mono text-[12.5px] border border-[#D4D4D0] rounded-sm p-3 focus-visible:ring-1 focus-visible:ring-[#0F172A] focus-visible:outline-none leading-relaxed"
+        data-testid="disclaimer-textarea"
+      />
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          data-testid="disclaimer-save"
+          className="h-9 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none font-mono text-[10.5px] uppercase tracking-[0.12em] disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save disclaimer"}
+        </button>
+        {dirty && (
+          <button
+            onClick={reset}
+            data-testid="disclaimer-reset"
+            className="h-9 px-3 font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E] hover:text-[#991B1B]"
+          >
+            Discard changes
+          </button>
+        )}
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.12em] text-[#8A8A83]" data-testid="disclaimer-state">
+          {dirty ? "Unsaved edits" : "In sync"}
+        </span>
       </div>
     </div>
   );

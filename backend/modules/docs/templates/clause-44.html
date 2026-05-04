@@ -42,25 +42,25 @@
   <h2>Executive summary</h2>
   <h3>For the busy reviewer</h3>
   <p>
-    Clause 44 of Form 3CD requires every assessee under tax-audit to break up
-    its <strong>total expenditure on goods and services</strong> for the year
-    into four GST-status cohorts. The module ingests a Tally JSON export of
-    the books, classifies each ledger automatically using its parent group
-    and prior-year mapping, lets the auditor override the few exceptions, and
-    produces a single working-paper that maps 1-for-1 onto the Clause 44
-    table.
+    Clause 44 of Form 3CD requires every assessee under tax-audit to report
+    its <strong>total expenditure on goods and services</strong> for the year,
+    broken up across four GST cohorts — Exempt · Composition ·
+    Other Registered · Unregistered. This module ingests the books export
+    (JSON + ledger Excel), applies an ICAI-aligned cascade per voucher line,
+    lets the auditor tag exempt-supply purchase ledgers and pick exclusions,
+    and produces a six-sheet working paper that ties line-for-line to the
+    3CD schedule.
   </p>
   <ul>
-    <li><strong>Input</strong>&nbsp; Tally JSON export (Display &gt; Statements of Accounts &gt; Ledger Vouchers, exported as JSON).</li>
-    <li><strong>Effort</strong>&nbsp; ~10 minutes per division for a clean books-set; ~25 minutes when manual classification is required.</li>
-    <li><strong>Output</strong>&nbsp; Excel working-paper with five sheets: <em>Summary</em>, <em>Exempt</em>, <em>Non-GST</em>, <em>Composition</em>, <em>Registered</em> — each with ledger-level proofs that tie to the books.</li>
-    <li><strong>Audit assertion supported</strong>&nbsp; Completeness &amp; classification of expenditure for Clause 44 reporting.</li>
+    <li><strong>Input</strong>&nbsp; Tally-style accounting JSON (daybook + ledger masters) plus the ledger-mapping XLSX carrying the subhead classification.</li>
+    <li><strong>Effort</strong>&nbsp; 8-15 minutes per division once the auditor has done one pass through a book-set.</li>
+    <li><strong>Output</strong>&nbsp; Single Excel with six sheets: <em>Clause 44 Summary</em>, <em>Reconciliation</em> (ICAI 5-line format), <em>Col 3 · Exempt</em>, <em>Col 4 · Composition</em>, <em>Col 5 · Other Registered ITC</em>, <em>Col 7 · Unregistered</em>.</li>
+    <li><strong>Audit assertion supported</strong>&nbsp; Completeness &amp; classification of expenditure under Clause 44, aligned to ICAI Guidance Note on Tax Audit Para 79.1 – 79.21.</li>
   </ul>
-  <p style="margin-top: 14px; font-size: 13px; color: var(--muted);">
-    The remainder of this document is the click-by-click walkthrough for the
-    person doing the work — typically the articled clerk preparing the
-    schedule for partner review.
-  </p>
+  <div class="callout callout--note" style="margin-top: 14px;">
+    <span class="callout__title">What this Readme tells you honestly</span>
+    The books JSON does <strong>not</strong> carry per-voucher tax rate, nature-of-supply, Section 17(5) eligibility, bill-of-supply markers, or status-at-time-of-supply. This Readme documents exactly how the module works around those absences — and where the auditor's judgement fills the gap.
+  </div>
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -69,8 +69,8 @@
 <nav class="toc keep">
   <h4>What's inside</h4>
   <ol>
-    <li><a href="#regulatory">Regulatory primer — what Clause 44 actually asks</a></li>
-    <li><a href="#cohorts">The four cohorts, demystified</a></li>
+    <li><a href="#regulatory">Regulatory primer — Clause 44 &amp; ICAI Guidance Note</a></li>
+    <li><a href="#cohorts">The four cohorts &amp; the classification cascade</a></li>
     <li><a href="#prereq">Before you start — prerequisites</a></li>
     <li><a href="#walkthrough">Step-by-step walkthrough</a></li>
     <li><a href="#output">Reading the output workbook</a></li>
@@ -87,112 +87,123 @@
   <h2>1 · Regulatory primer</h2>
   <p>
     Clause 44 of Form 3CD was inserted by the Income-Tax (8th Amendment)
-    Rules, 2018 to capture the GST-classification breakup of every rupee
-    debited to the Profit &amp; Loss account (and capital expenditure
-    routed through purchase ledgers). The reporting requirement was kept in
-    abeyance until <strong>FY 2021-22</strong> and is now mandatory for all
-    tax-audit cases.
+    Rules, 2018. Operative from <strong>FY 2021-22</strong>, it requires a
+    detailed break-up of the assessee's total expenditure (P&amp;L debits
+    plus additions to fixed assets) by GST registration status of the
+    supplier — followed by ICAI Guidance Note on Tax Audit (Revised 2025)
+    Paragraphs 79.1 – 79.21.
   </p>
-  <p>
-    The clause requires a <em>seven-column</em> table where each row is one
-    natural head of expense and the columns split that head's total amount
-    across:
-  </p>
+  <p>The statutory table has seven columns:</p>
   <ol>
-    <li>Total expenditure&nbsp;<span class="chip">A</span></li>
-    <li>Expenditure on entities <strong>not registered</strong> under GST &mdash; further split into:
-      <ul style="margin-top: 4px;">
-        <li>Relating to goods/services <strong>exempt</strong> from GST&nbsp;<span class="chip chip--accent">B1</span></li>
-        <li>Relating to entities falling under the <strong>Composition</strong> scheme&nbsp;<span class="chip chip--accent">B2</span></li>
-        <li>Other registered entities&nbsp;<span class="chip chip--accent">B3</span></li>
-        <li>Total payments to <strong>non-registered</strong> entities&nbsp;<span class="chip chip--accent">B4</span></li>
-      </ul>
-    </li>
-    <li>Total payment to registered entities (= A − B4)</li>
+    <li><strong>Col 1</strong> · serial number (auto-assigned; always 1 for the aggregate row).</li>
+    <li><strong>Col 2</strong> · total amount of expenditure incurred during the year &mdash; includes capital additions per ICAI Para 79.18.</li>
+    <li><strong>Col 3</strong> · expenditure relating to goods or services <strong>exempt</strong> from GST.</li>
+    <li><strong>Col 4</strong> · expenditure on entities under the <strong>Composition</strong> scheme.</li>
+    <li><strong>Col 5</strong> · expenditure on <strong>other registered</strong> entities (taxable supplies under regular GST).</li>
+    <li><strong>Col 6</strong> · total expenditure on registered entities &mdash; <em>arithmetic: Col 3 + Col 4 + Col 5</em>.</li>
+    <li><strong>Col 7</strong> · expenditure on entities <strong>not registered</strong> under GST.</li>
   </ol>
+  <p>Col 2 ties back as <em>Col 2 = Col 6 + Col 7</em> after the ICAI Para 79.4 recon (see section 5).</p>
 
   <div class="callout callout--note">
-    <span class="callout__title">Auditor's note</span>
-    The four cohorts the module produces (<em>Exempt · Non-GST · Composition · Registered</em>) collapse cleanly onto the seven-column table. The Excel <em>Summary</em> sheet is laid out exactly the way the 3CD utility expects.
+    <span class="callout__title">What the books JSON does <em>not</em> carry</span>
+    Our engine reads the Tally-style accounting JSON and the ledger-mapping XLSX. These are not tax-invoice-level sources, so the following ICAI-desirable signals are absent and must be worked around (see §2):
+    <ul style="margin-top: 8px; margin-bottom: 0;">
+      <li>Per-voucher tax rate / nature-of-supply / exempt-supply classification.</li>
+      <li>Bill-of-supply vs tax-invoice markers.</li>
+      <li>Section 17(5) blocked-credit tags.</li>
+      <li>Status-of-supplier <em>at the time of supply</em> (we only have the current party master).</li>
+      <li>Inter-branch / intra-company elimination markers.</li>
+    </ul>
   </div>
   {{ section_fb('regulatory') }}
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
-   2 · THE FOUR COHORTS
+   2 · THE FOUR COHORTS + CASCADE
    ════════════════════════════════════════════════════════════════════════ #}
 <section id="cohorts">
-  <h2>2 · The four cohorts, demystified</h2>
-  <p>The module classifies every ledger into one — and only one — of these:</p>
+  <h2>2 · The four cohorts &amp; the cascade</h2>
+  <p>Clause 44's four reportable cohorts (Col 3 / Col 4 / Col 5 / Col 7) are mutually exclusive and mutually exhaustive across reportable expenditure. Below is the cascade this engine runs <strong>per expense line</strong> (not per voucher — one voucher can contribute to multiple cohorts if it has multiple expense debits):</p>
+
+  <ol style="line-height: 1.9;">
+    <li><strong>RCM voucher type</strong> (voucherTypeName == "Reverse Charge") → <strong>Col 7</strong> with an <code>is_rcm</code> flag. ICAI is silent on RCM-specific reporting; CA practice is to treat and disclose separately.</li>
+    <li><strong>Input A — auditor-tagged exempt purchase ledger</strong> → <strong>Col 3</strong>. The auditor ticks purchase ledgers whose nature is exempt-from-GST (petroleum products, alcoholic liquor for human consumption, life insurance, notified exempt services, etc.) during the wizard's Step 2.</li>
+    <li><strong>Foreign supplier / import</strong> (party <code>country</code> set and ≠ India) → <strong>Col 7</strong> with an <code>is_import</code> flag. Defensible: no Indian GSTIN on the supplier side.</li>
+    <li><strong>Composition dealer</strong> (party <code>gstRegistrationType == "composition"</code>) → <strong>Col 4</strong>.</li>
+    <li><strong>Registered (Regular) vendor</strong> with a valid GSTIN:
+      <ul style="margin-top: 6px;">
+        <li><strong>Input B — ITC inference (toggle, default ON)</strong>: if the voucher carries no ITC-ledger line, the line is presumed to be an exempt supply from a registered vendor → <strong>Col 3</strong>. This mirrors long-standing CA practice of using ITC availment as a proxy for taxability.</li>
+        <li>If the toggle is OFF or an ITC ledger <em>is</em> present → <strong>Col 5</strong>.</li>
+      </ul>
+    </li>
+    <li><strong>Everything else</strong> (URD, Consumer, blank registration, or no party linked) → <strong>Col 7</strong>.</li>
+  </ol>
+
+  <div class="callout callout--note">
+    <span class="callout__title">Why Input A wins over Input B</span>
+    An auditor-tagged exempt ledger (Input A) always routes to Col 3 for that line before Input B is even considered — so a ledger like "Petroleum Purchase" on a vendor that wasn't charging GST can never double-count into Col 3 once via Input A and again via Input B. The report surfaces the Col 3 split — "Input A ≈ ₹X · Input B ≈ ₹Y" — on the Schedule header.
+  </div>
 
   <div class="grid-2">
     <div class="cohort">
-      <div class="cohort__name">Exempt</div>
-      <h4>Goods/services exempt under GST</h4>
-      <p>Salaries, statutory dues, interest, dividend, donations, insurance premiums for life and health (specified categories), bank charges, etc. Anything covered by the GST exemption notifications.</p>
+      <div class="cohort__name">Col 3 · Exempt</div>
+      <h4>Exempt-from-GST supplies</h4>
+      <p>Driven by <strong>Input A</strong> (auditor-tagged purchase ledgers) + <strong>Input B</strong> (registered vendor + no ITC entry, if toggle ON). Two-source design: manual precision + heuristic coverage.</p>
     </div>
     <div class="cohort">
-      <div class="cohort__name">Non-GST</div>
-      <h4>Outside the GST net altogether</h4>
-      <p>Petrol &amp; diesel, electricity, alcoholic liquor for human consumption, stamp duty &amp; registration, court fees, fines &amp; penalties, foreign-supplier transactions where IGST is paid under reverse charge separately.</p>
+      <div class="cohort__name">Col 4 · Composition</div>
+      <h4>Composition-scheme dealers</h4>
+      <p>Driven purely by the party master's <code>gstRegistrationType</code>. Auditor should spot-check using bill-of-supply markers in paper invoices.</p>
     </div>
     <div class="cohort">
-      <div class="cohort__name">Composition</div>
-      <h4>Vendor under composition scheme</h4>
-      <p>Smaller suppliers (turnover ≤ ₹1.5 Cr; ≤ ₹50 L for services) who pay GST at concessional flat rates and cannot pass on input credit. Their invoices show "Composition taxable person, not eligible to collect tax on supplies".</p>
+      <div class="cohort__name">Col 5 · Other Registered</div>
+      <h4>Regular-GST registered vendors</h4>
+      <p>Party master says <code>Regular</code> and has a valid GSTIN. Default "residual taxable" bucket. ITC presence on the voucher is a <em>confirmation</em> signal only — never the gate for Col 5.</p>
     </div>
     <div class="cohort">
-      <div class="cohort__name">Registered</div>
-      <h4>Vendor with regular GSTIN</h4>
-      <p>Default cohort. Any supplier holding a regular GST registration and charging tax in the normal manner.  The module funnels everything that isn't Exempt / Non-GST / Composition into this bucket.</p>
+      <div class="cohort__name">Col 7 · Unregistered</div>
+      <h4>URD, Consumer, imports, RCM</h4>
+      <p>No GSTIN, foreign country, RCM voucher type, or blank/consumer registration all fall here. Import &amp; RCM carry separate flags for drill-down.</p>
     </div>
   </div>
 
   <figure class="keep">
-    <svg viewBox="0 0 760 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cohort waterfall">
+    <svg viewBox="0 0 780 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cohort waterfall">
       <style>
         .lab { font: 600 11px "JetBrains Mono", monospace; fill: #0B0B09; letter-spacing: .08em; text-transform: uppercase; }
         .num { font: 600 13px "Inter", sans-serif; fill: #0B0B09; }
         .sub { font: 11px "Inter", sans-serif; fill: #6B6B66; }
         .ax  { stroke: #E5E5E0; stroke-width: 1; }
       </style>
-      <line x1="40" y1="200" x2="720" y2="200" class="ax"/>
+      <line x1="40" y1="200" x2="740" y2="200" class="ax"/>
       <line x1="40" y1="40" x2="40" y2="200" class="ax"/>
 
-      <!-- Total bar -->
       <rect x="58"  y="60"  width="80" height="140" fill="#0B0B09"/>
-      <text x="98"  y="50"  class="lab" text-anchor="middle">A · Total</text>
+      <text x="98"  y="50"  class="lab" text-anchor="middle">Col 2 · Total</text>
       <text x="98"  y="225" class="num" text-anchor="middle">₹ 100</text>
 
-      <!-- Exempt -->
-      <rect x="178" y="160" width="80" height="40" fill="#10B981"/>
-      <text x="218" y="50"  class="lab" text-anchor="middle">B1 · Exempt</text>
-      <text x="218" y="225" class="num" text-anchor="middle">₹ 12</text>
+      <rect x="178" y="165" width="80" height="35" fill="#10B981"/>
+      <text x="218" y="50"  class="lab" text-anchor="middle">Col 3 · Exempt</text>
+      <text x="218" y="225" class="num" text-anchor="middle">₹ 8</text>
 
-      <!-- Composition -->
-      <rect x="298" y="180" width="80" height="20" fill="#F59E0B"/>
-      <text x="338" y="50"  class="lab" text-anchor="middle">B2 · Composition</text>
-      <text x="338" y="225" class="num" text-anchor="middle">₹ 4</text>
+      <rect x="298" y="185" width="80" height="15" fill="#F59E0B"/>
+      <text x="338" y="50"  class="lab" text-anchor="middle">Col 4 · Compo.</text>
+      <text x="338" y="225" class="num" text-anchor="middle">₹ 2</text>
 
-      <!-- Non-GST -->
-      <rect x="418" y="170" width="80" height="30" fill="#6B7280"/>
-      <text x="458" y="50"  class="lab" text-anchor="middle">Non-GST</text>
-      <text x="458" y="225" class="num" text-anchor="middle">₹ 8</text>
-      <text x="458" y="64"  class="sub" text-anchor="middle">(reported in</text>
-      <text x="458" y="76"  class="sub" text-anchor="middle">B3 / outside)</text>
+      <rect x="418" y="90" width="80" height="110" fill="#047857"/>
+      <text x="458" y="50"  class="lab" text-anchor="middle">Col 5 · Other Reg.</text>
+      <text x="458" y="225" class="num" text-anchor="middle">₹ 76</text>
 
-      <!-- Non-registered total -->
-      <rect x="538" y="120" width="80" height="80" fill="#B45309"/>
-      <text x="578" y="50"  class="lab" text-anchor="middle">B4 · Non-Reg</text>
-      <text x="578" y="225" class="num" text-anchor="middle">₹ 24</text>
-      <text x="578" y="64"  class="sub" text-anchor="middle">B1+B2+others</text>
+      <rect x="538" y="70"  width="80" height="130" fill="#065F46"/>
+      <text x="578" y="50"  class="lab" text-anchor="middle">Col 6 · 3+4+5</text>
+      <text x="578" y="225" class="num" text-anchor="middle">₹ 86</text>
 
-      <!-- Registered (A−B4) -->
-      <rect x="658" y="80"  width="80" height="120" fill="#047857"/>
-      <text x="698" y="50"  class="lab" text-anchor="middle">A − B4 · Reg</text>
-      <text x="698" y="225" class="num" text-anchor="middle">₹ 76</text>
+      <rect x="658" y="170" width="80" height="30" fill="#B45309"/>
+      <text x="698" y="50"  class="lab" text-anchor="middle">Col 7 · URD</text>
+      <text x="698" y="225" class="num" text-anchor="middle">₹ 14</text>
     </svg>
-    <figcaption>Cohort waterfall — illustrative ₹100 of expenditure</figcaption>
+    <figcaption>Illustrative ₹100 of reportable expenditure &mdash; Col 2 = Col 6 + Col 7</figcaption>
   </figure>
   {{ section_fb('cohorts') }}
 </section>
@@ -240,12 +251,12 @@
   <div class="step step--accent">
     <div class="step__num">1</div>
     <div class="step__body">
-      <h3>Pick the client &amp; create a run</h3>
-      <p>From <strong>All Clients</strong>, open the client (e.g. <em>ABC Textile Mills</em>) → <strong>Utilities</strong> → click the <em>Clause 44 Schedule</em> card.</p>
-      <p>You land on the <strong>Choose Period</strong> screen. Select the FY (defaults to the prior year), choose a division if the client is multi-division, and click <em>Start a new run</em>.</p>
-      <div class="callout callout--note">
-        <span class="callout__title">What happens under the hood</span>
-        A run is just a workspace tied to (client × period × division). You can keep multiple runs against the same period — useful when you want to A/B compare classifications or revisit after audit-team feedback.
+      <h3>Pick the client &amp; start a run</h3>
+      <p>From <strong>All Clients</strong>, open the client (e.g. <em>ABC Textile Mills</em>) → <strong>Utilities</strong> → <em>Clause 44</em>.</p>
+      <p>You land on the <strong>Choose Period</strong> screen. Pick the FY, choose a division if the client is multi-division, and click <em>Start Run</em>. Upload both files: the books JSON and the ledger-mapping XLSX.</p>
+      <div class="callout callout--warn">
+        <span class="callout__title">Upload-guard</span>
+        The engine compares the JSON's <code>companyName</code> against the client file using a fuzzy match (token-set / token-sort, ≥ 80 after stripping "P Ltd", "Private Limited", "&amp; Co." etc.). A clear mismatch aborts the upload — you cannot accidentally land ABC Textile Mills books inside the Velav Garments file.
       </div>
     </div>
   </div>
@@ -253,75 +264,55 @@
   <div class="step">
     <div class="step__num">2</div>
     <div class="step__body">
-      <h3>Upload the Tally JSON</h3>
-      <p>The upload step accepts a single <code>.json</code> file. Drag-drop or click to browse. Files up to ~100 MB are supported (typical exports run 5-25 MB).</p>
-      <p>The system reads the file in the browser, ships a parsed payload to the server, and persists it against the run. You'll see a parse confirmation toast and the row count at the bottom of the panel.</p>
-      <div class="callout callout--warn">
-        <span class="callout__title">If the upload fails</span>
-        99% of upload failures are caused by the JSON being exported with <em>Show profit = Yes</em>. Re-export with profit/inventory toggles set to No, and try again. The other 1% is browsers blocking large clipboard pastes — drag-drop the file instead.
-      </div>
+      <h3>Special Ledgers — two tabs</h3>
+      <p>Step 2 in the wizard houses two tabs and one critical toggle.</p>
+      <h4>Tab A · Exempt Purchases (Input A)</h4>
+      <p>Scroll your P&amp;L ledger list; tick the ones whose underlying supplies are <strong>exempt from GST by nature</strong> — typical examples: Petroleum Purchase, Alcohol Stock, Life Insurance Premium, specified agricultural produce, notified exempt services. Any voucher line hitting these ledgers goes to <strong>Col 3</strong>, overriding every other rule.</p>
+      <h4>Tab B · ITC Ledgers (Input B)</h4>
+      <p>Same BS-side picker as the old behaviour. Pre-ticked: ledgers whose <em>Map to Subhead</em> is <em>Balance with Revenue Authorities</em> or <em>Statutory Dues Payable</em>. You can search, add, or remove.</p>
+      <h4>The "Use ITC inference for Col 3" toggle (default ON)</h4>
+      <ul>
+        <li><strong>ON</strong> — a voucher from a Regular-registered vendor that carries <em>no</em> ITC-ledger entry is presumed an exempt supply and routes to Col 3 (Input B). Reflects long-standing CA practice.</li>
+        <li><strong>OFF</strong> — only Input A drives Col 3. All Regular vendors default to Col 5 — the strict ICAI Para 79.13 reading.</li>
+      </ul>
+      <p>Whichever mode you chose is recorded in the working-paper disclaimer.</p>
     </div>
   </div>
 
   <div class="step">
     <div class="step__num">3</div>
     <div class="step__body">
-      <h3>Review the auto-mapping</h3>
-      <p>After upload you land on the <strong>Mapping</strong> screen. Two side-by-side columns:</p>
-      <table class="t">
-        <thead><tr><th>Column</th><th>What it shows</th><th>Default state</th></tr></thead>
-        <tbody>
-          <tr><td><strong>Suggested expense ledgers</strong></td><td>Every ledger the engine considers a P&amp;L expense based on parent-group (Indirect Expenses, Direct Expenses, Purchase Accounts, etc.).</td><td>All checked</td></tr>
-          <tr><td><strong>Excluded ledgers</strong></td><td>Asset / liability / income ledgers that won't appear in the schedule.</td><td>All un-checked</td></tr>
-        </tbody>
-      </table>
-      <p>You can:</p>
-      <ul>
-        <li>Tick a ledger in the right column to <strong>include</strong> it (e.g. a "Repairs - Capital" ledger that the previous CA had treated as expense).</li>
-        <li>Un-tick a ledger in the left column to <strong>exclude</strong> it (e.g. an inter-branch transfer).</li>
-        <li>Use the search bar to jump to a specific ledger by name or parent group.</li>
-        <li>Click <em>Select Suggested</em> / <em>Clear</em> to reset bulk state.</li>
-      </ul>
-
-      <div class="callout callout--tip">
-        <span class="callout__title">Pro tip — ride the prior-year mapping</span>
-        If the same client was processed last year, the module remembers your overrides and applies them automatically. You'll see a small <em>"recalled from FY 2023-24"</em> badge on each ledger that picked up a prior-year decision.
-      </div>
+      <h3>Exclusions</h3>
+      <p>Step 3 is the P&amp;L exclusion picker — tick any ledger that should be excluded from Clause 44 reporting. The engine pre-ticks keyword-matched suggestions (<em>Wages, Salary, Interest, PF/ESI, Provident Fund, etc.</em>) but you are the final authority.</p>
+      <p>Fixed-asset / capex ledgers are <strong>not</strong> pre-ticked — ICAI Para 79.18 requires capex to flow into Col 2. The recon sheet (next step) shows capex as an explicit add-back for transparency.</p>
     </div>
   </div>
 
   <div class="step">
     <div class="step__num">4</div>
     <div class="step__body">
-      <h3>Generate the schedule</h3>
-      <p>Click <em>Generate Run</em> at the bottom of the mapping screen. The engine:</p>
+      <h3>Generate &amp; review</h3>
+      <p>Click <em>Generate Report</em>. The engine:</p>
       <ol>
-        <li>Aggregates voucher-level debits/credits per ledger for the chosen period.</li>
-        <li>Routes each ledger to one of the four cohorts using a 200+ rule rule-set (parent-group keywords, vendor-name patterns, GST treatment hints, prior-year mapping).</li>
-        <li>Computes the four totals + the "Total non-registered" subtotal.</li>
-        <li>Persists the result and routes you to the <strong>Report</strong> screen.</li>
+        <li>Walks every voucher; for each expense line runs the 6-step cascade from §2.</li>
+        <li>Aggregates by ledger (expense-head view) and by party (vendor view).</li>
+        <li>Builds the <strong>ICAI 5-line reconciliation</strong> (P&amp;L total + capex &minus; non-cash &minus; Sch III &minus; money/securities &minus; other = Col 2).</li>
+        <li>Auto-categorises excluded ledgers into the 4 ICAI recon buckets (override on the Recon tab via per-line dropdown).</li>
       </ol>
-      <p>For a typical clean books-set with 800-1500 ledgers this takes 4-7 seconds.</p>
+      <p>Typical runtime: 1–3 seconds for a 1,000–2,000 voucher book-set.</p>
     </div>
   </div>
 
   <div class="step">
     <div class="step__num">5</div>
     <div class="step__body">
-      <h3>Resolve exceptions</h3>
-      <p>The Report screen highlights any ledger the classifier couldn't decide with high confidence — typically 5-30 rows out of a 1000-ledger book. They appear in the <em>Exceptions</em> drawer at the top. Each row shows:</p>
+      <h3>Review the Report</h3>
+      <p>Three tabs:</p>
       <ul>
-        <li>Ledger name &amp; parent group</li>
-        <li>The classifier's <em>tentative</em> cohort</li>
-        <li>The reasoning trace (which rules fired, prior-year decision if any)</li>
-        <li>A four-radio "override" picker — Exempt / Non-GST / Composition / Registered</li>
+        <li><strong>Schedule</strong> — KPI strip, six-column per-ledger pivot, and 4 cohort drill-downs (each with Expense-wise &amp; Party-wise views). A header chip shows the Col 3 split (Input A vs B), RCM voucher count, and imports total at a glance.</li>
+        <li><strong>Reconciliation</strong> — ICAI 5-line format. Every excluded ledger carries an auto-detected bucket + per-line override dropdown.</li>
+        <li><strong>Disclaimer</strong> — free-text editor seeded with the default Para 79.21 boilerplate. Edit per client; the final text is stamped onto the Excel reconciliation sheet on every export.</li>
       </ul>
-      <p>Resolve every exception. The summary recomputes live as you click. Once the drawer is empty, the schedule is reviewable.</p>
-
-      <div class="callout callout--pitfall">
-        <span class="callout__title">Pitfall — bank charges</span>
-        Bank charges and processing fees are <strong>Exempt</strong> (Notification 12/2017-CT(R) entry 27). The classifier sometimes nudges them to <em>Registered</em> when the bank ledger is named like a vendor (e.g. "HDFC Bank Charges A/c"). Override these to Exempt — the workpaper auto-recomputes the cohort totals.
-      </div>
     </div>
   </div>
 
@@ -329,8 +320,7 @@
     <div class="step__num">6</div>
     <div class="step__body">
       <h3>Download the working paper</h3>
-      <p>Top-right of the Report screen, click <em>Export Excel</em>. You get a single <code>.xlsx</code> with five sheets — described in detail in the next section.</p>
-      <p>If you also want a single-page PDF for the audit file, use the <em>Print Schedule (PDF)</em> action on the same toolbar. The PDF carries the firm header and is signed-off-ready.</p>
+      <p>Top-right of the Report screen, click <em>Export Excel</em>. You get a six-sheet workbook described in the next section. Every sheet carries frozen headers + auto-filters for pivot-ready use.</p>
     </div>
   </div>
   {{ section_fb('walkthrough') }}
@@ -344,25 +334,19 @@
   <table class="t">
     <thead><tr><th>Sheet</th><th>Contents</th><th>Tie to 3CD</th></tr></thead>
     <tbody>
-      <tr><td><strong>Summary</strong></td><td>The 4-cohort total + B4 + Registered total. Lays out exactly the way the 3CD utility expects to receive it.</td><td>Direct copy-paste into the Clause 44 table.</td></tr>
-      <tr><td><strong>Exempt</strong></td><td>Every ledger in the Exempt cohort with parent group, debit/credit, net, and the override flag if any.</td><td>Backing for column B1.</td></tr>
-      <tr><td><strong>Non-GST</strong></td><td>Petrol/diesel/electricity/stamp duty etc. with the same shape.</td><td>Backing for the "outside GST" disclosure.</td></tr>
-      <tr><td><strong>Composition</strong></td><td>Vendor-level breakup — usually small.</td><td>Backing for column B2.</td></tr>
-      <tr><td><strong>Registered</strong></td><td>The largest sheet. Every regular-GST vendor ledger.</td><td>Backing for "Total registered" = A − B4.</td></tr>
+      <tr><td><strong>Clause 44 Summary</strong></td><td>Aggregate row + per-ledger six-column pivot (Col 2 / Col 3 / Col 4 / Col 5 / Col 6 / Col 7). Frozen header for easy scrolling.</td><td>Direct copy-paste into the 3CD table.</td></tr>
+      <tr><td><strong>Reconciliation</strong></td><td>ICAI Para 79.4 five-line recon: P&amp;L total + capex additions &minus; non-cash charges &minus; Schedule III items &minus; money / securities &minus; other exclusions = Reportable Col 2. Ends with the editable disclaimer text.</td><td>Working-paper proof that Col 2 reconciles to books.</td></tr>
+      <tr><td><strong>Col 3 · Exempt</strong></td><td>Every voucher classified as Col 3, with date, voucher number, division (if multi), ledger, party, GSTIN, country, <strong>RCM</strong> flag, <strong>Amount</strong>, <strong>Value Eligible for ITC</strong>, <strong>Reason / Notes</strong>, and a blank <strong>Auditor Remarks</strong> column (per ICAI Para 79.20).</td><td>Backing for Col 3.</td></tr>
+      <tr><td><strong>Col 4 · Composition</strong></td><td>Same column set, filtered to Composition vouchers.</td><td>Backing for Col 4.</td></tr>
+      <tr><td><strong>Col 5 · Other Reg ITC</strong></td><td>Same column set, usually the largest sheet.</td><td>Backing for Col 5 / Col 6.</td></tr>
+      <tr><td><strong>Col 7 · Unregistered</strong></td><td>URD vouchers, imports (<em>is_import</em>), and RCM vouchers (<em>is_rcm</em>) — all flagged in the RCM / Country columns.</td><td>Backing for Col 7.</td></tr>
     </tbody>
   </table>
 
-  <h3>What the Summary sheet looks like</h3>
-  <p>Five columns, one row per natural head. The column headers exactly match 3CD column letters:</p>
-  <table class="t">
-    <thead><tr><th>Head of expense</th><th>Total (A)</th><th>Exempt (B1)</th><th>Composition (B2)</th><th>Other registered (B3)</th><th>Non-registered (B4)</th><th>Registered (A − B4)</th></tr></thead>
-    <tbody>
-      <tr><td>Purchase of raw material</td><td>4,12,68,000</td><td>—</td><td>2,18,000</td><td>4,08,12,000</td><td>2,38,000</td><td>4,10,30,000</td></tr>
-      <tr><td>Power &amp; fuel</td><td>1,82,40,000</td><td>—</td><td>—</td><td>—</td><td>1,82,40,000</td><td>—</td></tr>
-      <tr><td>Salaries &amp; wages</td><td>2,11,06,500</td><td>2,11,06,500</td><td>—</td><td>—</td><td>2,11,06,500</td><td>—</td></tr>
-      <tr><td><em>… and so on …</em></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
-    </tbody>
-  </table>
+  <div class="callout callout--note">
+    <span class="callout__title">Value Eligible for ITC — how we compute it</span>
+    Per ICAI Para 79.20 the auditor is expected to call out ITC-eligible value separately. The engine flags a line as ITC-eligible when: (a) a tagged ITC-input ledger appears on the same voucher, AND (b) the voucher is not of type "Reverse Charge", AND (c) the line is not Input-A-sourced (exempt-tagged). Everything else shows zero in that column.
+  </div>
   {{ section_fb('output') }}
 </section>
 
@@ -372,26 +356,29 @@
 <section id="edge" class="page-break">
   <h2>6 · Edge cases &amp; common pitfalls</h2>
 
-  <h3>6.1 Capital expenditure routed through revenue ledgers</h3>
-  <p>Sometimes a fixed-asset purchase finds its way into a "Repairs &amp; Maintenance" ledger. Clause 44 only asks about expenditure debited to P&amp;L — capital additions should ride the Fixed Assets schedule, not Clause 44. Use the <em>Exclude</em> ticking on the Mapping screen to remove these entries.</p>
+  <h3>6.1 Capital expenditure</h3>
+  <p>ICAI Para 79.18 requires capex to appear in Cols 2 &amp; 5/7 — the engine flows FA-group ledgers into the expenditure pool by default. The recon tab shows "<em>+ Capex additions</em>" as an explicit line for transparency. If you want to exclude capex contrary to ICAI, manually tick the FA ledger on the Exclusions step and override its recon bucket to <em>Capex add-back</em>.</p>
 
-  <h3>6.2 Reimbursements &amp; recoveries</h3>
-  <p>Reimbursement of travel, telephone, etc. recovered from group companies is <strong>not</strong> "expenditure on goods/services". Exclude such ledgers via the override. The work-paper carries a <em>Notes</em> column where you should record the basis ("Reimbursed by ABC Holdings").</p>
+  <h3>6.2 Reverse Charge (RCM) vouchers</h3>
+  <p>Vouchers with <code>voucherTypeName == "Reverse Charge"</code> are auto-bucketed to <strong>Col 7</strong> regardless of vendor status. They carry an <code>is_rcm</code> flag visible in the Excel RCM column and as a chip on the Schedule header. If your firm's policy requires RCM vouchers to follow vendor status instead, uncheck the toggle and classify manually (future releases will expose a firm-wide preference).</p>
 
-  <h3>6.3 RCM payments</h3>
-  <p>GST paid under reverse-charge by the assessee on services from unregistered/foreign vendors is itself <strong>Non-GST</strong> from the vendor's standpoint — the vendor's ledger goes to <em>Non-Registered</em> (B3) and the GST-RCM ledger goes to <em>Exempt</em>. The classifier handles this automatically when it finds an RCM tag.</p>
+  <h3>6.3 Foreign suppliers / imports</h3>
+  <p>Any ledger whose <code>country</code> field is set and not "India" routes to <strong>Col 7</strong> (no Indian GSTIN). The reason column records the country. This is the defensible ICAI position for foreign suppliers; note that IGST paid at customs sits in a separate expenditure head (not auto-classified as import).</p>
 
-  <h3>6.4 Foreign-currency vendors</h3>
-  <p>Imports paid via LC: cohort = <em>Non-Registered</em>. The bank charges &amp; LC commission ledgers go separately to <em>Exempt</em> as bank-related services.</p>
+  <h3>6.4 Salaries, PF, ESI, gratuity (Schedule III)</h3>
+  <p>These are <strong>not expenditure under Clause 44</strong> per ICAI Para 79.2 — they're excluded via the Exclusions step and auto-categorised to the Schedule III bucket in the recon. The engine's suggestion engine pre-ticks them.</p>
 
-  <h3>6.5 Salaries vs Director Remuneration</h3>
-  <p>Both go to <em>Exempt</em> — services rendered by an employee/director to their employer are out of GST scope (Schedule III). The classifier keys on the parent group "Salaries", "Director Remuneration", "Wages".</p>
+  <h3>6.5 Depreciation &amp; provisions</h3>
+  <p>Non-cash charges. Excluded on the Exclusions step; auto-categorised to the Non-cash bucket in the recon.</p>
 
-  <h3>6.6 Donations under CSR</h3>
-  <p>If donated <em>in kind</em> via purchase, the original purchase ledger's cohort applies. If a cash donation, cohort = <em>Exempt</em>.</p>
+  <h3>6.6 Interest, TDS, investments</h3>
+  <p>Money / securities transactions are not a "supply" under GST — excluded via the Exclusions step and auto-categorised to the Money bucket in the recon.</p>
 
-  <h3>6.7 What about deferred items routed via prepaid?</h3>
-  <p>Annual maintenance contracts, insurance premia, etc. that you know are routed via "Prepaid Expenses" — only the period-amortised portion is in the P&amp;L. The classifier picks up only the P&amp;L hit. The prepaid balance sheet movement is out of scope.</p>
+  <h3>6.7 Composition vendors with no marker</h3>
+  <p>The engine relies on <code>gstRegistrationType == "composition"</code> in the party master. If the client accountant didn't maintain this field, Composition vendors leak into Col 5 (Registered). Mitigation: use the expense-wise drill-down, identify such vendors by bill-of-supply inspection, and tag the party ledger manually in Tally before re-exporting.</p>
+
+  <h3>6.8 Status at time of supply</h3>
+  <p>ICAI Para 79.17 implies the supplier's status <em>at the time of supply</em> is what matters. Our engine only has the current party-master state. If a supplier's GSTIN was active during the supply but has since been cancelled, you would see them as URD today — override via the Exclusions step if material.</p>
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -401,28 +388,28 @@
   <h2>7 · Frequently asked questions</h2>
 
   <h3>How accurate is the auto-classification?</h3>
-  <p>Across our test pool of 30+ tax-audit clients (mid-cap manufacturing, services, trading), the classifier hits 92-97% accuracy on first pass. The remaining 3-8% surface as Exceptions — which is by design. <em>The auditor — not the engine — bears Clause 44 responsibility.</em></p>
+  <p>The engine is deterministic, not probabilistic — there is no ML model. Classification accuracy is a function of <em>(a)</em> how cleanly the client's party master is maintained (GSTIN + gstRegistrationType fields populated), and <em>(b)</em> how carefully the auditor uses Inputs A &amp; B at Step 2. A book-set with a complete party master and the auditor tagging 5-15 exempt-supply purchase ledgers typically needs zero overrides.</p>
 
-  <h3>Can I reuse a run from last year?</h3>
-  <p>Yes. The mapping screen carries a "Recall FY 2023-24 mapping" toggle. When on, every prior-year override re-applies before you even see the screen.</p>
+  <h3>Can I reuse overrides from last year?</h3>
+  <p>Per-run. Tagged ITC ledgers and exclusion ticks sit on the run document and can be copied forward via "Start a new run" on the same client in a future period — a future release will add an explicit "Recall last year's mapping" button.</p>
 
   <h3>What if Tally has been migrated mid-year?</h3>
-  <p>Export each segment (Apr-Aug from old company, Sep-Mar from new) as separate JSONs and create two runs in the same period. Combine the Summary sheets manually — they're additive.</p>
+  <p>Export each segment (Apr-Aug from old company, Sep-Mar from new) as separate JSONs and create two runs under the same period with different divisions. The Consolidated view (Report header action) merges them additively.</p>
 
   <h3>Does the module support Zoho/Busy/SAP?</h3>
-  <p>Today only Tally JSON is supported natively. For Zoho Books / Busy, export the trial-balance and ledger-by-ledger CSV; we have a CSV adapter in beta — write to <a href="mailto:{{ support_email }}">{{ support_email }}</a> if you'd like access.</p>
+  <p>Today only Tally-style JSON is supported natively. Other sources need a pre-processing adapter — write to <a href="mailto:{{ support_email }}">{{ support_email }}</a> with your format sample.</p>
 
   <h3>Does it leak data?</h3>
-  <p>No. The Tally JSON is parsed and stored against your tenant DB. The classifier rules are local. No call goes to any external LLM unless you explicitly use the OCR-attach feature in Fixed Assets — which is different and uses Gemini Vision under your Emergent LLM key.</p>
+  <p>No. The books JSON is parsed and stored against your tenant DB. The classification rules are local. No call goes to any external LLM unless you explicitly use the OCR-attach feature in Fixed Assets — that's a different module and uses Gemini Vision under your Emergent LLM key.</p>
 
   <h3>What happens when I delete a run?</h3>
-  <p>The run, its ledger mappings, and the Excel cache are all removed. The Tally JSON is also deleted. Audit-trail entries (who deleted, when) survive in the admin log.</p>
+  <p>The run, its selections, and the generated artefacts are all removed. Audit-trail entries (who deleted, when) survive in the admin log.</p>
 
   <h3>Can two articled clerks work on the same run simultaneously?</h3>
-  <p>Yes — the Mapping and Report screens are real-time and collaborative. The exceptions drawer locks each row to whoever is editing it for 30 seconds.</p>
+  <p>Yes, with caveats. The step saves are idempotent — the last saver wins per field (ITC list, exempt list, exclusions). Coordinate across the bench.</p>
 
-  <h3>Where do I report a wrong classification?</h3>
-  <p>Use the <em>Suggest correction</em> button on the Mapping screen. Your override + reasoning ships to the AssureAI rules team and improves the next release for everyone.</p>
+  <h3>What if the books JSON mis-tags a Composition vendor as Regular?</h3>
+  <p>The engine trusts the party master. Mitigation: use the Report screen's Party-wise drill-down, identify the mis-tagged vendor, correct in Tally, re-export, re-generate. No inline party-master override exists in the utility today.</p>
   {{ section_fb('faq') }}
 </section>
 
@@ -439,25 +426,34 @@
     <dd>The clause inside 3CD that captures the GST-status breakup of total expenditure.</dd>
 
     <dt>Cohort</dt>
-    <dd>Our internal name for one of the four mutually-exclusive classification buckets.</dd>
+    <dd>Our internal name for one of the four mutually-exclusive Clause 44 classification buckets: Col 3 (Exempt), Col 4 (Composition), Col 5 (Other Registered), Col 7 (Unregistered).</dd>
 
     <dt>Composition scheme</dt>
     <dd>A simplified GST regime for small suppliers (turnover ≤ ₹1.5 Cr; ≤ ₹50 L for services). Composition vendors charge concessional flat rates and cannot pass on input credit.</dd>
 
     <dt>Exempt supply</dt>
-    <dd>Supply that is exempt from GST — explicitly notified as nil-rated, exempted, or non-taxable.</dd>
+    <dd>Supply that is exempt from GST — explicitly notified as nil-rated, exempted, or non-taxable. In this module driven by Input A (auditor tag) or Input B (ITC inference).</dd>
 
-    <dt>Non-GST</dt>
-    <dd>Goods/services kept outside the GST net altogether (petrol, diesel, electricity, alcohol for human consumption, stamp duty, court fees).</dd>
+    <dt>Input A</dt>
+    <dd>Auditor-tagged exempt-supply purchase ledgers. Any voucher line on these ledgers routes to Col 3 first, overriding every other rule in the cascade. Always wins over Input B — no double-count.</dd>
+
+    <dt>Input B (ITC inference)</dt>
+    <dd>Rule that routes a Regular-registered vendor's voucher with no ITC-ledger entry to Col 3 as a presumed exempt supply. Controlled by the toggle on Step 2, default ON.</dd>
 
     <dt>Parent group</dt>
     <dd>The Tally classification ladder above an individual ledger — e.g. <em>Indirect Expenses</em> &gt; <em>Selling &amp; Distribution</em>.</dd>
 
+    <dt>Reconciliation (ICAI Para 79.4)</dt>
+    <dd>The 5-line working-paper that ties books to Clause 44: P&amp;L total + capex additions &minus; non-cash charges &minus; Schedule III items &minus; money/securities transactions &minus; other auditor exclusions = Reportable Col 2.</dd>
+
     <dt>Run</dt>
-    <dd>A workspace tied to (client × period × division). Holds the upload, mapping decisions and the generated workpaper.</dd>
+    <dd>A workspace tied to (client × period × division). Holds the uploaded books JSON + ledger XLSX, classification selections, and the generated working paper.</dd>
 
     <dt>RCM</dt>
-    <dd>Reverse-charge mechanism — GST liability sits on the recipient instead of the supplier, typically for legal/manpower services and imports.</dd>
+    <dd>Reverse-charge mechanism — GST liability on the recipient instead of the supplier. Voucher-type "Reverse Charge" auto-bucketed to Col 7 with an <code>is_rcm</code> flag.</dd>
+
+    <dt>Disclaimer (Para 79.21)</dt>
+    <dd>The ICAI-prescribed qualified note the auditor attaches when classification relies on incomplete data. Editable per-run via Report &gt; Disclaimer tab; stamped into the Excel Reconciliation sheet.</dd>
   </dl>
   {{ section_fb('glossary') }}
 </section>

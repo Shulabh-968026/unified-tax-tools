@@ -197,35 +197,66 @@ def _write_cohort_sheet(wb, sheet_name: str, long_label: str, txns: List[Dict[st
     ws = wb.create_sheet(sheet_name)
     ws["A1"] = f"{long_label} — Transaction Breakup"
     ws["A1"].font = TITLE_FONT
-    ws.merge_cells("A1:I1")
+    ws.merge_cells("A1:L1")
 
     has_division = any(t.get("division_name") for t in txns)
+    # ICAI Para 79.20 illustrative working-paper columns:
+    #   Date | Voucher Type | Voucher No | [Division] | Ledger | Party |
+    #   Party GSTIN | Party Reg | Country | RCM | Amount |
+    #   Value Eligible for ITC | Reason for NIL GST / Notes | Auditor Remarks
     headers = ["Date", "Voucher Type", "Voucher No"]
     if has_division:
         headers.append("Division")
-    headers += ["Ledger", "Party", "Party GSTIN", "Party Reg.", "Amount", "Reason"]
+    headers += [
+        "Ledger", "Party", "Party GSTIN", "Party Reg.", "Country",
+        "RCM", "Amount", "Value Eligible for ITC",
+        "Reason for NIL GST / Classification Notes", "Auditor Remarks",
+    ]
 
     ws.append([])
     ws.append(headers)
     header_row = ws.max_row
     _style_header_row(ws, header_row, len(headers))
 
-    amount_col = 9 if has_division else 8
+    # Dynamically compute column indices so division-injection doesn't break them.
+    idx = {h: i + 1 for i, h in enumerate(headers)}
+    amount_col = idx["Amount"]
+    itc_col = idx["Value Eligible for ITC"]
+
     total = 0.0
+    total_itc = 0.0
     for t in txns:
         row = [t.get("date", ""), t.get("voucher_type", ""), t.get("voucher_number", "")]
         if has_division:
             row.append(t.get("division_name", "—"))
         amt = float(t.get("amount") or 0)
         total += amt
+        # Per Para 79.20 "Value eligible for ITC": amount only if a proper ITC-
+        # ledger entry sat on the voucher AND the voucher isn't RCM AND the
+        # line isn't an exempt-tagged Input A contribution.  The engine
+        # already stores these flags on each line.
+        itc_eligible = 0.0
+        if t.get("has_itc_ledger") and not t.get("is_rcm") and t.get("col3_source") != "input_a":
+            itc_eligible = amt
+        total_itc += itc_eligible
         row += [
-            t.get("ledger_name", ""), t.get("party_name", ""), t.get("party_gstin", ""),
-            t.get("party_reg", ""), amt, t.get("reason", ""),
+            t.get("ledger_name", ""),
+            t.get("party_name", ""),
+            t.get("party_gstin", ""),
+            t.get("party_reg", ""),
+            t.get("party_country", ""),
+            "Yes" if t.get("is_rcm") else "",
+            amt,
+            itc_eligible,
+            t.get("reason", ""),
+            "",  # blank column for the auditor to note remarks
         ]
         ws.append(row)
 
     if txns:
-        footer = ["Total"] + [""] * (amount_col - 2) + [total] + [""] * (len(headers) - amount_col)
+        footer = ["Total"] + [""] * (len(headers) - 1)
+        footer[amount_col - 1] = total
+        footer[itc_col - 1] = total_itc
         ws.append(footer)
         last_row = ws.max_row
         for col in range(1, len(headers) + 1):
@@ -236,16 +267,18 @@ def _write_cohort_sheet(wb, sheet_name: str, long_label: str, txns: List[Dict[st
     else:
         ws.append(["— No vouchers classified into this cohort —"])
 
+    # Column widths — keep the meta columns tight, the narratives wide.
     base_widths = [12, 14, 14]
     if has_division:
         base_widths.append(16)
-    base_widths += [28, 28, 18, 14, 16, 60]
-    for i, w in enumerate(base_widths, 1):
+    base_widths += [28, 28, 18, 14, 14, 8, 16, 18, 60, 28]
+    for i, w in enumerate(base_widths[:len(headers)], 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
-    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[amount_col])
+    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[amount_col, itc_col])
 
-    # Freeze the header row so auditors can pivot comfortably.
+    # Freeze header row + auto-filter (pivot-friendly out of the box).
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    ws.auto_filter.ref = f"{ws.cell(row=header_row, column=1).coordinate}:{ws.cell(row=header_row, column=len(headers)).coordinate}"
 
 
 def build_export_response(run: Dict[str, Any], fname_prefix: str):

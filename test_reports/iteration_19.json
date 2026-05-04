@@ -1,0 +1,64 @@
+{
+  "summary": "Backend-only validation of Clause 44 Release 2 (Slices 2/4/5/6) against ABC Textile Mills run (run_8d427d1f97e0) on the preview environment. All 14 NEW live-API tests in test_clause44_release2_live.py pass, plus all 7 unit tests in test_clause44_release2.py. Combined Release 1 + Release 2 + iteration patch suite: 69/69 passed. The 5 failures + 13 errors observed in the broader sweep are PRE-EXISTING stale tests in test_clause44_backend.py (hardcoded stale preview URL form3cd-pro.preview.emergentagent.com which 404s) and a test-seed-hygiene issue in test_docs.py::test_idempotent_upsert_on_resubmit (pre-existing data, not caused by R2). All Release 2 acceptance criteria verified end-to-end over HTTP.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "test suite test_clause44_backend.py", "issue": "Uses hardcoded stale base_url 'form3cd-pro.preview.emergentagent.com' instead of REACT_APP_BACKEND_URL — all 4 TestAuth tests + 13 dependent tests fail/error against current preview. PRE-EXISTING from earlier iterations, not related to Release 2."},
+      {"endpoint": "test_docs.py::test_idempotent_upsert_on_resubmit", "issue": "Asserts first_time=True for section_id 'idempotent_test' but DB already has prior feedback row → returns first_time=False. Test should use a unique section_id per run. PRE-EXISTING."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "release2_live_pytest": "14/14 passed (test_clause44_release2_live.py)",
+    "release2_unit_pytest": "7/7 passed (test_clause44_release2.py)",
+    "combined_clause44_suite": "69/69 (release1 unit + release1 live + release2 unit + release2 live + iteration patch)",
+    "cohort_sheets_para_79_20_columns": "All 4 cohort sheets (Col 3 / Col 4 / Col 5 / Col 7) carry the new headers RCM, Country, Value Eligible for ITC, Auditor Remarks (verified via openpyxl on the live workbook).",
+    "cohort_sheets_auto_filter": "auto_filter.ref set on every cohort sheet (Col 3/4/5/7).",
+    "value_eligible_for_itc_logic": "Excludes RCM rows (=0 even when has_itc_ledger=True) and Input A rows (col3_source=='input_a' → 0). Verified by unit test using a hand-crafted run.",
+    "rcm_column_yes_only_for_rcm": "Yes only on is_rcm=True rows; blank for imports. Verified via unit test.",
+    "foreign_supplier_reason_country_enrichment": "service._classify_single_line includes country.title() in reason for imports — unit test asserts 'Usa' & 'AWS Inc' & 'import' all in reason.",
+    "disclaimer_round_trip": "PATCH /selections {disclaimer_text: 'Round-trip disclaimer 2026-iter19.'} → GET shows the new text → /export Reconciliation sheet contains the exact same string. Custom-text round-trip test PASSED. Default-text round-trip test PASSED.",
+    "disclaimer_block_label": "Reconciliation sheet contains the literal cell value 'Disclaimer' as the block header.",
+    "docs_html_old_claims_removed": "/api/docs/clause-44 HTML does NOT contain 'Non-GST', '200+ rule', '92-97% accuracy', 'Exceptions drawer', or 'Suggest correction button' (case-insensitive).",
+    "docs_html_required_phrases": "HTML contains all of: ICAI, Para 79.4, Para 79.18, Para 79.20, Para 79.21, Input A, Input B, Reverse Charge, and 'six-sheet' or 'six sheets'.",
+    "docs_pdf_renders": "/api/docs/clause-44.pdf returns a real PDF (%PDF- prefix). pypdf-extracted text contains all required phrases AND none of the old false claims.",
+    "regression_six_sheets": "Workbook still has exactly 6 sheets.",
+    "regression_recon_arithmetic": "pl_total + capex - non_cash - sch3 - money - other == reportable_total == summary.col2_total (8,072,786.27).",
+    "regression_cascade_rcm_in_col7": "summary.rcm_total > 0 (1,178,357.83) across 91 RCM vouchers — all routed to Col 7. import_total == 0 (no foreign parties — expected for this dataset).",
+    "regression_input_a_de_dup": "summary.col3 == col3_from_input_a + col3_from_input_b on every generate.",
+    "regression_company_name_guard": "company_name = 'ABC Textile Mills' (non-empty, non-'Unknown', length >= 3).",
+    "regression_no_test_client_leak": "GET /api/clients returns exactly the 3 original clients (Velav Garments India P Limited, Allman Knitwear, ABC Textile Mills) — no TEST_-prefixed leakage."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_clause44_release2_live.py",
+    "/app/backend/tests/test_clause44_release2.py",
+    "/app/test_reports/pytest/iteration_19_live.xml",
+    "/app/test_reports/pytest/iteration_19.xml"
+  ],
+  "action_items": [
+    "(Optional / minor, not Release 2 scope) Update /app/backend/tests/test_clause44_backend.py to read base_url from os.environ['REACT_APP_BACKEND_URL'] instead of hardcoding 'form3cd-pro.preview.emergentagent.com', or delete the file if it's superseded by test_clause44_release1_live.py.",
+    "(Optional / minor) Make /app/backend/tests/test_docs.py::test_idempotent_upsert_on_resubmit use a uuid-suffixed section_id so it stays idempotent across runs."
+  ],
+  "critical_code_review_comments": [
+    "exports._write_cohort_sheet correctly inserts the four new columns at the right positions (Country & RCM beside party metadata, Value Eligible for ITC after Amount, Auditor Remarks last). Auto-filter is set on the header row before the footer total row, which is the correct openpyxl pattern.",
+    "service._classify_single_line foreign-supplier reason now reads 'Foreign supplier <name> (<Country>) — import, no Indian GSTIN'. Country comes from party.country.title(). Edge case: if country is None/blank, the parenthetical will read '()' — consider guarding with a blank-check before adding the parens.",
+    "controller.py PATCH /selections still treats Optional[None] as 'omit' (verified — sending {disclaimer_text: null} is a no-op). To reset to default disclaimer the API consumer must POST the full DEFAULT_DISCLAIMER string. Acceptable, but a UI 'Reset to default' affordance should call out the explicit-string requirement.",
+    "templates/clause-44.html rewrite is comprehensive: removed 'Non-GST', '200+ rule', '92-97% accuracy', 'Exceptions drawer', 'Suggest correction button'; added Para 79.4 / 79.18 / 79.20 / 79.21 anchors plus six-sheet workbook note. PDF rendering preserves all phrases (validated via pypdf extraction).",
+    "Test files are clean and use REACT_APP_BACKEND_URL for live tests. test_clause44_release2_live.py runs in <6s end-to-end."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_clause44_release2_live.py (NEW — 14 live-API tests)"
+  ],
+  "success_rate": {
+    "backend_release2_live": "100% (14/14)",
+    "backend_release2_unit": "100% (7/7)",
+    "backend_combined_clause44": "100% (69/69) — pre-existing stale tests in test_clause44_backend.py / test_docs.py excluded",
+    "frontend": "n/a (backend-only)"
+  },
+  "test_credentials": "Cookie session_token=qa_test_session_token_20260430_dev (admin, qa-bot@transformautomations.com) — valid",
+  "seed_data_creation": "None. Used existing run_8d427d1f97e0 / cli_ad137f29aebb (ABC Textile Mills). At teardown, PATCH-ed disclaimer_text back to controller.DEFAULT_DISCLAIMER and use_itc_inference=True / exempt_ledgers=[] / exclusion_categories={} for a clean handoff. DB still holds exactly 3 original clients (Velav Garments India P Limited, Allman Knitwear, ABC Textile Mills).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Release 2 live-API regression suite is /app/backend/tests/test_clause44_release2_live.py (14 tests, ~5s). It covers cohort Para 79.20 columns, auto-filter, disclaimer round-trip (PATCH → GET → /export), docs HTML+PDF (old-claims-removed + required phrases + PDF text extraction via pypdf), 6-sheet workbook, recon arithmetic, cascade RCM-in-Col-7, Input-A de-dup, company-name guard, and no-client-leak. Combined with test_clause44_release1_live.py + test_clause44_release1.py + test_clause44_release2.py + test_clause44_iteration_patch.py = 69 green tests. Pre-existing stale files test_clause44_backend.py (hardcoded URL) and test_docs.py::test_idempotent_upsert_on_resubmit (data-hygiene) are NOT regressions of R2 — fix or delete separately.",
+  "rca of the issue": "n/a — no Release 2 bugs found."
+}

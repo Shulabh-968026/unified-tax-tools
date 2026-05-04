@@ -126,6 +126,12 @@ class TestExcelExport:
         body = _read_export_bytes(_sample_run())
         wb = openpyxl.load_workbook(io.BytesIO(body))
 
+        # Column layout after Release 2 — `Amount` sits at column index 8
+        # (Date, Voucher Type, Voucher No, Ledger, Party, Party GSTIN,
+        # Party Reg., Country, RCM, **Amount**, Value Eligible for ITC,
+        # Reason, Auditor Remarks) — but tests/_sample_run has no
+        # division so there's no Division column injected.  Find the
+        # column dynamically instead of hard-coding.
         for sheet, amt in [
             ("Col 3 · Exempt", 100.0),
             ("Col 4 · Composition", 200.0),
@@ -133,7 +139,10 @@ class TestExcelExport:
             ("Col 7 · Unregistered", 400.0),
         ]:
             ws = wb[sheet]
-            data_amt = ws.cell(row=4, column=8).value
-            footer_amt = ws.cell(row=5, column=8).value
+            # Header row is row 3.  Locate the "Amount" column.
+            header_row = [c.value for c in ws[3]]
+            amount_col = header_row.index("Amount") + 1
+            data_amt = ws.cell(row=4, column=amount_col).value
+            footer_amt = ws.cell(row=5, column=amount_col).value
             assert data_amt == amt, f"Sheet {sheet!r} first row amount = {data_amt}, expected {amt}"
             assert footer_amt == amt, f"Sheet {sheet!r} footer total = {footer_amt}, expected {amt}"

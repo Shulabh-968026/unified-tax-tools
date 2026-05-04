@@ -357,6 +357,7 @@ def classify_vouchers(
                 is_rcm=is_rcm, is_import=is_import, has_itc=has_itc,
                 exempt_ledgers=exempt_ledgers,
                 use_itc_inference=use_itc_inference,
+                party_country=party_country,
             )
 
             if bucket == "col3":
@@ -427,6 +428,7 @@ def _classify_single_line(
     lname: str, party_name: str, party_reg: str, party_gstin: str,
     *, is_rcm: bool, is_import: bool, has_itc: bool,
     exempt_ledgers: set, use_itc_inference: bool,
+    party_country: str = "",
 ) -> tuple:
     """Return (bucket, reason, col3_source).  col3_source is 'input_a' |
     'input_b' | '' (non-Col-3 lines)."""
@@ -439,7 +441,12 @@ def _classify_single_line(
         return "col3", f"Ledger '{lname}' tagged as exempt-supply purchase (Input A)", "input_a"
     # 2) Foreign supplier — import.
     if is_import:
-        return "col7", f"Foreign supplier ({party_name}) — import, no Indian GSTIN", ""
+        country_label = party_country.title() if party_country else "non-India"
+        return (
+            "col7",
+            f"Foreign supplier '{party_name}' ({country_label}) — import, no Indian GSTIN",
+            "",
+        )
     # 3) Composition.
     if party_reg == "composition":
         return "col4", f"Party '{party_name}' is Composition dealer", ""
