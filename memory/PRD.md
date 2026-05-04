@@ -1,5 +1,91 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Clause 44 — Release 1 · ICAI-aligned cascade + 5-line recon (2026-05-04)
+
+Biggest conceptual correctness fix so far.  Aligns the engine to the
+stipulations of the ICAI Guidance Note on Tax Audit (Revised 2025),
+Paragraphs 79.1 – 79.21 for Clause 44 of Form 3CD — scoped to what is
+derivable from the Tally books JSON we actually receive.
+
+### What changed
+
+**New cascade (`modules/clause44/service.py :: _classify_single_line`).**
+Per expense line, the order is now:
+
+1. `voucherTypeName == "Reverse Charge"` → **Col 7** (with `is_rcm=true`).
+2. **Input A** — line's ledger sits in the auditor-tagged
+   `exempt_ledgers` set → **Col 3** (`col3_source="input_a"`).
+3. Foreign supplier (`party.country` non-blank ≠ India) → **Col 7**
+   (with `is_import=true`).
+4. `party.gstRegistrationType == "composition"` → **Col 4**.
+5. `party.gstRegistrationType == "regular"` + GSTIN:
+   - if `use_itc_inference` is ON and voucher has no ITC-ledger entry →
+     **Col 3** (Input B, `col3_source="input_b"`).
+   - otherwise → **Col 5**.
+6. Else (URD / consumer / blank) → **Col 7**.
+
+**Input A always wins per line** — a ledger tagged as exempt can never
+double-count via Input B because classification is done line-by-line
+before the voucher-level inference kicks in.
+
+**5-line reconciliation (`compute_recon_and_filter`).**  Recon now splits
+`total_books` into `pl_total` + `capex_total` and auto-buckets each
+excluded ledger into one of `non_cash` / `sch3` / `money` / `other` using
+name+group-chain heuristics (`categorise_exclusion`).  The arrival line
+`pl_total + capex_total − Σ(excluded buckets) = reportable_total` ties
+exactly to `summary.col2_total`.  Auditor overrides the auto-category
+per line via the recon table's dropdown; the override is persisted on
+the run document and consumed on the next Generate.
+
+**New run document fields.** `exempt_selection`, `use_itc_inference`
+(default True), `exclusion_categories`, `disclaimer_text`.  Silent
+re-classification on `GET /api/runs/{id}` for generated runs so opening
+an old run reflects the current engine without a re-generate click.
+
+**Frontend.**
+
+- `StepSpecialLedgers.jsx` replaces `StepItc.jsx`.  Two tabs:
+  "Exempt Purchases · Input A" (P&L ledger picker) and
+  "ITC Ledgers · Input B" (original picker) + prominent
+  **"Use ITC inference for Col 3"** Switch (default ON).
+- `Clause44Run.jsx` step key renamed `itc → special`; legacy URL shim
+  keeps `?step=itc` working.
+- `ReconTable.jsx` rewritten as a 5-line ICAI layout with a per-line
+  bucket dropdown.
+- `StepReport.jsx` gains a Release-1 info strip showing the Col 3 split
+  (Input A vs B), RCM voucher count, and import totals.
+
+**Excel export.** Reconciliation sheet now emits the 5-line ICAI format
+with indented lines under each bucket + a Disclaimer block at the
+bottom.  The other 5 sheets (Summary, Col 3/4/5/7) unchanged.
+
+### Files touched
+- `backend/modules/clause44/service.py` (cascade + recon rewrite)
+- `backend/modules/clause44/controller.py` (new fields + silent re-class)
+- `backend/modules/clause44/exports.py` (recon sheet)
+- `frontend/src/pages/clause44/StepSpecialLedgers.jsx` — new
+- `frontend/src/pages/clause44/Clause44Run.jsx` — step routing
+- `frontend/src/pages/clause44/StepReport.jsx` — info strip + recon
+  category persister
+- `frontend/src/pages/ReconTable.jsx` — ICAI 5-line
+- `frontend/src/pages/clause44/StepItc.jsx` — deleted
+- `backend/tests/test_clause44_release1.py` — 15 unit tests
+- Testing agent shipped 9 live-API integration tests too
+
+### Tests: 37 green
+- 15 unit (new cascade, de-dupe, toggle, auto-categoriser, recon math).
+- 12 iteration-patch (company-guard + Excel shape) — still green.
+- 9 live-API integration from testing agent against real Mongo + preview
+  URL.
+
+### Known limitations (documented for Release 2 Readme rewrite)
+The JSON doesn't carry per-voucher nature-of-supply, tax rate, Section
+17(5) eligibility, bill-of-supply markers, or status-at-time-of-supply.
+The standard disclaimer on exports now calls this out explicitly.
+Release 2 will rewrite `clause-44.html` to enumerate these limitations.
+
+
+
 ## Clause 44 — iteration patch (2026-05-04)
 
 Three-point iteration on the freshly-shipped stepper:
