@@ -416,7 +416,7 @@ async def compute_client_status(
         run = await db[coll_name].find_one(
             {"client_id": client_id, "archived": {"$ne": True}, **query_extra},
             sort=[("created_at", -1)],
-            projection={"_id": 0, "run_id": 1, "id": 1, "pinned_files": 1},
+            projection={"_id": 0, "run_id": 1, "id": 1, "pinned_files": 1, "generated": 1, "status": 1, "results": 1},
         )
         # Fallback: pre-Library Clause 44 runs lived in `db.runs` without
         # a `module` field — for Clause 44, they're the bulk of historical
@@ -425,13 +425,56 @@ async def compute_client_status(
             run = await db.runs.find_one(
                 {"client_id": client_id, "period": period, "archived": False, "module": {"$exists": False}},
                 sort=[("created_at", -1)],
-                projection={"_id": 0, "run_id": 1, "pinned_files": 1},
+                projection={"_id": 0, "run_id": 1, "pinned_files": 1, "generated": 1},
             )
+
+        # Per-module "has the auditor produced a report from this run?" check.
+        # When True the catalog tile flips from "Data Ready" → "Report Ready".
+        def _is_report_ready(rdoc: dict | None) -> bool:
+            if not rdoc:
+                return False
+            if module_key == "clause44":
+                return bool(rdoc.get("generated"))
+            if module_key == "fin_statement":
+                return rdoc.get("status") == "rendered"
+            if module_key == "gst_recon":
+                return rdoc.get("status") in ("summarized", "completed")
+            if module_key == "balance_confirmation":
+                # BC's "report" is the dispatched / received confirmations —
+                # ingested data alone isn't a report.  Conservative: only
+                # show ready when status has progressed beyond ingested.
+                return rdoc.get("status") in ("dispatched", "received", "completed")
+            if module_key == "msme43bh":
+                return bool(rdoc.get("results"))
+            if module_key == "fixed_assets":
+                # FA marks runs as "ingested" once books loaded; the actual
+                # report is the addition / disposal / depreciation working
+                # — proxied here by status.
+                return rdoc.get("status") in ("computed", "completed")
+            return False
+
+        report_generated = _is_report_ready(run)
+        run_pinned = (run or {}).get("pinned_files") or {}
+        # Legacy-run grace: a generated run that pre-dates the Library
+        # migration has no pinned_files.  Treat it as "fresh" against the
+        # current Library state so the catalog tile flips to "Report
+        # Ready" — auditor's intent was clearly "this report came from
+        # what's currently uploaded".  Pre-empts the mismatch by
+        # synthesising a snapshot here.
+        if run and not run_pinned and report_generated:
+            for ft in MODULE_DEPENDENCIES.get(module_key, []):
+                cur = await get_current_file(
+                    firm_id=firm_id, client_id=client_id, period=period,
+                    division=division, file_type=ft,
+                )
+                if cur:
+                    run_pinned[ft] = cur["file_id"]
         st = await compute_module_status(
             firm_id=firm_id, client_id=client_id, period=period, division=division,
-            module_key=module_key, pinned_files=(run or {}).get("pinned_files") or {},
+            module_key=module_key, pinned_files=run_pinned,
         )
         st["has_run"] = bool(run)
+        st["report_generated"] = report_generated
         st["run_id"] = (run or {}).get("run_id") or (run or {}).get("id")
         module_chips.append(st)
 

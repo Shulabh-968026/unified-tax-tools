@@ -48,7 +48,7 @@ export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
       // Amber — clearly orange-toned, distinct from the bright Data-Ready yellow.
       klass = "bg-orange-100 text-orange-900 border-orange-400";
       title = `${uploaded} of ${total} required inputs uploaded — please complete the remaining ${total - uploaded} to unlock this utility.`;
-    } else if (libraryStatus.has_run && !libraryStatus.outdated && !libraryStatus.missing) {
+    } else if (libraryStatus.report_generated && !libraryStatus.outdated && !libraryStatus.missing) {
       state = "report_ready";
       label = "✓ Report Ready";
       // Green — emerald, solid enough to read as success.

@@ -467,6 +467,30 @@ async def generate_run(
     if body.disclaimer_text is not None:
         update_doc["disclaimer_text"] = body.disclaimer_text
 
+    # Backfill Library tracking for legacy runs created before 4.0 — when
+    # the auditor regenerates such a run, snapshot the current Library
+    # versions of its dependencies into pinned_files so the catalog tile
+    # flips to "Report Ready" and future re-uploads correctly trigger
+    # the "Outdated" badge.
+    if not run.get("pinned_files"):
+        from modules.library import service as lib_svc
+        from modules.library.controller import DEFAULT_FIRM_ID
+        firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+        snap: dict = {}
+        for ft in ("books_json", "ledger_mapping_xlsx"):
+            cur = await lib_svc.get_current_file(
+                firm_id=firm_id, client_id=run["client_id"],
+                period=run.get("period", ""),
+                division=run.get("division_id"), file_type=ft,
+            )
+            if cur:
+                snap[ft] = cur["file_id"]
+                await lib_svc.pin_file_to_run(cur["file_id"], run_id)
+        if snap:
+            update_doc["pinned_files"] = snap
+        update_doc["module"] = "clause44"
+        update_doc["firm_id"] = firm_id
+
     await db.runs.update_one({"run_id": run_id}, {"$set": update_doc})
     return {
         "run_id": run_id,
