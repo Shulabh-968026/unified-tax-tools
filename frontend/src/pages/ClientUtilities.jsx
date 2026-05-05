@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppShell, { PageHeader } from "@/components/AppShell";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Stack, Buildings } from "@phosphor-icons/react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ArrowLeft, Stack, Buildings, Folder, AppWindow } from "@phosphor-icons/react";
 import { getClient } from "@/lib/api";
 import { UTILITIES, UtilityCard } from "@/lib/utilities";
 import { toast } from "sonner";
@@ -11,10 +12,17 @@ import ClientLibraryPanel from "@/components/ClientLibraryPanel";
 export default function ClientUtilities() {
   const { clientId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [client, setClient] = useState(null);
-  // Library status drives the "Data outdated / missing / fresh" chip on
-  // each utility tile.  Keyed by module_key.
   const [libByModule, setLibByModule] = useState({});
+  // Tab persistence — `?tab=library` opens straight into the data
+  // library, default `utilities`.  Lets us deep-link from elsewhere.
+  const tab = searchParams.get("tab") === "library" ? "library" : "utilities";
+  const setTab = (v) => {
+    const next = new URLSearchParams(searchParams);
+    if (v === "utilities") next.delete("tab"); else next.set("tab", v);
+    setSearchParams(next, { replace: true });
+  };
 
   useEffect(() => {
     (async () => {
@@ -74,42 +82,83 @@ export default function ClientUtilities() {
       />
 
       <div className="px-6 md:px-10 py-8 pb-40 max-w-[1200px]">
-        {/* Client Library — central source-file store.  Drives the
-            "Data outdated / missing / fresh" chips on every utility
-            tile below in real-time. */}
-        <ClientLibraryPanel
-          clientId={clientId}
-          divisions={client.divisions || []}
-          onChange={onLibraryChange}
-        />
+        <Tabs value={tab} onValueChange={setTab} className="w-full">
+          <TabsList
+            data-testid="client-tabs"
+            className="bg-white border border-[#E5E5E0] rounded-sm p-1 h-auto inline-flex gap-1"
+          >
+            <TabsTrigger
+              value="utilities"
+              data-testid="tab-utilities"
+              className="px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] data-[state=active]:bg-[#0F172A] data-[state=active]:text-white rounded-sm shadow-none gap-2"
+            >
+              <AppWindow size={12}/> Utilities Catalog
+            </TabsTrigger>
+            <TabsTrigger
+              value="library"
+              data-testid="tab-library"
+              className="px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] data-[state=active]:bg-[#0F172A] data-[state=active]:text-white rounded-sm shadow-none gap-2"
+            >
+              <Folder size={12}/> Data Library
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="mt-10 flex items-baseline justify-between flex-wrap gap-2">
-          <div>
-            <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Utilities Catalog</div>
-            <h2 className="mt-1 font-heading text-2xl tracking-tight">Pick a utility</h2>
-            <p className="mt-1.5 text-sm text-[#52524E] max-w-2xl">
-              The AssureAI utility shelf — small, well-built tools that complement AssureAI for the audit chores nobody enjoys. New utilities ship every few weeks.
+          {/* Utilities — the daily workflow.  Tile chips reflect Library
+              status under the hood (see `libByModule`). */}
+          <TabsContent value="utilities" className="mt-6">
+            <div className="flex items-baseline justify-between flex-wrap gap-2">
+              <div>
+                <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Utilities Catalog</div>
+                <h2 className="mt-1 font-heading text-2xl tracking-tight">Pick a utility</h2>
+                <p className="mt-1.5 text-sm text-[#52524E] max-w-2xl">
+                  The AssureAI utility shelf — small, well-built tools that complement AssureAI for the audit chores nobody enjoys. New utilities ship every few weeks.
+                </p>
+              </div>
+              <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">
+                {liveCount} live · {UTILITIES.length - liveCount} coming soon
+              </Badge>
+            </div>
+
+            <div className="mt-7 grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden" data-testid="utilities-grid">
+              {UTILITIES.map((u) => (
+                <UtilityCard
+                  key={u.id}
+                  utility={u}
+                  onOpen={onOpen}
+                  libraryStatus={u.module_key ? libByModule[u.module_key] : null}
+                />
+              ))}
+            </div>
+
+            <p className="mt-6 text-[12px] text-[#8A8A83] font-mono">
+              Have a utility you'd like to see prioritised? Mention it in the next partner sync.
             </p>
-          </div>
-          <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">
-            {liveCount} live · {UTILITIES.length - liveCount} coming soon
-          </Badge>
-        </div>
+          </TabsContent>
 
-        <div className="mt-7 grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden" data-testid="utilities-grid">
-          {UTILITIES.map((u) => (
-            <UtilityCard
-              key={u.id}
-              utility={u}
-              onOpen={onOpen}
-              libraryStatus={u.module_key ? libByModule[u.module_key] : null}
+          {/* Data Library — engagement setup workflow.  Mounted in BOTH
+              tabs so the status payload (driving Utility chips) is
+              fetched once on mount regardless of which tab is active. */}
+          <TabsContent value="library" className="mt-6">
+            <ClientLibraryPanel
+              clientId={clientId}
+              divisions={client.divisions || []}
+              onChange={onLibraryChange}
             />
-          ))}
-        </div>
+          </TabsContent>
+        </Tabs>
 
-        <p className="mt-6 text-[12px] text-[#8A8A83] font-mono">
-          Have a utility you'd like to see prioritised? Mention it in the next partner sync.
-        </p>
+        {/* Hidden mount of the library when on the Utilities tab — keeps
+            the status payload fresh so the Utility tiles show correct
+            chips on first paint. */}
+        {tab !== "library" && (
+          <div className="hidden">
+            <ClientLibraryPanel
+              clientId={clientId}
+              divisions={client.divisions || []}
+              onChange={onLibraryChange}
+            />
+          </div>
+        )}
       </div>
     </AppShell>
   );

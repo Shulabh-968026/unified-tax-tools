@@ -350,6 +350,7 @@ async def compute_client_status(
     ).to_list(length=200)
     by_type = {f["file_type"]: f for f in files}
     file_chips = []
+    from modules.library.catalog import FILE_TYPES_WITH_TEMPLATES
     for ft in FILE_TYPE_BY_KEY.values():
         cur = by_type.get(ft["key"])
         file_chips.append({
@@ -358,6 +359,7 @@ async def compute_client_status(
             "kind": ft["kind"],
             "ext": ft["ext"],
             "description": ft["description"],
+            "has_template": ft["key"] in FILE_TYPES_WITH_TEMPLATES,
             "uploaded": bool(cur),
             "file_id": cur["file_id"] if cur else None,
             "version_no": cur["version_no"] if cur else 0,

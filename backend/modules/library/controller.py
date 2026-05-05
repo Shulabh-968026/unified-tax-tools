@@ -66,7 +66,9 @@ async def get_catalog(
 ):
     """Return the file-type catalog so the UI can render upload tiles."""
     await get_current_user(request, session_token, authorization)
-    return {"file_types": FILE_TYPE_CATALOG}
+    from modules.library.catalog import FILE_TYPES_WITH_TEMPLATES
+    enriched = [{**ft, "has_template": ft["key"] in FILE_TYPES_WITH_TEMPLATES} for ft in FILE_TYPE_CATALOG]
+    return {"file_types": enriched}
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +149,52 @@ async def get_status(
 
     return await svc.compute_client_status(
         firm_id=firm_id, client_id=client_id, period=period, division=division,
+    )
+
+
+# ---------------------------------------------------------------------------
+@router.get("/clients/{client_id}/template/{file_type}")
+async def download_template(
+    client_id: str,
+    file_type: str,
+    request: Request,
+    period: str,
+    division: Optional[str] = None,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Generate and stream a pre-populated template for `file_type`.
+
+    The auditor downloads, fills in the gaps offline, and re-uploads via
+    the standard upload endpoint.  Only file_types in
+    `FILE_TYPES_WITH_TEMPLATES` are supported — others 404.
+    """
+    user = await get_current_user(request, session_token, authorization)
+    firm_id = _firm_id_for(user)
+
+    if file_type not in FILE_TYPE_KEYS:
+        raise HTTPException(400, f"Unknown file_type '{file_type}'")
+
+    cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
+    if not cli:
+        raise HTTPException(404, "Client not found")
+
+    from modules.library.templates import generate_template, has_template as _has_t
+    if not _has_t(file_type):
+        raise HTTPException(404, f"No template available for '{file_type}' yet.")
+
+    try:
+        blob, filename = await generate_template(
+            file_type=file_type, firm_id=firm_id, client_id=client_id,
+            period=period, division=division,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+
+    return StreamingResponse(
+        io.BytesIO(blob),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

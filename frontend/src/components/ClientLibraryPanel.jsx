@@ -19,12 +19,12 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   CheckCircle, Circle, WarningCircle, ArrowClockwise, UploadSimple,
-  DownloadSimple, Trash, Folder, Lightning,
+  DownloadSimple, Trash, Folder, Lightning, FileArrowDown,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import {
   getLibraryStatus, uploadLibraryFile, deleteLibraryFile,
-  downloadLibraryFileUrl,
+  downloadLibraryFileUrl, downloadLibraryTemplateUrl,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 
@@ -40,7 +40,7 @@ export default function ClientLibraryPanel({
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState(null);
-  const [showSecondary, setShowSecondary] = useState(false);
+  const [showSecondary, setShowSecondary] = useState(true);
   const fileInputs = useRef({});
 
   const refresh = async () => {
@@ -187,6 +187,9 @@ export default function ClientLibraryPanel({
             onPickFile={onPickFile}
             triggerInput={triggerInput}
             onDelete={onDelete}
+            clientId={clientId}
+            period={period}
+            division={division}
           />
           <button
             onClick={() => setShowSecondary((v) => !v)}
@@ -203,6 +206,9 @@ export default function ClientLibraryPanel({
               onPickFile={onPickFile}
               triggerInput={triggerInput}
               onDelete={onDelete}
+              clientId={clientId}
+              period={period}
+              division={division}
             />
           )}
         </div>
@@ -211,7 +217,7 @@ export default function ClientLibraryPanel({
   );
 }
 
-function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete }) {
+function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete, clientId, period, division }) {
   return (
     <div>
       {label && (
@@ -229,6 +235,9 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
             onPick={onPickFile(f.key)}
             onUploadClick={() => triggerInput(f.key)}
             onDelete={onDelete}
+            clientId={clientId}
+            period={period}
+            division={division}
           />
         ))}
       </ul>
@@ -236,8 +245,11 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
   );
 }
 
-function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete }) {
+function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division }) {
   const isUploaded = file.uploaded;
+  const templateUrl = file.has_template
+    ? downloadLibraryTemplateUrl(clientId, file.key, period, division || null)
+    : null;
   return (
     <li
       data-testid={`library-file-${file.key}`}
@@ -261,6 +273,11 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete }) 
           {file.kind === "primary" && !isUploaded && (
             <Badge className="bg-rose-50 text-rose-900 border border-rose-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-0">
               Required
+            </Badge>
+          )}
+          {file.has_template && (
+            <Badge className="bg-sky-50 text-sky-900 border border-sky-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-0" title="A pre-populated template can be auto-generated for this file">
+              Auto-template
             </Badge>
           )}
         </div>
@@ -293,6 +310,19 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete }) 
             title="Download current version"
           >
             <DownloadSimple size={13}/>
+          </a>
+        )}
+        {/* Download Template — only for file_types with a registered
+            generator (Party Master today; FA Register / Bank Statements
+            etc. follow the same pattern in future). */}
+        {templateUrl && (
+          <a
+            href={templateUrl}
+            data-testid={`library-template-${file.key}`}
+            className="h-8 inline-flex items-center gap-1 px-2.5 border border-sky-200 rounded-sm bg-sky-50 hover:bg-sky-100 text-sky-900 font-mono text-[10.5px] uppercase tracking-[0.12em]"
+            title="Download a pre-populated template — fill the gaps offline and re-upload"
+          >
+            <FileArrowDown size={11}/> Template
           </a>
         )}
         <Button

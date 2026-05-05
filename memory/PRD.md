@@ -1,5 +1,56 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.1 · Tabbed UX + Party Master auto-template (2026-05-05)
+
+Two refinements landed on top of Release 4.0's Library foundation:
+
+### 1 · Tabbed layout (`Utilities Catalog` · `Data Library`)
+
+`ClientUtilities.jsx` rewritten to use shadcn `Tabs`:
+* Default tab = **Utilities Catalog** (the daily workflow — auditor opens, picks a utility, gets to work).
+* Second tab = **Data Library** (the engagement-setup workflow — central place to upload + replace + soft-delete the source files).
+* Tab state persisted in URL via `?tab=library` so deep-links work.
+* Library status payload is fetched in a hidden mount when on Utilities tab so the per-tile `⊘ Data Missing / ⚠ Outdated / ✓ Up-to-date` chips render correctly on first paint without forcing the auditor into the Library tab.
+
+### 2 · Party Master auto-template generator
+
+New file `modules/library/templates.py` adds a registry-pattern template generator + new endpoint `GET /api/library/clients/{client_id}/template/{file_type}?period=...&division=...`.
+
+Today only `party_master_xlsx` is registered; FA Register and Bank Statements can follow the same pattern in future.
+
+The generator builds a 5-sheet workbook:
+* **README** — instructions + legend (pre-filled = pale emerald, auditor-fill = pale amber).
+* **Sundry Creditors** — vendors (highest priority for confirmations + 43B(h) MSME).
+* **Sundry Debtors** — customers.
+* **Loans & Advances** — loan / advance counter-parties.
+* **Other Parties** — anything else with a closing balance.
+
+14 columns per row — 6 pre-filled (Party Name, Group, Closing Balance, GSTIN, GST Reg Type, Country) merged from Books JSON + Ledger Mapping XLSX, 8 auditor-fill (Email, Alt Email, Phone, Address, MSME Status, MSME Reg No., PAN, Notes).
+
+UI: catalog now exposes `has_template: true` on the Party Master row; `ClientLibraryPanel` renders an **AUTO-TEMPLATE** chip + a sky-tinted **Template** button right before the Upload button. Auditor downloads, fills offline, re-uploads — done.
+
+Verified live on ABC Textile Mills: 230+ parties pre-populated across the 4 buckets.
+
+### Files touched
+**Backend (new):**
+- `modules/library/templates.py` — registry-pattern generator + Party Master implementation.
+
+**Backend (modified):**
+- `modules/library/catalog.py` — `FILE_TYPES_WITH_TEMPLATES` set.
+- `modules/library/controller.py` — `/template/{file_type}` endpoint; `has_template` enriched in catalog response.
+- `modules/library/service.py` — `has_template` field in status payload.
+
+**Frontend (modified):**
+- `lib/api.js` — `downloadLibraryTemplateUrl` helper.
+- `components/ClientLibraryPanel.jsx` — `AUTO-TEMPLATE` badge, sky-tinted Template button, `clientId/period/division` threaded through to chip rows; secondary inputs default-expanded for visibility.
+- `pages/ClientUtilities.jsx` — shadcn `Tabs` wrapper; `?tab=` URL persistence; hidden Library mount on Utilities tab to keep chip data fresh on first paint.
+
+### Tests · 78 / 79 (zero new regressions)
+- All 11 Library Phase A tests pass.
+- All 67 Clause 44 logic tests pass.
+- The one failing test (`test_client_count_unchanged`) is a pre-Library stale assertion; flagged in the previous handoff.
+
+
 ## Release 4.0 · Client Library + version-aware module integration (2026-05-05)
 
 Architectural shift agreed with MSS: every source file (Books JSON, Ledger

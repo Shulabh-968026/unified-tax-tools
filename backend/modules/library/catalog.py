@@ -125,6 +125,10 @@ FILE_TYPE_CATALOG: list[dict] = [
 FILE_TYPE_KEYS = {ft["key"] for ft in FILE_TYPE_CATALOG}
 FILE_TYPE_BY_KEY = {ft["key"]: ft for ft in FILE_TYPE_CATALOG}
 
+# File-types that the engine can pre-populate from data already in the
+# Library.  See `modules.library.templates` for generators.
+FILE_TYPES_WITH_TEMPLATES = {"party_master_xlsx"}
+
 
 # ---------------------------------------------------------------------------
 # Module → required file-types graph.  Drives the "Data outdated" badge

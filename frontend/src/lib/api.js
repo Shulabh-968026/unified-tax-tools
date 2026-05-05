@@ -85,3 +85,8 @@ export const uploadLibraryFile = ({ file, clientId, period, division = null, fil
 export const deleteLibraryFile = (fileId) => http.delete(`/library/files/${fileId}`).then((r) => r.data);
 export const restoreLibraryFile = (fileId) => http.post(`/library/files/${fileId}/restore`).then((r) => r.data);
 export const downloadLibraryFileUrl = (fileId) => `${API}/library/files/${fileId}/download`;
+export const downloadLibraryTemplateUrl = (clientId, fileType, period, division = null) => {
+  const params = new URLSearchParams({ period });
+  if (division) params.set("division", division);
+  return `${API}/library/clients/${clientId}/template/${fileType}?${params.toString()}`;
+};
