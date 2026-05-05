@@ -92,6 +92,39 @@ async def list_docs(
     return HTMLResponse(tpl.render(_common_context({"key": "_index"}, for_pdf=False)))
 
 
+# Whitelist of internal PRD / handoff markdown files the auditor can
+# download.  Anything outside this map returns 404 — keeps the
+# endpoint from doubling as an arbitrary file-read.
+_PRD_FILE_MAP: Dict[str, Path] = {
+    "clause44": Path("/app/memory/clause44_PRD.md"),
+}
+
+
+@router.get("/prd/{key}", include_in_schema=False)
+async def download_prd(
+    key: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Download a module-level PRD as a Markdown file.
+
+    Login-gated; only paths in `_PRD_FILE_MAP` are served — the endpoint
+    can never reach outside the whitelist.
+    """
+    await get_current_user(request, session_token, authorization)
+    p = _PRD_FILE_MAP.get(key)
+    if p is None or not p.is_file():
+        raise HTTPException(404, f"No PRD registered for '{key}'")
+    body = p.read_bytes()
+    fname = p.name
+    return Response(
+        content=body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @router.get("/{key}.pdf", include_in_schema=False)
 async def get_doc_pdf(
     key: str,
