@@ -21,6 +21,7 @@ from typing import Awaitable, Callable, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID  # for callers
@@ -32,7 +33,7 @@ from modules.library.controller import DEFAULT_FIRM_ID  # for callers
 HEADER_FILL = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
 HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
 PREFILLED_FILL = PatternFill(start_color="ECFDF5", end_color="ECFDF5", fill_type="solid")  # pale emerald
-TODO_FILL = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")  # pale amber
+TODO_FILL = PatternFill(start_color="FFFBEB", end_color="FFFBEB", fill_type="solid")        # pale amber
 SECTION_FILL = PatternFill(start_color="F3F4F1", end_color="F3F4F1", fill_type="solid")
 SECTION_FONT = Font(name="Calibri", size=10, bold=True, color="52524E")
 
@@ -61,102 +62,293 @@ def _write_header(ws, headers: list[str], note_row: list[str] | None = None):
         ws.row_dimensions[2].height = 24
 
 
+def _write_rows(ws, rows: list[list], prefilled_cols: tuple, start_row: int = 3):
+    """Write data rows starting at `start_row`, painting prefilled vs todo cells."""
+    for ri, row in enumerate(rows, start=start_row):
+        for ci, val in enumerate(row, start=1):
+            c = ws.cell(row=ri, column=ci, value=val)
+            c.fill = PREFILLED_FILL if ci in prefilled_cols else TODO_FILL
+            c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+    if not rows:
+        ws.cell(row=start_row, column=1, value="(no parties in this bucket)").font = Font(italic=True, color="8A8A83")
+
+
+def _add_dropdown(ws, options: list[str], col_letter: str, last_row: int, *, allow_blank=True):
+    """Attach a dropdown to `<col_letter>3:<col_letter>{last_row}`."""
+    if last_row < 3:
+        last_row = 3
+    formula = '"' + ",".join(options) + '"'
+    dv = DataValidation(type="list", formula1=formula, allow_blank=allow_blank, showDropDown=False)
+    ws.add_data_validation(dv)
+    dv.add(f"{col_letter}3:{col_letter}{last_row}")
+
+
 # ---------------------------------------------------------------------------
-# Party Master template.
+# Bucket detection — categorises Tally ledgers into the four
+# confirmation universes plus Others.  Order matters — first match wins.
 # ---------------------------------------------------------------------------
-PARTY_HEADERS = [
-    "Party Name",                     # pre-filled
-    "Group / Subhead",                # pre-filled
-    "Closing Balance (Cr / Dr)",      # pre-filled
-    "GSTIN",                          # pre-filled (where available)
-    "GST Registration Type",          # pre-filled (where available)
-    "Country",                        # pre-filled (where available)
-    "Email ID",                       # AUDITOR FILL
-    "Alternate Email",                # AUDITOR FILL
-    "Phone",                          # AUDITOR FILL
-    "Address",                        # AUDITOR FILL
-    "MSME Status",                    # AUDITOR FILL — Micro / Small / Medium / Not MSME
-    "MSME Registration No.",          # AUDITOR FILL (if MSME)
-    "PAN",                            # AUDITOR FILL
-    "Notes",                          # AUDITOR FILL
-]
-PARTY_HEADER_NOTES = [
-    "Pre-filled · do not edit",
-    "Pre-filled · do not edit",
-    "Pre-filled · do not edit (figure as on year-end)",
-    "Pre-filled where Tally has it",
-    "regular / composition / consumer / unregistered / overseas",
-    "Pre-filled if non-India",
-    "Required for Balance Confirmation",
-    "Optional · CC on confirmation emails",
-    "Optional",
-    "Optional",
-    "Required for 43B(h) MSME disallowance",
-    "Mandatory if MSME Status ≠ 'Not MSME'",
-    "Optional",
-    "Free text",
+BUCKETS = [
+    {
+        "name": "Trade Payables",
+        "key":  "payables",
+        "hints": ["sundry creditor", "trade payable", "creditors", "creditor"],
+    },
+    {
+        "name": "Trade Receivables",
+        "key":  "receivables",
+        "hints": ["sundry debtor", "trade receivable", "debtors", "debtor"],
+    },
+    {
+        "name": "Unsecured Loans",
+        "key":  "loans",
+        "hints": ["unsecured loan", "secured loan", "loans (liabilit", "loans & advance", "loans and advance", "loan a/c"],
+    },
+    {
+        "name": "Bank Accounts",
+        "key":  "bank",
+        "hints": ["bank account", "bank od", "bank o/d", "bank balance", "cash & cash equivalents", "bank a/c", "bank ac"],
+    },
+    {
+        "name": "Others",
+        "key":  "others",
+        "hints": [],  # catch-all
+    },
 ]
 
-# Categorization buckets — used to split parties into sheets for usability.
-GROUP_BUCKETS = {
-    "Sundry Creditors":  ["sundry creditors", "trade payable", "trade payables", "creditors"],
-    "Sundry Debtors":    ["sundry debtors", "trade receivable", "trade receivables", "debtors"],
-    "Loans & Advances":  ["loans", "advances", "loans & advances", "loans and advances"],
-    "Other Parties":     [],  # everything else
+
+def _bucket_key_for(rec: dict, ledger_name: str) -> str:
+    """Decide which bucket a ledger belongs to.
+
+    Inspects (in order): subhead, groupParent, head, ledger_name itself.
+    Bank-named ledgers without a clear subhead still surface in the
+    Bank bucket via the name match.
+    """
+    s = " ".join([
+        rec.get("subhead") or "",
+        rec.get("groupParent") or "",
+        rec.get("head") or "",
+        ledger_name or "",
+    ]).lower()
+    for b in BUCKETS:
+        if not b["hints"]:
+            continue
+        if any(h in s for h in b["hints"]):
+            return b["key"]
+    return "others"
+
+
+# ---------------------------------------------------------------------------
+# Column sets — different sheet, different schema.  Keys must match the
+# slot count in `_row_for_bucket`.
+# ---------------------------------------------------------------------------
+COMMON_COLS = ["Party Name", "Subhead / Group", "Closing Balance (Cr / Dr)"]
+
+COLUMN_SETS = {
+    "payables": {
+        "headers": COMMON_COLS + [
+            "GSTIN", "GST Registration Type", "Country",
+            "Email ID", "Alternate Email", "Phone", "Address",
+            "PAN", "Notes",
+        ],
+        "notes": [
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled where Tally has it",
+            "regular / composition / consumer / unregistered / overseas",
+            "Pre-filled if non-India",
+            "Required for Balance Confirmation",
+            "Optional · CC on confirmation emails",
+            "Optional",
+            "Optional",
+            "Optional",
+            "Free text",
+        ],
+        "prefilled_cols": (1, 2, 3, 4, 5, 6),
+    },
+    "receivables": {
+        "headers": COMMON_COLS + [
+            "GSTIN", "GST Registration Type", "Country",
+            "Email ID", "Alternate Email", "Phone", "Address",
+            "PAN", "Notes",
+        ],
+        "notes": [
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled where Tally has it",
+            "regular / composition / consumer / unregistered / overseas",
+            "Pre-filled if non-India",
+            "Required for Balance Confirmation",
+            "Optional · CC on confirmation emails",
+            "Optional",
+            "Optional",
+            "Optional",
+            "Free text",
+        ],
+        "prefilled_cols": (1, 2, 3, 4, 5, 6),
+    },
+    "loans": {
+        "headers": COMMON_COLS + [
+            "GSTIN", "Country",
+            "Email ID", "Phone", "Address",
+            "PAN", "Loan Agreement Date", "Interest Rate (% p.a.)", "Notes",
+        ],
+        "notes": [
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled where Tally has it",
+            "Pre-filled if non-India",
+            "Required for Balance Confirmation",
+            "Optional",
+            "Optional",
+            "Optional",
+            "DD-MM-YYYY",
+            "Optional",
+            "Free text",
+        ],
+        "prefilled_cols": (1, 2, 3, 4, 5),
+    },
+    "bank": {
+        "headers": COMMON_COLS + [
+            "Bank Name", "Branch", "Account Number", "IFSC",
+            "Email ID", "Notes",
+        ],
+        "notes": [
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Required",
+            "Optional",
+            "Required for Bank Confirmation",
+            "Optional",
+            "Required for Bank Confirmation",
+            "Free text",
+        ],
+        "prefilled_cols": (1, 2, 3),
+    },
+    "others": {
+        "headers": COMMON_COLS + ["Notes"],
+        "notes": [
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Pre-filled · do not edit",
+            "Free text",
+        ],
+        "prefilled_cols": (1, 2, 3),
+    },
 }
 
 
-def _bucket_for(group_or_subhead: str) -> str:
-    s = (group_or_subhead or "").strip().lower()
-    for bucket, hints in GROUP_BUCKETS.items():
-        if any(h in s for h in hints):
-            return bucket
-    return "Other Parties"
-
-
-def _row_for_party(name: str, ledger_rec: dict, json_party: dict | None) -> list:
-    closing = ledger_rec.get("closingBalance")
+# ---------------------------------------------------------------------------
+# Per-bucket row builder.
+# ---------------------------------------------------------------------------
+def _row_for_bucket(bucket_key: str, name: str, rec: dict, json_party: dict | None) -> list:
+    closing = rec.get("closingBalance")
     closing_str = ""
     if closing is not None:
         sign = "Cr" if closing < 0 else "Dr"
         closing_str = f"{abs(closing):,.2f} {sign}"
     json_party = json_party or {}
     country = (json_party.get("country") or "").strip()
-    return [
-        name,
-        ledger_rec.get("subhead") or ledger_rec.get("groupParent") or "",
-        closing_str,
-        json_party.get("partyGSTIN") or "",
-        (json_party.get("gstRegistrationType") or "").lower(),
-        "" if country.lower() in ("india", "") else country,
-        "",  # email — auditor
-        "",  # alt email
-        "",  # phone
-        "",  # address
-        "",  # MSME status
-        "",  # MSME reg no
-        "",  # PAN
-        "",  # notes
-    ]
+    country_str = "" if country.lower() in ("india", "") else country
+    subhead = rec.get("subhead") or rec.get("groupParent") or ""
+
+    if bucket_key in ("payables", "receivables"):
+        return [
+            name, subhead, closing_str,
+            json_party.get("partyGSTIN") or "",
+            (json_party.get("gstRegistrationType") or "").lower(),
+            country_str,
+            "",  # email
+            "",  # alt email
+            "",  # phone
+            "",  # address
+            "",  # PAN
+            "",  # notes
+        ]
+    if bucket_key == "loans":
+        return [
+            name, subhead, closing_str,
+            json_party.get("partyGSTIN") or "",
+            country_str,
+            "",  # email
+            "",  # phone
+            "",  # address
+            "",  # PAN
+            "",  # loan date
+            "",  # interest rate
+            "",  # notes
+        ]
+    if bucket_key == "bank":
+        return [
+            name, subhead, closing_str,
+            "",  # bank name
+            "",  # branch
+            "",  # acct no
+            "",  # IFSC
+            "",  # email
+            "",  # notes
+        ]
+    # others
+    return [name, subhead, closing_str, ""]
 
 
+# ---------------------------------------------------------------------------
+# MSME Details sheet — vendor-only, with the same drop-downs the
+# 43B(h) module already uses (single source of truth for dropdown
+# options is `modules.msme43bh.schemas`).
+# ---------------------------------------------------------------------------
+MSME_HEADERS = [
+    "Party Name",                        # pre-filled (Trade Payables only)
+    "Subhead / Group",                   # pre-filled
+    "MSME Registration Number",          # auditor — Udyam / EM-II
+    "Sector",                            # dropdown · Manufacturing / Services / Trading
+    "MSME Type",                         # dropdown · Micro / Small / Medium
+    "Capital Goods / Fund Creditor",     # dropdown · Yes / No
+    "Date of MSME Registration",         # auditor (DD-MM-YYYY)
+    "Notes",                             # auditor
+]
+MSME_HEADER_NOTES = [
+    "Pre-filled · vendors only",
+    "Pre-filled · do not edit",
+    "From Udyam certificate",
+    "Choose from dropdown",
+    "Choose from dropdown · leave blank if Not MSME",
+    "Choose from dropdown · drives 43B(h) carve-out",
+    "DD-MM-YYYY",
+    "Free text",
+]
+
+
+# ---------------------------------------------------------------------------
+# Party Master template (multi-bucket).
+# ---------------------------------------------------------------------------
 async def generate_party_master_template(
     *, firm_id: str, client_id: str, period: str, division: str | None,
 ) -> Tuple[bytes, str]:
-    """Build a multi-sheet Party Master template.
+    """Build a Party Master template with one sheet per confirmation
+    universe + a vendor-only MSME Details sheet.
 
     Sheets:
-      • README             — instructions + legend
-      • Sundry Creditors   — pre-filled vendor list (most important)
-      • Sundry Debtors     — pre-filled customer list
-      • Loans & Advances   — pre-filled loan / advance parties
-      • Other Parties      — anything else with a closing balance
+      • README
+      • Trade Payables       — vendors (drives Confirmations + 43B(h))
+      • Trade Receivables    — customers (drives Confirmations)
+      • Unsecured Loans      — loan parties (drives Confirmations)
+      • Bank Accounts        — bank ledgers (drives Bank Confirmations)
+      • Others               — anything else with a closing balance
+      • MSME Details         — Trade Payables names + the 4 MSME columns
+                                with drop-downs
 
     Pre-fill sources:
       • Ledger Mapping XLSX (current version) — name, group, closing balance.
       • Books JSON         (current version) — GSTIN, regType, country.
     """
-    # ── 1. Read the latest Library files we need.
+    # Lazy import — avoids circular dep at module-load time.
+    from modules.msme43bh.schemas import SECTOR_OPTIONS, MSME_TYPE_OPTIONS
+
+    # ── 1. Read latest Library files we depend on.
     ledger_map = await lib_svc.get_current_file(
         firm_id=firm_id, client_id=client_id, period=period,
         division=division, file_type="ledger_mapping_xlsx",
@@ -168,15 +360,10 @@ async def generate_party_master_template(
     if not ledger_map:
         raise FileNotFoundError("Ledger Mapping XLSX must be uploaded first.")
 
-    # The XLSX was already parsed by the Clause 44 controller into a
-    # dict-of-records when its run was created.  Re-parse here so we
-    # don't depend on that — the template should work even when no
-    # Clause 44 run has been generated yet.
     from modules.clause44.service import parse_ledger_xlsx
     ledger_xlsx_bytes = await lib_svc.read_file_bytes(ledger_map["file_id"])
     ledger_records = parse_ledger_xlsx(ledger_xlsx_bytes)
 
-    # Books JSON for GSTIN / reg-type / country.
     parties_by_name: dict[str, dict] = {}
     if books:
         try:
@@ -184,7 +371,6 @@ async def generate_party_master_template(
             for p in data.get("parties", []) or []:
                 if p.get("name"):
                     parties_by_name[p["name"].strip()] = p
-            # Some Tally exports name parties via the ledger object.
             for lg in data.get("ledgers", []) or []:
                 nm = (lg.get("name") or "").strip()
                 if nm and nm not in parties_by_name and lg.get("partyGSTIN"):
@@ -192,78 +378,95 @@ async def generate_party_master_template(
         except Exception:
             pass
 
-    # ── 2. Bucket parties.
-    buckets: dict[str, list[list]] = {b: [] for b in GROUP_BUCKETS}
+    # ── 2. Bucketize.
+    buckets: dict[str, list[Tuple[str, dict]]] = {b["key"]: [] for b in BUCKETS}
     for name, rec in ledger_records.items():
-        bucket = _bucket_for(rec.get("subhead") or rec.get("groupParent") or "")
-        # Only include rows that look like a party — skip non-party BS heads
-        # (no closing balance OR ledger has BS-or-PL == 'P').
         if rec.get("bsOrPl") == "P":
             continue
-        if bucket == "Other Parties":
-            # For "Other Parties" we further filter to entries that look
-            # like contractual counter-parties (have a closing balance).
-            if not rec.get("closingBalance"):
-                continue
-        buckets[bucket].append(_row_for_party(name, rec, parties_by_name.get(name)))
+        bkey = _bucket_key_for(rec, name)
+        # In "others", only include rows with a non-zero closing balance
+        # — keeps the sheet focused on confirmation candidates.
+        if bkey == "others" and not rec.get("closingBalance"):
+            continue
+        buckets[bkey].append((name, rec))
+    for k, lst in buckets.items():
+        lst.sort(key=lambda t: t[0].lower())
 
-    # Sort each bucket by name for stable, scannable output.
-    for b, rows in buckets.items():
-        rows.sort(key=lambda r: r[0].lower())
-
-    # ── 3. Build the workbook.
+    # ── 3. Build workbook.
     wb = Workbook()
-    # Default sheet → README.
     readme = wb.active
     readme.title = "README"
-    readme["A1"] = "Party Master Template — AssureAI Audit Utilities"
-    readme["A1"].font = Font(bold=True, size=14)
-    readme["A3"] = "How to use"
-    readme["A3"].font = Font(bold=True, size=11)
+    _build_readme(readme, period=period)
+
+    # ── One sheet per bucket.
+    for b in BUCKETS:
+        rows_data = buckets[b["key"]]
+        rows = [
+            _row_for_bucket(b["key"], name, rec, parties_by_name.get(name))
+            for name, rec in rows_data
+        ]
+        spec = COLUMN_SETS[b["key"]]
+        ws = wb.create_sheet(title=b["name"])
+        _write_header(ws, spec["headers"], note_row=spec["notes"])
+        _write_rows(ws, rows, prefilled_cols=spec["prefilled_cols"])
+        _autosize(ws, spec["headers"], rows)
+        ws.freeze_panes = "A3"
+        ws.sheet_view.showGridLines = False
+
+    # ── MSME Details sheet — Trade Payables only.
+    msme_rows = []
+    for name, rec in buckets["payables"]:
+        subhead = rec.get("subhead") or rec.get("groupParent") or ""
+        msme_rows.append([name, subhead, "", "", "", "", "", ""])
+
+    ws_msme = wb.create_sheet(title="MSME Details")
+    _write_header(ws_msme, MSME_HEADERS, note_row=MSME_HEADER_NOTES)
+    _write_rows(ws_msme, msme_rows, prefilled_cols=(1, 2))
+    _autosize(ws_msme, MSME_HEADERS, msme_rows)
+    ws_msme.freeze_panes = "A3"
+    ws_msme.sheet_view.showGridLines = False
+
+    last_row = max(2 + len(msme_rows), 3)
+    _add_dropdown(ws_msme, SECTOR_OPTIONS,    "D", last_row)  # Sector
+    _add_dropdown(ws_msme, MSME_TYPE_OPTIONS, "E", last_row)  # MSME Type
+    _add_dropdown(ws_msme, ["Yes", "No"],     "F", last_row)  # Capital Goods
+
+    # ── 4. Stream out.
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), f"party_master_template__{client_id}__{period}.xlsx"
+
+
+def _build_readme(ws, *, period: str):
+    ws["A1"] = "Party Master Template — AssureAI Audit Utilities"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A3"] = f"Generated for FY {period}"
+    ws["A3"].font = Font(bold=False, size=10, italic=True, color="52524E")
+    ws["A5"] = "How to use"
+    ws["A5"].font = Font(bold=True, size=11)
     instructions = [
-        "1. The Party Name, Group, Closing Balance, GSTIN, GST Registration Type and Country columns are pre-filled from your Tally Books JSON and Ledger Mapping XLSX.  Do NOT edit them.",
-        "2. Fill the Email ID column for every party that needs a balance confirmation.  Add an Alternate Email if you'd like a CC.",
-        "3. For 43B(h) MSME disallowance, set MSME Status = Micro / Small / Medium for every MSME-registered supplier and capture the MSME Registration No.",
-        "4. Save and re-upload via the Library panel — the engine will pick up the enrichment automatically.",
-        "5. You can leave a row's email blank if you don't intend to seek confirmation from that party.",
+        "1. The Party Name, Subhead / Group, Closing Balance, GSTIN, GST Reg Type and Country columns are pre-filled from your Tally Books JSON and Ledger Mapping XLSX.  Do NOT edit them.",
+        "2. Fill the Email ID column on each sheet for every party that needs a balance confirmation.  Add an Alternate Email if you'd like a CC.",
+        "3. Bank Accounts sheet — fill Bank Name, Account Number, IFSC and Email for every bank ledger.  These power the Bank Confirmation flow.",
+        "4. MSME Details sheet — Trade Payables vendors only.  Set Sector / MSME Type / Capital Goods using the dropdowns.  Drives 43B(h) Disallowance.  Leave the row blank if the vendor is not MSME-registered.",
+        "5. Save and re-upload via the Library panel — the engine will pick up the enrichment automatically.",
         "",
         "Legend",
         "  • Pre-filled (read-only) cells are shown with a pale emerald background.",
         "  • Auditor-fill cells are shown with a pale amber background.",
         "",
         "Sheets",
-        "  • Sundry Creditors  — vendors / suppliers (highest priority for confirmations + 43B(h) MSME).",
-        "  • Sundry Debtors    — customers (for receivable confirmations).",
-        "  • Loans & Advances  — counter-parties for loans, advances, deposits.",
-        "  • Other Parties     — anything else with a closing balance.",
+        "  • Trade Payables     — vendors / suppliers (drives Confirmations + 43B(h)).",
+        "  • Trade Receivables  — customers (drives Confirmations).",
+        "  • Unsecured Loans    — loan / advance counter-parties (drives Confirmations).",
+        "  • Bank Accounts      — bank ledgers (drives Bank Confirmations).",
+        "  • Others             — anything else with a closing balance.",
+        "  • MSME Details       — vendor-only MSME categorisation, with dropdowns.",
     ]
-    for i, line in enumerate(instructions, start=4):
-        readme.cell(row=i, column=1, value=line)
-    readme.column_dimensions["A"].width = 110
-
-    # ── 4. One sheet per bucket.
-    for bucket in GROUP_BUCKETS:
-        rows = buckets[bucket]
-        ws = wb.create_sheet(title=bucket)
-        _write_header(ws, PARTY_HEADERS, note_row=PARTY_HEADER_NOTES)
-        # Highlight pre-filled vs auditor-fill columns.
-        prefilled_cols = (1, 2, 3, 4, 5, 6)   # 1-indexed
-        for ri, row in enumerate(rows, start=3):
-            for ci, val in enumerate(row, start=1):
-                c = ws.cell(row=ri, column=ci, value=val)
-                c.fill = PREFILLED_FILL if ci in prefilled_cols else TODO_FILL
-                c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
-        if not rows:
-            ws.cell(row=3, column=1, value="(no parties in this bucket)").font = Font(italic=True, color="8A8A83")
-        _autosize(ws, PARTY_HEADERS, rows)
-        ws.freeze_panes = "A3"  # both header rows fixed
-        ws.sheet_view.showGridLines = False
-
-    # ── 5. Stream out.
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue(), f"party_master_template__{client_id}__{period}.xlsx"
+    for i, line in enumerate(instructions, start=6):
+        ws.cell(row=i, column=1, value=line)
+    ws.column_dimensions["A"].width = 110
 
 
 # ---------------------------------------------------------------------------
