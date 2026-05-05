@@ -81,7 +81,6 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/frontend/node_modules/.cache/default-development/2.pack
 frontend/node_modules/.cache/default-development/2.pack
--e 
 # Environment and credential files
 # Note: .env / .env.* are NOT ignored — they hold REACT_APP_BACKEND_URL,
 # MONGO_URL, DB_NAME, etc. required for runtime and deployment.
@@ -100,7 +99,6 @@ frontend/node_modules/.cache/default-development/5.pack
 frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/11.pack
--e 
 # Environment and credential files
 # Note: .env / .env.* are NOT ignored — they hold REACT_APP_BACKEND_URL,
 # MONGO_URL, DB_NAME, etc. required for runtime and deployment.
@@ -108,7 +106,6 @@ credentials.json
 *.pem
 *.key
 .credentials
--e 
 # Environment and credential files
 # Note: .env / .env.* are NOT ignored — they hold REACT_APP_BACKEND_URL,
 # MONGO_URL, DB_NAME, etc. required for runtime and deployment.
