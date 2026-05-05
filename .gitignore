@@ -102,18 +102,16 @@ frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/11.pack
 -e 
 # Environment and credential files
-.env
-.env.*
-*.env
+# Note: .env / .env.* are NOT ignored — they hold REACT_APP_BACKEND_URL,
+# MONGO_URL, DB_NAME, etc. required for runtime and deployment.
 credentials.json
 *.pem
 *.key
 .credentials
 -e 
 # Environment and credential files
-.env
-.env.*
-*.env
+# Note: .env / .env.* are NOT ignored — they hold REACT_APP_BACKEND_URL,
+# MONGO_URL, DB_NAME, etc. required for runtime and deployment.
 credentials.json
 *.pem
 *.key
