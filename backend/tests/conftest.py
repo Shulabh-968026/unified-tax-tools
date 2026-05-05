@@ -4,7 +4,24 @@ import requests
 import subprocess
 import json
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://form3cd-pro.preview.emergentagent.com").rstrip("/")
+def _resolve_base_url() -> str:
+    """Pick BASE_URL from env, falling back to /app/frontend/.env so that
+    tests work whether or not the env var is exported (the CRA `.env` is
+    the production source of truth for the preview URL)."""
+    env_url = os.environ.get("REACT_APP_BACKEND_URL")
+    if env_url:
+        return env_url.rstrip("/")
+    try:
+        with open("/app/frontend/.env", "r") as fh:
+            for line in fh:
+                if line.startswith("REACT_APP_BACKEND_URL="):
+                    return line.split("=", 1)[1].strip().rstrip("/")
+    except OSError:
+        pass
+    return "http://localhost:8001"
+
+
+BASE_URL = _resolve_base_url()
 
 # File-number prefixes that ALL live test fixtures use to mark their seed
 # clients so end-of-session cleanup can wipe them without touching real
