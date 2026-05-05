@@ -39,22 +39,26 @@ export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
     } else if (uploaded === 0) {
       state = "data_missing";
       label = "⊘ Data Missing";
-      klass = "bg-rose-50 text-rose-900 border-rose-200";
+      // Red — solid rose tile so it's unmistakable from the warm-spectrum states.
+      klass = "bg-rose-100 text-rose-900 border-rose-300";
       title = `Required input files have not been uploaded to the Library yet (${uploaded} of ${total} dependencies in place).`;
     } else if (uploaded < total) {
       state = "partial_data_ready";
       label = `▲ Partial Data Ready · ${uploaded}/${total}`;
-      klass = "bg-amber-50 text-amber-900 border-amber-300";
+      // Amber — clearly orange-toned, distinct from the bright Data-Ready yellow.
+      klass = "bg-orange-100 text-orange-900 border-orange-400";
       title = `${uploaded} of ${total} required inputs uploaded — please complete the remaining ${total - uploaded} to unlock this utility.`;
     } else if (libraryStatus.has_run && !libraryStatus.outdated && !libraryStatus.missing) {
       state = "report_ready";
       label = "✓ Report Ready";
-      klass = "bg-emerald-50 text-emerald-900 border-emerald-200";
+      // Green — emerald, solid enough to read as success.
+      klass = "bg-emerald-100 text-emerald-900 border-emerald-400";
       title = "All inputs uploaded and the latest report is in sync with them.";
     } else {
       state = "data_ready";
       label = libraryStatus.outdated ? "◆ Data Ready · Rerun pending" : "◆ Data Ready";
-      klass = "bg-yellow-50 text-yellow-900 border-yellow-300";
+      // Yellow — bright, more saturated than amber so the two read as distinct families.
+      klass = "bg-yellow-200 text-yellow-900 border-yellow-500";
       title = libraryStatus.outdated
         ? "All inputs are present but the last run was pinned to an older version — rerun to refresh the report."
         : "All inputs uploaded.  Open the utility to generate the report.";
