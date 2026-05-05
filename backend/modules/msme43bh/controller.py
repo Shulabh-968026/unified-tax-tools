@@ -10,7 +10,7 @@ from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, Upl
 
 from modules.auth.controller import get_current_user
 from modules.msme43bh import dao
-from modules.msme43bh.exports import build_audit_export, build_profile_template
+from modules.msme43bh.exports import build_audit_export, build_audit_export_bytes, build_profile_template
 from modules.msme43bh.schemas import (
     ProfilesUpdate,
     SessionCreate,
@@ -23,6 +23,8 @@ from modules.msme43bh.service import (
     parse_yearend_excel,
     session_summary,
 )
+from modules.library import service as lib_svc
+from modules.library.controller import DEFAULT_FIRM_ID
 
 router = APIRouter(prefix="/msme")
 logger = logging.getLogger("msme43bh")
@@ -238,7 +240,7 @@ async def compute_session(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     doc = await dao.find_session(sid)
     if not doc:
         raise HTTPException(404, "Session not found")
@@ -248,7 +250,57 @@ async def compute_session(
     result = compute_disallowance(
         bills, doc.get("profiles", []), doc.get("payments", []), force_fifo=force_fifo
     )
-    await dao.set_session_fields(sid, {"results": result})
+
+    # Snapshot the current Library file_ids for our declared dependencies
+    # so the "outdated" badge works without changing 43BH's existing flows.
+    pinned_files: dict = {}
+    try:
+        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+        for ft in ("books_json", "party_master_xlsx"):
+            cur = await lib_svc.get_current_file(
+                firm_id=firm_id, client_id=doc.get("client_id", ""),
+                period=doc.get("fy", ""), division=None, file_type=ft,
+            )
+            if cur:
+                pinned_files[ft] = cur["file_id"]
+                await lib_svc.pin_file_to_run(cur["file_id"], sid)
+    except Exception:
+        logger.exception("43BH library pin snapshot failed (non-fatal)")
+
+    await dao.set_session_fields(sid, {
+        "results": result,
+        "module": "msme43bh",
+        "pinned_files": pinned_files,
+        "firm_id": user.get("firm_id") or DEFAULT_FIRM_ID,
+    })
+
+    # Auto-save the Creditor Report into the Client Library so it shows
+    # up under "Generated reports" alongside the source files.
+    try:
+        client_id = doc.get("client_id")
+        period = doc.get("fy") or ""
+        if client_id and period:
+            blob = build_audit_export_bytes(result)
+            await lib_svc.create_file_version(
+                firm_id=user.get("firm_id") or DEFAULT_FIRM_ID,
+                client_id=client_id,
+                period=period,
+                division=None,
+                file_type="msme43bh_creditor_report_xlsx",
+                filename_original=f"AssureAI_43Bh_CreditorReport_{sid[:8]}.xlsx",
+                content=blob,
+                uploaded_by_email=user.get("email") or "",
+                parse_status="generated",
+                parse_summary={
+                    "session_id": sid,
+                    "final_disallowance": result["summary"]["final_disallowance"],
+                    "bill_count": result["summary"]["bill_count"],
+                    "disallowed_count": result["summary"]["disallowed_count"],
+                },
+            )
+    except Exception:
+        logger.exception("Failed to auto-save 43B(h) creditor report to Library (non-fatal)")
+
     return result
 
 

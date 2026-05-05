@@ -40,7 +40,9 @@ def build_profile_template(profiles: List[Dict[str, Any]], sid: str) -> Streamin
     )
 
 
-def build_audit_export(results: Dict[str, Any], sid: str) -> StreamingResponse:
+def build_audit_export_bytes(results: Dict[str, Any]) -> bytes:
+    """Same workbook as `build_audit_export` but returns raw bytes (for
+    Library auto-save during compute)."""
     rows = results["audit_rows"]
     summary = results["summary"]
     df = pd.DataFrame([
@@ -95,7 +97,12 @@ def build_audit_export(results: Dict[str, Any], sid: str) -> StreamingResponse:
                 width = max(14, min(40, int(frame[col].astype(str).map(len).max() if len(frame) else 12) + 2))
                 ws.set_column(i, i, width)
     output.seek(0)
+    return output.getvalue()
+
+
+def build_audit_export(results: Dict[str, Any], sid: str) -> StreamingResponse:
+    blob = build_audit_export_bytes(results)
     return StreamingResponse(
-        output, media_type=XLSX_MEDIA,
+        io.BytesIO(blob), media_type=XLSX_MEDIA,
         headers={"Content-Disposition": f'attachment; filename="AssureAI_43Bh_Audit_{sid[:8]}.xlsx"'},
     )

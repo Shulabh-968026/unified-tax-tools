@@ -443,26 +443,33 @@ def _build_readme(ws, *, period: str):
     ws["A1"].font = Font(bold=True, size=14)
     ws["A3"] = f"Generated for FY {period}"
     ws["A3"].font = Font(bold=False, size=10, italic=True, color="52524E")
-    ws["A5"] = "How to use"
+    ws["A5"] = "Workbook structure (7 sheets in total)"
     ws["A5"].font = Font(bold=True, size=11)
     instructions = [
-        "1. The Party Name, Subhead / Group, Closing Balance, GSTIN, GST Reg Type and Country columns are pre-filled from your Tally Books JSON and Ledger Mapping XLSX.  Do NOT edit them.",
-        "2. Fill the Email ID column on each sheet for every party that needs a balance confirmation.  Add an Alternate Email if you'd like a CC.",
-        "3. Bank Accounts sheet — fill Bank Name, Account Number, IFSC and Email for every bank ledger.  These power the Bank Confirmation flow.",
-        "4. MSME Details sheet — Trade Payables vendors only.  Set Sector / MSME Type / Capital Goods using the dropdowns.  Drives 43B(h) Disallowance.  Leave the row blank if the vendor is not MSME-registered.",
-        "5. Save and re-upload via the Library panel — the engine will pick up the enrichment automatically.",
+        "  README           — this sheet (orientation, legend, sheet index, instructions).",
+        "  Trade Payables   — vendors / suppliers (drives Confirmations + 43B(h)).",
+        "  Trade Receivables — customers (drives Confirmations).",
+        "  Unsecured Loans  — loan / advance counter-parties (drives Confirmations).",
+        "  Bank Accounts    — bank ledgers (drives Bank Confirmations).",
+        "  Others           — anything else with a closing balance.",
+        "  MSME Details     — Trade Payables vendors only · Sector / MSME Type / Capital Goods drop-downs · drives 43B(h).",
         "",
         "Legend",
         "  • Pre-filled (read-only) cells are shown with a pale emerald background.",
         "  • Auditor-fill cells are shown with a pale amber background.",
         "",
-        "Sheets",
-        "  • Trade Payables     — vendors / suppliers (drives Confirmations + 43B(h)).",
-        "  • Trade Receivables  — customers (drives Confirmations).",
-        "  • Unsecured Loans    — loan / advance counter-parties (drives Confirmations).",
-        "  • Bank Accounts      — bank ledgers (drives Bank Confirmations).",
-        "  • Others             — anything else with a closing balance.",
-        "  • MSME Details       — vendor-only MSME categorisation, with dropdowns.",
+        "How to use",
+        "1. Party Name, Subhead / Group, Closing Balance, GSTIN, GST Reg Type and Country are pre-filled from your Tally Books JSON and Ledger Mapping XLSX. Do NOT edit them.",
+        "2. On Trade Payables / Trade Receivables / Unsecured Loans — fill the Email column for every party that needs a balance confirmation.  Add an Alternate Email if you'd like a CC.",
+        "3. On Bank Accounts — fill Bank Name, Account Number, IFSC and Email for every bank ledger.  These power the Bank Confirmation flow.",
+        "4. On MSME Details — Trade Payables vendors only.  Set Sector / MSME Type / Capital Goods using the dropdowns.  Drives 43B(h) Disallowance.  Leave the row blank if the vendor is not MSME-registered.",
+        "5. The Others sheet is a catch-all bucket — review it for any party that needs a confirmation request that didn't fall into the four named buckets.",
+        "6. Save and re-upload via the Library panel — the engine will pick up the enrichment automatically and downstream modules will pin to the new version.",
+        "",
+        "Notes",
+        "  • Closing Balance is shown with a Cr / Dr suffix and lakh-style grouping for human readability.",
+        "  • The Subhead / Group column is the Tally Schedule III tag we use to bucket each ledger; it is informational only.",
+        "  • Re-uploads are versioned — three live versions are retained per file-type, older versions are soft-deleted (30-day grace) and never deleted while a run is pinned to them.",
     ]
     for i, line in enumerate(instructions, start=6):
         ws.cell(row=i, column=1, value=line)

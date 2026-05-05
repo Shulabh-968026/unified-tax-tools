@@ -106,6 +106,10 @@ export default function ClientLibraryPanel({
     () => (status?.files || []).filter((f) => f.kind === "secondary"),
     [status],
   );
+  const outputs = useMemo(
+    () => (status?.files || []).filter((f) => f.kind === "output"),
+    [status],
+  );
   const completeness = useMemo(() => {
     const all = status?.files || [];
     const required = all.filter((f) => f.kind === "primary");
@@ -211,6 +215,24 @@ export default function ClientLibraryPanel({
               division={division}
             />
           )}
+          {outputs.length > 0 && (
+            <div className="border-t border-[#E5E5E0]">
+              <div className="px-5 py-2 bg-[#FAFAF7] font-mono text-[10.5px] uppercase tracking-[0.16em] text-[#8A8A83]">
+                Generated reports · produced by utilities
+              </div>
+              <FileGrid
+                files={outputs}
+                busyKey={busyKey}
+                fileInputs={fileInputs}
+                onPickFile={onPickFile}
+                triggerInput={triggerInput}
+                onDelete={onDelete}
+                clientId={clientId}
+                period={period}
+                division={division}
+              />
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -247,6 +269,7 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
 
 function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division }) {
   const isUploaded = file.uploaded;
+  const isOutput = file.kind === "output";
   const templateUrl = file.has_template
     ? downloadLibraryTemplateUrl(clientId, file.key, period, division || null)
     : null;
@@ -275,6 +298,16 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
               Required
             </Badge>
           )}
+          {isOutput && (
+            <Badge className="bg-violet-50 text-violet-900 border border-violet-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-0">
+              Generated
+            </Badge>
+          )}
+          {isOutput && !isUploaded && (
+            <Badge className="bg-slate-50 text-slate-600 border border-slate-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-0">
+              Awaiting computation
+            </Badge>
+          )}
           {file.has_template && (
             <Badge className="bg-sky-50 text-sky-900 border border-sky-200 rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-0" title="A pre-populated template can be auto-generated for this file">
               Auto-template
@@ -285,8 +318,8 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
           {isUploaded ? (
             <>
               {file.filename_original} · {(file.size_bytes / 1024).toFixed(0)} KB
-              · uploaded {formatDateTime(file.uploaded_at)}
-              {file.uploaded_by_email ? ` by ${file.uploaded_by_email}` : ""}
+              · {isOutput ? "generated" : "uploaded"} {formatDateTime(file.uploaded_at)}
+              {file.uploaded_by_email && !isOutput ? ` by ${file.uploaded_by_email}` : ""}
             </>
           ) : (
             file.description
@@ -294,14 +327,16 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <input
-          ref={inputRef}
-          type="file"
-          accept={file.ext.join(",")}
-          onChange={onPick}
-          className="hidden"
-          data-testid={`library-file-input-${file.key}`}
-        />
+        {!isOutput && (
+          <input
+            ref={inputRef}
+            type="file"
+            accept={file.ext.join(",")}
+            onChange={onPick}
+            className="hidden"
+            data-testid={`library-file-input-${file.key}`}
+          />
+        )}
         {isUploaded && (
           <a
             href={downloadLibraryFileUrl(file.file_id)}
@@ -315,7 +350,7 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
         {/* Download Template — only for file_types with a registered
             generator (Party Master today; FA Register / Bank Statements
             etc. follow the same pattern in future). */}
-        {templateUrl && (
+        {templateUrl && !isOutput && (
           <a
             href={templateUrl}
             data-testid={`library-template-${file.key}`}
@@ -325,21 +360,23 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
             <FileArrowDown size={11}/> Template
           </a>
         )}
-        <Button
-          data-testid={`library-upload-${file.key}`}
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={onUploadClick}
-          className="h-8 px-2.5 rounded-sm shadow-none border-[#D4D4D0] font-mono text-[10.5px] uppercase tracking-[0.12em]"
-        >
-          {busy ? <><Lightning size={11} className="animate-pulse mr-1"/> Uploading</> : (
-            <>
-              <UploadSimple size={11} className="mr-1"/> {isUploaded ? "Replace" : "Upload"}
-            </>
-          )}
-        </Button>
-        {isUploaded && (
+        {!isOutput && (
+          <Button
+            data-testid={`library-upload-${file.key}`}
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={onUploadClick}
+            className="h-8 px-2.5 rounded-sm shadow-none border-[#D4D4D0] font-mono text-[10.5px] uppercase tracking-[0.12em]"
+          >
+            {busy ? <><Lightning size={11} className="animate-pulse mr-1"/> Uploading</> : (
+              <>
+                <UploadSimple size={11} className="mr-1"/> {isUploaded ? "Replace" : "Upload"}
+              </>
+            )}
+          </Button>
+        )}
+        {isUploaded && !isOutput && (
           <button
             onClick={() => onDelete(file.key, file.file_id)}
             data-testid={`library-delete-${file.key}`}

@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.library import service as lib_svc
+from modules.library.controller import DEFAULT_FIRM_ID
 from modules.fixed_assets.additions_xlsx import (
     block_drift,
     build_additions_workbook,
@@ -188,10 +190,21 @@ async def get_run(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
+    try:
+        firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+        run["library_status"] = await lib_svc.compute_module_status(
+            firm_id=firm_id, client_id=run["client_id"],
+            period=run.get("fy", ""), division=None,
+            module_key="fixed_assets",
+            pinned_files=run.get("pinned_files") or {},
+        )
+    except Exception:
+        log.exception("library_status attach failed (non-fatal)")
+        run["library_status"] = None
     return run
 
 
@@ -254,7 +267,7 @@ async def ingest_books(
 ):
     """Re-runnable: wipes prior FA ledger / addition / credit rows for this run
     and rebuilds them from the uploaded Books JSON."""
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
@@ -277,6 +290,27 @@ async def ingest_books(
         })
     except Exception as e:  # noqa: BLE001
         log.warning(f"BOOKS_RAW stash failed for run {rid}: {e}")
+
+    # --- Library integration — also save bytes as books_json + pin to run.
+    pinned_files = run.get("pinned_files") or {}
+    try:
+        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+        lib_books = await lib_svc.save_and_pin(
+            firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+            division=None, file_type="books_json",
+            filename_original=file.filename or "books.json",
+            content=raw, uploaded_by_email=user.get("email") or "",
+            run_id=rid, parse_status="success",
+            parse_summary={"n_ledgers": len(books.get("ledgers", []) or [])},
+        )
+        pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
+        await RUNS.update_one(
+            {"id": rid},
+            {"$set": {"module": "fixed_assets", "pinned_files": pinned_files,
+                      "firm_id": firm_id}},
+        )
+    except Exception:
+        log.exception("Library save failed (non-fatal)")
 
     # --- Build FA ledgers (depreciation ledgers excluded by service) -------
     detected = fa_ledgers(books)

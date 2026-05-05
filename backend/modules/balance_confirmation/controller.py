@@ -24,6 +24,8 @@ from svix.webhooks import Webhook, WebhookVerificationError
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.library import service as lib_svc
+from modules.library.controller import DEFAULT_FIRM_ID
 from modules.balance_confirmation.exports import build_authorization_template_docx
 from modules.balance_confirmation.recon import auto_match, parse_recipient_statement
 from modules.balance_confirmation.schemas import (
@@ -141,10 +143,23 @@ async def get_run(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     doc = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    # Attach library outdated/missing status — drives the morphing
+    # "Rerun on Latest Data" button on the BC run shell.
+    try:
+        firm_id = doc.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+        doc["library_status"] = await lib_svc.compute_module_status(
+            firm_id=firm_id, client_id=doc["client_id"],
+            period=doc.get("fy", ""), division=None,
+            module_key="balance_confirmation",
+            pinned_files=doc.get("pinned_files") or {},
+        )
+    except Exception:
+        log.exception("library_status attach failed (non-fatal)")
+        doc["library_status"] = None
     return doc
 
 
@@ -156,9 +171,16 @@ async def delete_run(
     authorization: Optional[str] = Header(default=None),
 ):
     await _auth(request, session_token, authorization)
+    doc = await RUNS.find_one({"id": rid}, {"_id": 0, "pinned_files": 1})
     res = await RUNS.delete_one({"id": rid})
     if res.deleted_count == 0:
         raise HTTPException(404, "Run not found")
+    # Unpin Library files so old versions can be auto-pruned.
+    for fid in (doc or {}).get("pinned_files", {}).values():
+        try:
+            await lib_svc.unpin_file_from_run(fid, rid)
+        except Exception:
+            pass
     # Cascade
     await LEDGERS.delete_many({"run_id": rid})
     await BOOKS_RAW.delete_many({"run_id": rid})
@@ -166,6 +188,83 @@ async def delete_run(
     await db.bc_responses.delete_many({"run_id": rid})
     await db.bc_recon_comments.delete_many({"run_id": rid})
     return {"deleted": True}
+
+
+@router.post("/runs/{rid}/rerun")
+async def rerun_on_latest(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Re-pin to the current Library `books_json` version and re-parse.
+    Auditor's manual ledger edits (email, category, response_token, etc.)
+    are preserved through the existing `build_ledger_records` carry-forward
+    logic in `upload_books`."""
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+    cur = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+        division=None, file_type="books_json",
+    )
+    if not cur:
+        raise HTTPException(409, "No Books JSON in Library — upload one first.")
+    # Read the current bytes and feed them through the same upload path.
+    content = await lib_svc.read_file_bytes(cur["file_id"])
+    try:
+        company, groups, ledgers = parse_books_json(content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    old_pinned = run.get("pinned_files") or {}
+    # Unpin previous files we're about to replace.
+    for ft, old_fid in old_pinned.items():
+        if ft == "books_json" and old_fid != cur["file_id"]:
+            try:
+                await lib_svc.unpin_file_from_run(old_fid, rid)
+            except Exception:
+                pass
+    await lib_svc.pin_file_to_run(cur["file_id"], rid)
+
+    existing = {
+        L["name"]: L for L in await LEDGERS.find(
+            {"run_id": rid}, {"_id": 0}
+        ).to_list(20000)
+    }
+    new_records = build_ledger_records(rid, groups, ledgers)
+    for rec in new_records:
+        prev = existing.get(rec["name"])
+        if prev:
+            for k in ("email", "cc_emails", "bcc_emails", "contact_name", "phone",
+                      "address", "gstin", "pan", "category"):
+                if prev.get(k):
+                    rec[k] = prev[k]
+            rec["response_token"] = prev.get("response_token") or rec["response_token"]
+            rec["confirmation_status"] = prev.get("confirmation_status") or rec["confirmation_status"]
+    await LEDGERS.delete_many({"run_id": rid})
+    if new_records:
+        await LEDGERS.insert_many(new_records)
+    summary = summarise_ledgers(new_records)
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {
+            "module": "balance_confirmation",
+            "source_filename": cur["filename_original"],
+            "company": company,
+            "summary": summary,
+            "status": "ingested",
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "pinned_files": {**old_pinned, "books_json": cur["file_id"]},
+            "firm_id": firm_id,
+        }},
+    )
+    return {
+        "ok": True, "ledger_count": len(new_records), "company": company,
+        "pinned_books_file_id": cur["file_id"],
+    }
 
 
 # ============================ Books JSON ingest ===============================
@@ -177,7 +276,7 @@ async def upload_books(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
@@ -198,6 +297,24 @@ async def upload_books(
         "size": len(content),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     })
+
+    # Library integration — also save bytes to the Client Library and pin
+    # this run to the resulting version.  Downstream "outdated" detection
+    # works off this pin.
+    pinned_files = run.get("pinned_files") or {}
+    try:
+        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+        lib_books = await lib_svc.save_and_pin(
+            firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+            division=None, file_type="books_json",
+            filename_original=file.filename or "books.json",
+            content=content, uploaded_by_email=user.get("email") or "",
+            run_id=rid, parse_status="success",
+            parse_summary={"company_name": company, "n_ledgers": len(ledgers or [])},
+        )
+        pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
+    except Exception:
+        log.exception("Library save failed (non-fatal)")
 
     # Build ledger records — replace any prior ledgers from earlier upload, but
     # preserve manual email mappings if the same name reappears.
@@ -227,11 +344,14 @@ async def upload_books(
     await RUNS.update_one(
         {"id": rid},
         {"$set": {
+            "module": "balance_confirmation",
             "source_filename": file.filename or "",
             "company": company,
             "summary": summary,
             "status": "ingested",
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "pinned_files": pinned_files,
+            "firm_id": user.get("firm_id") or DEFAULT_FIRM_ID,
         }},
     )
     return {

@@ -15,10 +15,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.db import db
 from modules.auth.controller import get_current_user
+from modules.library import service as lib_svc
+from modules.library.controller import DEFAULT_FIRM_ID
 from modules.fin_statement.normalizer import normalize_final_statement
 from modules.fin_statement.pdf_renderer import render_pdf
 
@@ -42,6 +44,7 @@ class FsRunCreate(BaseModel):
 
 
 class FsRunOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id:         str
     client_id:  str
     fy:         str
@@ -119,10 +122,20 @@ async def get_run(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
+    try:
+        firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+        run["library_status"] = await lib_svc.compute_module_status(
+            firm_id=firm_id, client_id=run["client_id"],
+            period=run.get("fy", ""), division=None,
+            module_key="fin_statement",
+            pinned_files=run.get("pinned_files") or {},
+        )
+    except Exception:
+        run["library_status"] = None
     return run
 
 
@@ -153,7 +166,7 @@ async def ingest_statement(
 ):
     """Upload a pre-aggregated FinalStatement JSON for this run. Parses,
     normalizes, persists, and returns the normalized preview document."""
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
@@ -179,6 +192,22 @@ async def ingest_statement(
     doc["source_filename"] = file.filename or ""
     doc["ingested_at"] = now_iso
 
+    # Library — save the FinalStatement JSON as books_json + pin to run.
+    pinned_files = run.get("pinned_files") or {}
+    try:
+        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+        lib_books = await lib_svc.save_and_pin(
+            firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+            division=None, file_type="books_json",
+            filename_original=file.filename or "books.json", content=raw,
+            uploaded_by_email=user.get("email") or "", run_id=rid,
+            parse_status="success",
+            parse_summary={"n_notes": doc.get("counts", {}).get("notes", 0)},
+        )
+        pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
+    except Exception:
+        log.exception("Library save failed (non-fatal)")
+
     await BOOKS_RAW.replace_one(
         {"run_id": rid},
         {
@@ -193,11 +222,14 @@ async def ingest_statement(
     await RUNS.update_one(
         {"id": rid},
         {"$set": {
+            "module":       "fin_statement",
             "status":       "ingested",
             "books_loaded": True,
             "note_count":   doc.get("counts", {}).get("notes", 0),
             "detail_count": doc.get("counts", {}).get("details", 0),
             "updated_at":   now_iso,
+            "pinned_files": pinned_files,
+            "firm_id":      user.get("firm_id") or DEFAULT_FIRM_ID,
         }},
     )
     doc.pop("_id", None)

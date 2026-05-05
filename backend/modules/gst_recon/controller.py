@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from core.db import db
 from helpers.mapping import parse_ledger_mapping
 from modules.auth.controller import get_current_user
+from modules.library import service as lib_svc
+from modules.library.controller import DEFAULT_FIRM_ID
 from modules.gst_recon.schemas import RunCreate, RunOut
 from modules.gst_recon.aggregators import (
     aggregate_books,
@@ -187,10 +189,20 @@ async def get_run(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     doc = await COLL.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    try:
+        firm_id = doc.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+        doc["library_status"] = await lib_svc.compute_module_status(
+            firm_id=firm_id, client_id=doc["client_id"],
+            period=doc.get("fy", ""), division=None,
+            module_key="gst_recon",
+            pinned_files=doc.get("pinned_files") or {},
+        )
+    except Exception:
+        doc["library_status"] = None
     return doc
 
 
@@ -221,7 +233,7 @@ async def upload_batch(
 ):
     """Categorize a batch of filenames into buckets. Phase A returns the bucket summary + updated 12-month grid.
     Phase B will persist file contents and run pre-flight validation."""
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     doc = await COLL.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
@@ -258,6 +270,27 @@ async def upload_batch(
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 })
                 pending_books_content = content
+                # Library integration — also save as books_json + pin to run.
+                try:
+                    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+                    lib_books = await lib_svc.save_and_pin(
+                        firm_id=firm_id, client_id=doc["client_id"],
+                        period=doc.get("fy", ""), division=None,
+                        file_type="books_json",
+                        filename_original=entry["filename"], content=content,
+                        uploaded_by_email=user.get("email") or "", run_id=rid,
+                        parse_status="success",
+                    )
+                    pinned = doc.get("pinned_files") or {}
+                    pinned["books_json"] = lib_books["file_id"]
+                    await COLL.update_one(
+                        {"id": rid},
+                        {"$set": {"module": "gst_recon", "pinned_files": pinned,
+                                  "firm_id": firm_id}},
+                    )
+                    doc["pinned_files"] = pinned
+                except Exception:
+                    pass
         if entry["bucket"] == "mapping" and meta.get("integrity_ok"):
             parsed = parse_ledger_mapping(content)
             if parsed.get("error"):

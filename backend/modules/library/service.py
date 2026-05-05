@@ -210,6 +210,33 @@ async def unpin_file_from_run(file_id: str, run_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Module-side helper — `save_and_pin` uploads bytes for `file_type` AND pins
+# the resulting version to `run_id` in one call.  Used by Balance
+# Confirmation / Fixed Assets / GST Recon / FS Designer when they receive
+# their primary inputs.
+# ---------------------------------------------------------------------------
+async def save_and_pin(
+    *,
+    firm_id: str, client_id: str, period: str, division: str | None,
+    file_type: str, filename_original: str, content: bytes,
+    uploaded_by_email: str, run_id: str,
+    parse_status: str = "skipped",
+    parse_summary: dict | None = None,
+) -> dict:
+    """Convenience: persist `content` as a new Library version, pin the
+    resulting file_id to `run_id`, and return the row."""
+    row = await create_file_version(
+        firm_id=firm_id, client_id=client_id, period=period,
+        division=division, file_type=file_type,
+        filename_original=filename_original, content=content,
+        uploaded_by_email=uploaded_by_email,
+        parse_status=parse_status, parse_summary=parse_summary or {},
+    )
+    await pin_file_to_run(row["file_id"], run_id)
+    return row
+
+
+# ---------------------------------------------------------------------------
 # Soft-delete + restore + hard-prune (the 30-day cleanup).
 # ---------------------------------------------------------------------------
 async def soft_delete(file_id: str) -> dict:
@@ -369,16 +396,31 @@ async def compute_client_status(
             "size_bytes": cur["size_bytes"] if cur else 0,
         })
 
-    # Module rollup — read the latest run for each module and compute its status.
+    # Module rollup — read the latest run/session for each module and compute status.
+    # Each module persists its working doc in its own collection with its own
+    # primary-key field name; this map lets us route the lookup uniformly.
+    MODULE_RUN_COLLECTIONS = {
+        "clause44":             ("runs",                {"period": period, "module": "clause44"},                                    "run_id"),
+        "msme43bh":             ("msme_sessions",       {"fy": period},                                                              "id"),
+        "fixed_assets":         ("fa_runs",             {"fy": period},                                                              "id"),
+        "balance_confirmation": ("bc_runs",             {"fy": period},                                                              "id"),
+        "gst_recon":            ("gst_recon_runs",      {"fy": period},                                                              "id"),
+        "fin_statement":        ("fs_runs",             {"fy": period},                                                              "id"),
+    }
+
     module_chips = []
     for module_key in MODULE_DEPENDENCIES:
-        run = await db.runs.find_one(
-            {"client_id": client_id, "period": period, "module": module_key, "archived": False},
-            sort=[("created_at", -1)],
-            projection={"_id": 0, "run_id": 1, "pinned_files": 1},
+        coll_name, query_extra, _id_field = MODULE_RUN_COLLECTIONS.get(
+            module_key, ("runs", {"period": period, "module": module_key}, "run_id"),
         )
-        # Fallback: pre-Library runs lived in `db.runs` without a `module`
-        # field — for Clause 44, those are the 100% of runs we have today.
+        run = await db[coll_name].find_one(
+            {"client_id": client_id, "archived": {"$ne": True}, **query_extra},
+            sort=[("created_at", -1)],
+            projection={"_id": 0, "run_id": 1, "id": 1, "pinned_files": 1},
+        )
+        # Fallback: pre-Library Clause 44 runs lived in `db.runs` without
+        # a `module` field — for Clause 44, they're the bulk of historical
+        # runs.  Look them up as a second pass.
         if not run and module_key == "clause44":
             run = await db.runs.find_one(
                 {"client_id": client_id, "period": period, "archived": False, "module": {"$exists": False}},
@@ -390,7 +432,7 @@ async def compute_client_status(
             module_key=module_key, pinned_files=(run or {}).get("pinned_files") or {},
         )
         st["has_run"] = bool(run)
-        st["run_id"] = (run or {}).get("run_id")
+        st["run_id"] = (run or {}).get("run_id") or (run or {}).get("id")
         module_chips.append(st)
 
     return {"files": file_chips, "modules": module_chips}
