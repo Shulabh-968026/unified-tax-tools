@@ -38,14 +38,23 @@ def libb_client(auth_headers, sample_files):
 
 
 # ---------- 1. Catalog ----------------------------------------------------
-def test_catalog_has_msme_output_type(libb_client):
+def test_catalog_has_msme_creditor_report(libb_client):
     r = requests.get(f"{BASE_URL}/api/library/catalog", headers=_hdr(libb_client))
     assert r.status_code == 200
     types = r.json()["file_types"]
-    assert len(types) == 14
+    assert len(types) == 13
     by_key = {t["key"]: t for t in types}
     assert "msme43bh_creditor_report_xlsx" in by_key
-    assert by_key["msme43bh_creditor_report_xlsx"]["kind"] == "output"
+    # Reclassified to secondary in 4.3 (was 'output' in 4.2).
+    assert by_key["msme43bh_creditor_report_xlsx"]["kind"] == "secondary"
+    # Removed in 4.3 — these are not used anywhere yet.
+    assert "bank_statements_xlsx" not in by_key
+    assert "gstr_9_json" not in by_key
+    # New in 4.3.
+    assert "it_depreciation_opening_wdv_xlsx" in by_key
+    # FA Register and Opening WDV both have templates now.
+    assert by_key["fa_register_xlsx"]["has_template"] is True
+    assert by_key["it_depreciation_opening_wdv_xlsx"]["has_template"] is True
 
 
 # ---------- 2. Party master template (7 sheets + 3 dropdowns) ------------
@@ -90,20 +99,28 @@ def test_party_master_template_has_7_sheets_with_dvs(libb_client):
     assert any("Yes" in f and "No" in f for f in formulas)
 
 
-# ---------- 3. Upload of kind=output is rejected -------------------------
-def test_upload_output_file_type_rejected(libb_client):
+# ---------- 3. Upload of msme43bh_creditor_report_xlsx is now ALLOWED ----
+# (Reclassified from output → secondary in 4.3; auditors can drop in an
+# externally-prepared report.)
+def test_upload_creditor_report_now_allowed(libb_client):
+    # Use a syntactically-valid (header-only) xlsx so the extension check
+    # passes; controller doesn't validate workbook contents.
+    from openpyxl import Workbook
+    wb = Workbook(); wb.active.append(["dummy"])
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     r = requests.post(
         f"{BASE_URL}/api/library/upload",
         headers=_hdr(libb_client),
-        files={"file": ("ignored.xlsx", b"x", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("manual_creditor.xlsx", buf,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         data={"client_id": libb_client["client_id"], "period": "2023-24",
               "file_type": "msme43bh_creditor_report_xlsx"},
     )
-    assert r.status_code == 400, r.text
+    assert r.status_code == 200, r.text
 
 
-# ---------- 4. Status shows new output chip uploaded=false ---------------
-def test_status_includes_output_chip_before_compute(libb_client):
+# ---------- 4. Status surfaces the creditor-report chip ------------------
+def test_status_includes_creditor_report_chip(libb_client):
     r = requests.get(
         f"{BASE_URL}/api/library/clients/{libb_client['client_id']}/status",
         headers=_hdr(libb_client), params={"period": "2023-24"},
@@ -112,8 +129,7 @@ def test_status_includes_output_chip_before_compute(libb_client):
     files = {f["key"]: f for f in r.json()["files"]}
     assert "msme43bh_creditor_report_xlsx" in files
     chip = files["msme43bh_creditor_report_xlsx"]
-    assert chip["kind"] == "output"
-    assert chip["uploaded"] is False
+    assert chip["kind"] == "secondary"
 
 
 # ---------- 5. Balance Confirmation: upload-books, library_status, rerun -
@@ -316,7 +332,9 @@ def test_msme_compute_persists_creditor_report_to_library(libb_client):
     summary = r3.json().get("summary") or {}
     assert summary.get("bill_count") == 2
 
-    # Status now shows the output chip with uploaded=true v1
+    # Status now shows the creditor-report chip with uploaded=true v1+.
+    # (Note: this test runs after test_upload_creditor_report_now_allowed
+    #  which uploaded a v1 manually, so the auto-save here lands as v2.)
     r4 = requests.get(
         f"{BASE_URL}/api/library/clients/{libb_client['client_id']}/status",
         headers=_hdr(libb_client), params={"period": "2023-24"},
@@ -324,6 +342,6 @@ def test_msme_compute_persists_creditor_report_to_library(libb_client):
     assert r4.status_code == 200
     files = {f["key"]: f for f in r4.json()["files"]}
     chip = files["msme43bh_creditor_report_xlsx"]
-    assert chip["kind"] == "output"
+    assert chip["kind"] == "secondary"
     assert chip["uploaded"] is True, f"expected uploaded=true after compute, got {chip}"
     assert chip["version_no"] >= 1

@@ -21,24 +21,56 @@ export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
   const active = utility.status === "active";
   const inProgress = utility.status === "in_progress";
   const a = ACCENTS[utility.accent] || ACCENTS.slate;
-  // Library-driven data freshness chip — only shown for "active" utilities
-  // that have library status info.  Three states: outdated · missing
-  // (deps not uploaded) · fresh (run pinned to latest).
-  const dataChip = active && libraryStatus ? (
-    libraryStatus.outdated ? (
-      <span data-testid={`utility-data-outdated-${utility.id}`} className="font-mono text-[10px] uppercase tracking-[0.16em] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded-sm" title="Underlying data was re-uploaded after the last run — rerun to refresh">
-        ⚠ Data Outdated
-      </span>
-    ) : libraryStatus.missing ? (
-      <span data-testid={`utility-data-missing-${utility.id}`} className="font-mono text-[10px] uppercase tracking-[0.16em] bg-rose-50 text-rose-900 border border-rose-200 px-1.5 py-0.5 rounded-sm" title="Required input files have not been uploaded to the Library yet">
-        ⊘ Data Missing
-      </span>
-    ) : libraryStatus.has_run ? (
-      <span data-testid={`utility-data-fresh-${utility.id}`} className="font-mono text-[10px] uppercase tracking-[0.16em] bg-emerald-50 text-emerald-900 border border-emerald-200 px-1.5 py-0.5 rounded-sm">
-        ✓ Up-to-date
-      </span>
-    ) : null
-  ) : null;
+  // Library-driven 4-state catalog status:
+  //   data_missing       (red)    — no primary deps uploaded
+  //   partial_data_ready (amber)  — some but not all deps uploaded
+  //   data_ready         (yellow) — all deps uploaded but no run yet OR run is outdated
+  //   report_ready       (green)  — has_run AND fresh (not outdated, not missing)
+  let dataChip = null;
+  if (active && libraryStatus && Array.isArray(libraryStatus.dependencies)) {
+    const deps = libraryStatus.dependencies;
+    const total = deps.length;
+    const uploaded = deps.filter((d) => !!d.current_file_id).length;
+    let state, label, klass, title;
+    if (total === 0) {
+      // Defensive: module declares no deps — fall back to a neutral
+      // "Open" cue so the tile still feels actionable.
+      state = null;
+    } else if (uploaded === 0) {
+      state = "data_missing";
+      label = "⊘ Data Missing";
+      klass = "bg-rose-50 text-rose-900 border-rose-200";
+      title = `Required input files have not been uploaded to the Library yet (${uploaded} of ${total} dependencies in place).`;
+    } else if (uploaded < total) {
+      state = "partial_data_ready";
+      label = `▲ Partial Data Ready · ${uploaded}/${total}`;
+      klass = "bg-amber-50 text-amber-900 border-amber-300";
+      title = `${uploaded} of ${total} required inputs uploaded — please complete the remaining ${total - uploaded} to unlock this utility.`;
+    } else if (libraryStatus.has_run && !libraryStatus.outdated && !libraryStatus.missing) {
+      state = "report_ready";
+      label = "✓ Report Ready";
+      klass = "bg-emerald-50 text-emerald-900 border-emerald-200";
+      title = "All inputs uploaded and the latest report is in sync with them.";
+    } else {
+      state = "data_ready";
+      label = libraryStatus.outdated ? "◆ Data Ready · Rerun pending" : "◆ Data Ready";
+      klass = "bg-yellow-50 text-yellow-900 border-yellow-300";
+      title = libraryStatus.outdated
+        ? "All inputs are present but the last run was pinned to an older version — rerun to refresh the report."
+        : "All inputs uploaded.  Open the utility to generate the report.";
+    }
+    if (state) {
+      dataChip = (
+        <span
+          data-testid={`utility-data-${state}-${utility.id}`}
+          className={`font-mono text-[10px] uppercase tracking-[0.16em] border px-1.5 py-0.5 rounded-sm ${klass}`}
+          title={title}
+        >
+          {label}
+        </span>
+      );
+    }
+  }
   return (
     <button
       data-testid={`utility-card-${utility.id}`}

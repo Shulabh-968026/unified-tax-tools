@@ -477,11 +477,121 @@ def _build_readme(ws, *, period: str):
 
 
 # ---------------------------------------------------------------------------
+# Fixed Assets Register template — placeholder.
+# A formal design is pending; today we ship a starter workbook with
+# header columns matching the user's stated FA Register fields plus a
+# README that clearly states "design TBD".  Auditor can fill the rows
+# offline and re-upload.
+# ---------------------------------------------------------------------------
+async def generate_fa_register_template(
+    *, firm_id: str, client_id: str, period: str, division: str | None,
+) -> Tuple[bytes, str]:
+    wb = Workbook()
+    readme = wb.active
+    readme.title = "README"
+    readme["A1"] = "Fixed Assets Register — AssureAI Audit Utilities"
+    readme["A1"].font = Font(bold=True, size=14)
+    readme["A3"] = f"Generated for FY {period}"
+    readme["A3"].font = Font(size=10, italic=True, color="52524E")
+    notes = [
+        "",
+        "Status",
+        "  • Final layout TBD — this is a starter template.",
+        "  • Once finalised, this same file_type will be auto-populated from prior-year ITR JSON / 3CD JSON.",
+        "",
+        "Sheets",
+        "  • Asset Register — one row per asset, fill all yellow columns.",
+        "  • Disposals    — one row per asset disposed during the year.",
+        "",
+        "Save and re-upload via the Library panel.",
+    ]
+    for i, line in enumerate(notes, start=5):
+        readme.cell(row=i, column=1, value=line)
+    readme.column_dimensions["A"].width = 110
+
+    # Asset Register sheet — header-only starter.
+    ws = wb.create_sheet(title="Asset Register")
+    headers = [
+        "Asset Code", "Asset Description", "Asset Class / Block",
+        "Date of Acquisition", "Vendor / Supplier", "Invoice / Voucher No",
+        "Cost of Acquisition (Gross ₹)", "GST / Input Tax Adjustment (₹)",
+        "Net Capitalised Cost (₹)", "Opening WDV — Books (₹)",
+        "Opening WDV — IT (₹)", "Useful Life (yrs)", "Salvage Value (₹)",
+        "Depreciation Method", "Companies Act Rate (%)", "IT Rate (%)",
+        "Location / Cost Centre", "Notes",
+    ]
+    _write_header(ws, headers)
+    _autosize(ws, headers, [])
+    ws.freeze_panes = "A2"
+    ws.sheet_view.showGridLines = False
+
+    # Disposals sheet — header-only starter.
+    ws_d = wb.create_sheet(title="Disposals")
+    d_headers = [
+        "Asset Code", "Asset Description", "Date of Disposal",
+        "Mode of Disposal", "Sale Consideration (₹)",
+        "Accumulated Depreciation (₹)", "WDV on Disposal Date (₹)",
+        "Profit / (Loss) on Disposal (₹)", "Buyer", "Notes",
+    ]
+    _write_header(ws_d, d_headers)
+    _autosize(ws_d, d_headers, [])
+    ws_d.freeze_panes = "A2"
+    ws_d.sheet_view.showGridLines = False
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), f"fa_register_template__{client_id}__{period}.xlsx"
+
+
+# ---------------------------------------------------------------------------
+# IT Depreciation — Opening WDV template.
+# Reuses the existing per-run round-trip workbook builder in
+# `modules/fixed_assets/block_opening_xlsx.py` so the Library template
+# matches the format the FA module already imports back.
+# ---------------------------------------------------------------------------
+async def generate_it_depreciation_opening_wdv_template(
+    *, firm_id: str, client_id: str, period: str, division: str | None,
+) -> Tuple[bytes, str]:
+    from modules.fixed_assets.block_opening_xlsx import build_workbook
+    from modules.fixed_assets.legal_master import get_block_labels_active
+    from core.db import db
+
+    blocks = await get_block_labels_active()
+    if not blocks:
+        # First-time setup — seed and retry.
+        from modules.fixed_assets.legal_master import seed_legal_master
+        await seed_legal_master(force=False)
+        blocks = await get_block_labels_active()
+
+    cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
+    rows = [
+        {
+            "block_label": b["block_label"],
+            "rate": float(b.get("rate") or 0),
+            "opening_wdv": 0.0,
+            "description": "",
+            "source": "manual",
+        }
+        for b in sorted(blocks, key=lambda x: (-float(x.get("rate") or 0), x["block_label"]))
+    ]
+    run_ctx = {
+        "client_name": (cli or {}).get("name") or "",
+        "fy_label":    period,
+        "fy_end":      period,
+    }
+    blob = build_workbook(run_ctx, rows)
+    return blob, f"it_depreciation_opening_wdv__{client_id}__{period}.xlsx"
+
+
+# ---------------------------------------------------------------------------
 # Registry — file_type → generator.  Add new entries as we extend support.
 # ---------------------------------------------------------------------------
 TemplateGenerator = Callable[..., Awaitable[Tuple[bytes, str]]]
 TEMPLATE_GENERATORS: dict[str, TemplateGenerator] = {
     "party_master_xlsx": generate_party_master_template,
+    "fa_register_xlsx": generate_fa_register_template,
+    "it_depreciation_opening_wdv_xlsx": generate_it_depreciation_opening_wdv_template,
 }
 
 

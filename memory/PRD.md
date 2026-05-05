@@ -1,5 +1,73 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.3 · Catalog refinements + 4-state catalog status + 2 new templates (2026-02-06 PM)
+
+User feedback on 4.2 brought 6 refinements:
+
+### 1 · MSME 43B(h) Creditor Report → secondary input
+The auto-generated creditor report is now classified as `kind: "secondary"`
+(was `output`).  Auditor can drop in an externally-prepared version too.
+Auto-save on 43B(h) compute continues to land it as a versioned secondary
+file in the Library.
+
+### 2 · 4-state utility-catalog status
+`UtilityCard` now derives a 4-state badge from `library_status.dependencies`:
+
+| State | Color | Trigger |
+|---|---|---|
+| Data Missing | red (rose-50) | 0 of N deps uploaded |
+| Partial Data Ready · k/N | amber | some but not all deps uploaded |
+| Data Ready | yellow | all deps uploaded but no run yet OR run is outdated |
+| Report Ready | green (emerald) | run is fresh (has_run · not outdated · not missing) |
+
+Verified live on ABC Textile Mills (only books_json + ledger_mapping_xlsx
+uploaded): GST Turnover Recon → 1/3 partial · 43BH → 1/2 partial · Clause
+44 → Data Ready · FS Designer → Data Ready · Fixed Assets → 1/2 partial ·
+Balance Confirmation → 1/2 partial.  Status updates in real time as files
+are uploaded / replaced (parent calls `getLibraryStatus` after each
+mutation, the catalog re-renders).
+
+### 3 · Auto-update of catalog status
+Already wired (parent ClientUtilities subscribes to ClientLibraryPanel's
+`onChange` callback, threads payload into each `UtilityCard`).  Verified
+end-to-end with the new 4-state logic.
+
+### 4 · Catalog cleanup — removed `bank_statements_xlsx` + `gstr_9_json`
+Both file_types were unreferenced by any module; removing them tightens
+the Library UI.  Future re-introduction is a one-line catalog edit.
+
+### 5 · Fixed Assets Register template (starter)
+`fa_register_xlsx` now has a registered template generator producing a
+3-sheet starter workbook (README + Asset Register + Disposals).  Layout is
+explicitly marked "Final design TBD" so the auditor knows it's a
+scaffold; full design lands in a follow-up.
+
+### 6 · IT Depreciation — Opening WDV template (production-ready)
+New file_type `it_depreciation_opening_wdv_xlsx` (kind=secondary, ext .xlsx)
+with a generator that delegates to the existing
+`modules/fixed_assets/block_opening_xlsx::build_workbook` — same format
+the FA module already round-trips on import / export.  Pre-populates one
+row per active legal-master block sorted by descending rate; auditor edits
+the yellow Opening WDV column and saves.
+
+### Files touched
+**Backend (modified):**
+- `modules/library/catalog.py` — removed bank_statements_xlsx + gstr_9_json; reclassified msme43bh_creditor_report_xlsx → secondary; added it_depreciation_opening_wdv_xlsx; FILE_TYPES_WITH_TEMPLATES now `{party_master_xlsx, fa_register_xlsx, it_depreciation_opening_wdv_xlsx}`.
+- `modules/library/templates.py` — new `generate_fa_register_template` (starter workbook) and `generate_it_depreciation_opening_wdv_template` (delegates to existing FA block_opening_xlsx builder + legal-master rows).
+- `tests/test_library_phase_a_live.py` — catalog count 14 → 13.
+- `tests/test_library_phase_b_live.py` — reclassified output→secondary in tests; upload of creditor_report now allowed (no longer rejected); added assertions for catalog removals + new file_type + template flags.
+
+**Frontend (modified):**
+- `lib/utilities.jsx` — UtilityCard renders 4-state badge with red/amber/yellow/emerald colors and a `data-testid="utility-data-{state}-{utility_id}"` for regression.
+
+### Tests · 53 / 53 (zero new regressions)
+All Library Phase A (11) + Phase B (10) + Clause 44 R3.2 (9) + BC CC safeguard (5) + FS Designer (13) + FA Excel autofit (5) tests green.
+
+### Verified live
+* `GET /api/library/clients/{cid}/template/fa_register_xlsx?period=2023-24` → 3-sheet workbook (7 KB).
+* `GET /api/library/clients/{cid}/template/it_depreciation_opening_wdv_xlsx?period=2023-24` → 1-sheet workbook (6 KB) pre-populated with 15 active blocks sorted 45% → 0%.
+* Status payload now returns 13 file chips; bank_statements_xlsx + gstr_9_json gone; new opening_wdv chip present.
+
 ## Release 4.2 · Library wave 2 — Output kind + 5-module migration + 7-sheet Party Master (2026-02-06)
 
 User asks consolidated in this drop:

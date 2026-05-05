@@ -41,11 +41,11 @@ def lib_client(auth_headers, sample_files):
 
 
 # ----------------------------------------------------------------------
-def test_catalog_returns_14_file_types(lib_client):
+def test_catalog_returns_13_file_types(lib_client):
     r = requests.get(f"{BASE_URL}/api/library/catalog", headers=_hdr(lib_client))
     assert r.status_code == 200
     types = r.json()["file_types"]
-    assert len(types) == 14
+    assert len(types) == 13
     keys = {t["key"] for t in types}
     assert {"books_json", "ledger_mapping_xlsx", "form_3cd_prior_json", "itr_prior_json"}.issubset(keys)
 
