@@ -60,3 +60,28 @@ export const getTransactions = (id, bucket, ledger, party) =>
 export const saveSelections = (id, payload) =>
   http.patch(`/runs/${id}/selections`, payload).then((r) => r.data);
 export const exportRunUrl = (id) => `${API}/runs/${id}/export`;
+
+// Run rerun — re-pin to latest Library versions, re-parse, reset `generated`.
+export const rerunRun = (id) => http.post(`/runs/${id}/rerun`).then((r) => r.data);
+
+// Client Library — file-store endpoints.
+export const getLibraryCatalog = () => http.get("/library/catalog").then((r) => r.data);
+export const getLibraryStatus = (clientId, period, division = null) =>
+  http.get(`/library/clients/${clientId}/status`, { params: { period, division } }).then((r) => r.data);
+export const listLibraryFiles = (clientId, period, includeDeleted = false) =>
+  http.get(`/library/clients/${clientId}/files`, { params: { period, include_deleted: includeDeleted } }).then((r) => r.data);
+export const uploadLibraryFile = ({ file, clientId, period, division = null, fileType, onProgress }) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("client_id", clientId);
+  fd.append("period", period);
+  if (division) fd.append("division", division);
+  fd.append("file_type", fileType);
+  return http.post("/library/upload", fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: onProgress,
+  }).then((r) => r.data);
+};
+export const deleteLibraryFile = (fileId) => http.delete(`/library/files/${fileId}`).then((r) => r.data);
+export const restoreLibraryFile = (fileId) => http.post(`/library/files/${fileId}/restore`).then((r) => r.data);
+export const downloadLibraryFileUrl = (fileId) => `${API}/library/files/${fileId}/download`;

@@ -34,6 +34,12 @@ async def ensure_indexes():
     # GST Recon Phase D — invoice-level voucher matching
     await db.gst_recon_invoices.create_index([("run_id", 1), ("source", 1), ("period", 1)])
     await db.gst_recon_invoices.create_index([("run_id", 1), ("direction", 1), ("period", 1)])
+    # Client Library — indexes that drive the per-engagement file lookup.
+    await db.client_files.create_index(
+        [("firm_id", 1), ("client_id", 1), ("period", 1), ("file_type", 1), ("version_no", -1)],
+    )
+    await db.client_files.create_index([("file_id", 1)], unique=True)
+    await db.client_files.create_index([("soft_deleted_at", 1)])
 
 
 async def ensure_super_admin():

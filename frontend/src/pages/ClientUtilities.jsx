@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import AppShell, { PageHeader } from "@/components/AppShell";
 import { Badge } from "@/components/ui/badge";
@@ -6,11 +6,15 @@ import { ArrowLeft, Stack, Buildings } from "@phosphor-icons/react";
 import { getClient } from "@/lib/api";
 import { UTILITIES, UtilityCard } from "@/lib/utilities";
 import { toast } from "sonner";
+import ClientLibraryPanel from "@/components/ClientLibraryPanel";
 
 export default function ClientUtilities() {
   const { clientId } = useParams();
   const navigate = useNavigate();
   const [client, setClient] = useState(null);
+  // Library status drives the "Data outdated / missing / fresh" chip on
+  // each utility tile.  Keyed by module_key.
+  const [libByModule, setLibByModule] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -18,6 +22,12 @@ export default function ClientUtilities() {
       catch { toast.error("Client not found"); navigate("/dashboard", { replace: true }); }
     })();
   }, [clientId, navigate]);
+
+  const onLibraryChange = (status) => {
+    const map = {};
+    (status?.modules || []).forEach((m) => { map[m.module_key] = m; });
+    setLibByModule(map);
+  };
 
   const onOpen = (u) => {
     if (u.id === "clause-44") {
@@ -64,7 +74,16 @@ export default function ClientUtilities() {
       />
 
       <div className="px-6 md:px-10 py-8 pb-40 max-w-[1200px]">
-        <div className="flex items-baseline justify-between flex-wrap gap-2">
+        {/* Client Library — central source-file store.  Drives the
+            "Data outdated / missing / fresh" chips on every utility
+            tile below in real-time. */}
+        <ClientLibraryPanel
+          clientId={clientId}
+          divisions={client.divisions || []}
+          onChange={onLibraryChange}
+        />
+
+        <div className="mt-10 flex items-baseline justify-between flex-wrap gap-2">
           <div>
             <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Utilities Catalog</div>
             <h2 className="mt-1 font-heading text-2xl tracking-tight">Pick a utility</h2>
@@ -79,7 +98,12 @@ export default function ClientUtilities() {
 
         <div className="mt-7 grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden" data-testid="utilities-grid">
           {UTILITIES.map((u) => (
-            <UtilityCard key={u.id} utility={u} onOpen={onOpen}/>
+            <UtilityCard
+              key={u.id}
+              utility={u}
+              onOpen={onOpen}
+              libraryStatus={u.module_key ? libByModule[u.module_key] : null}
+            />
           ))}
         </div>
 

@@ -1,5 +1,58 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.0 · Client Library + version-aware module integration (2026-05-05)
+
+Architectural shift agreed with MSS: every source file (Books JSON, Ledger
+Map XLSX, prior-year 3CD JSON, ITR JSON, GSTR-1/3B/9, Bank Statements,
+Party Master, FA Register, etc.) now lives in a per-engagement Library.
+Modules pin to specific file *versions* and are flagged "outdated"
+when newer versions exist.
+
+### What shipped in this release
+1. **`client_files` collection + storage layer** at `/app/uploads/{firm}/{client}/{period}/{division}/{file_type}/v{N}/`. 13 file types in the catalog, 3-version retention with 30-day soft-delete grace.
+2. **Library API** under `/api/library/...` — catalog, status, upload, list, download, soft-delete, restore, prune.
+3. **Module dependency graph** declared in `modules/library/catalog.py::MODULE_DEPENDENCIES`. Drives outdated-detection across all 6 utilities.
+4. **Action-log schema** — 14 action types pre-modeled in `catalog.py::ACTION_TYPES` for Balance Confirmation (production wiring follows in next release).
+5. **Clause 44 fully Library-integrated**: upload also saves to Library, run carries `pinned_files: {file_type → file_id}`, GET returns `library_status` (outdated · missing · fresh + per-dependency detail), new `POST /runs/{id}/rerun` endpoint re-pins to latest and re-parses.
+6. **Single morphing button** — the existing Generate button automatically becomes "Rerun on Latest Data" (with amber styling) when outdated; one click re-pins + recomputes; auditor selections (ITC / exempt / exclusion / disclaimer) preserved across rerun.
+7. **ClientHome `ClientLibraryPanel` component** — file-type chips with Upload/Replace/Download/Soft-delete actions, period+division selectors, completeness badge.
+8. **Outdated/Missing/Fresh badges** on every utility tile (driven by the same status payload) AND on the run-wizard top bar.
+9. **Hard-delete protection** — pinned file versions cannot be soft-deleted (409 Conflict).
+10. **Tests · 79/79 green** — 11 new live HTTP tests for the full upload → version → outdated → rerun cycle, plus all 67 existing Clause 44 tests.
+
+### What's deferred to Release 4.1 (same architecture, mechanical migration)
+- 43BH · Fixed Assets · GST Recon · Fin Statement Designer · Balance Confirmation migrations to the Library pattern (other modules still use their own Import flow today; their tiles correctly show "Data Missing" chips driven by the same dependency graph).
+- Action-log production wiring inside Balance Confirmation.
+- Multi-run collapse to single working doc + thin generations log.
+- Offline confirmation-request PDF generator.
+
+### Files touched
+**Backend (new):**
+- `lib/file_storage.py` — disk storage primitive (S3-swappable).
+- `modules/library/__init__.py` · `catalog.py` · `service.py` · `controller.py`.
+- `tests/test_library_phase_a_live.py` — 11 end-to-end tests.
+
+**Backend (modified):**
+- `core/db.py` — `client_files` indexes.
+- `server.py` — wires the library router.
+- `modules/clause44/controller.py` — upload now saves to Library + pins; GET attaches `library_status`; new `POST /runs/{id}/rerun`.
+- `tests/test_clause44_release3_1_live.py` — assertion updated for post-3.2.1 candidate-pool size.
+
+**Frontend (new):**
+- `components/ClientLibraryPanel.jsx` — file-type chips UI.
+
+**Frontend (modified):**
+- `lib/api.js` — `getLibraryCatalog`, `getLibraryStatus`, `uploadLibraryFile`, `deleteLibraryFile`, `rerunRun`, `downloadLibraryFileUrl`.
+- `lib/utilities.jsx` — `module_key` field on `UTILITIES`; `UtilityCard` renders Outdated/Missing/Fresh chip when `libraryStatus` prop supplied.
+- `pages/ClientUtilities.jsx` — mounts `<ClientLibraryPanel>` above the catalog; subscribes to `onChange` and threads status into each `UtilityCard`.
+- `pages/clause44/Clause44Run.jsx` — outdated/missing chips in top bar; Generate button morphs to "Rerun on Latest Data" with amber styling; `proceedExclusion` calls `rerunRun` first when outdated.
+
+### Verified live on ABC Textile Mills
+- Library panel renders with completeness badge `0 of 2 PRIMARY UPLOADED`.
+- All 6 active utility tiles show `⊘ DATA MISSING` (driven by Library, not hardcoded).
+- 79/79 backend tests pass · zero regressions.
+
+
 ## Clause 44 — Release 3.5 · Auto-fit KPI tiles for large clients (2026-05-04)
 
 User reported (with screenshot) that on a large client whose Clause 44

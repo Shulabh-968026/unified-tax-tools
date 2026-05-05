@@ -19,6 +19,7 @@ from modules.fixed_assets.controller import router as fixed_assets_router
 from modules.fin_statement.controller import router as fs_router
 from modules.msme43bh.controller import router as msme_router
 from modules.gst_recon.controller import router as gst_recon_router
+from modules.library import router as library_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 log = logging.getLogger("app")
@@ -35,6 +36,7 @@ api.include_router(bc_router)
 api.include_router(fixed_assets_router)
 api.include_router(fs_router)
 api.include_router(docs_router)
+api.include_router(library_router)
 
 
 @api.get("/")

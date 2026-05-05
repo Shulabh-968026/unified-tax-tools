@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import { ArrowLeft, CheckCircle, DownloadSimple, Lightning, BookOpen } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
-import { generateRun, getRun, saveSelections, exportRunUrl } from "@/lib/api";
+import { generateRun, getRun, saveSelections, exportRunUrl, rerunRun } from "@/lib/api";
 import StepSpecialLedgers from "./StepSpecialLedgers";
 import StepExclusion from "./StepExclusion";
 import StepReport from "./StepReport";
@@ -148,7 +148,18 @@ export default function Clause44Run() {
   const proceedExclusion = async () => {
     setBusy(true);
     try {
-      // Persist exclusions and trigger classification in one go.
+      // If the Library has newer versions of our pinned files, re-pin
+      // and re-parse FIRST, then run classification on the fresh data.
+      // Single button, single click — but the auditor's selections
+      // (ITC / exempt / exclusion / disclaimer) are preserved across
+      // the rerun.
+      const isOutdated = !!run?.library_status?.outdated;
+      if (isOutdated) {
+        await rerunRun(runId);
+        toast.message("Library data refreshed", {
+          description: "Re-pinned to the latest Books JSON / Ledger Map. Now generating on fresh data…",
+        });
+      }
       await generateRun(runId, {
         itc_ledgers: Array.from(itc),
         exempt_ledgers: Array.from(exempt),
@@ -159,7 +170,7 @@ export default function Clause44Run() {
       // Re-fetch — the backend now has by_ledger / by_party etc.
       const r = await getRun(runId);
       setRun(r);
-      toast.success("Clause 44 generated");
+      toast.success(isOutdated ? "Clause 44 rerun on latest data" : "Clause 44 generated");
       goTo("report");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Generation failed");
@@ -220,6 +231,26 @@ export default function Clause44Run() {
           >
             <BookOpen size={11}/> Readme
           </a>
+          {/* Outdated chip — Library detected a newer Books JSON or
+              Ledger Map than this run is pinned to.  Generate button
+              below morphs to "Rerun on Latest Data". */}
+          {run?.library_status?.outdated && (
+            <span
+              data-testid="run-data-outdated-chip"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-amber-300 bg-amber-50 text-amber-900 rounded-sm font-mono text-[10px] uppercase tracking-[0.12em]"
+              title="A newer version of one of this run's source files is available in the Library. Click Rerun on Latest Data to refresh."
+            >
+              ⚠ Data Outdated
+            </span>
+          )}
+          {run?.library_status?.missing && (
+            <span
+              data-testid="run-data-missing-chip"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-rose-200 bg-rose-50 text-rose-900 rounded-sm font-mono text-[10px] uppercase tracking-[0.12em]"
+            >
+              ⊘ Files Not in Library
+            </span>
+          )}
 
           {/* Stepper pills */}
           <ol className="hidden md:flex items-center gap-1 ml-auto mr-auto">
@@ -283,9 +314,16 @@ export default function Clause44Run() {
                   onClick={proceedExclusion}
                   disabled={busy}
                   data-testid="proceed-exclusion"
-                  className="h-9 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-1.5"
+                  className={`h-9 px-4 rounded-sm shadow-none gap-1.5 text-white ${
+                    run?.library_status?.outdated
+                      ? "bg-amber-700 hover:bg-amber-800"
+                      : "bg-[#0F172A] hover:bg-[#1E293B]"
+                  }`}
                 >
-                  <Lightning size={12} weight="fill"/>{busy ? "Generating…" : "Generate Report"}
+                  <Lightning size={12} weight="fill"/>
+                  {busy
+                    ? (run?.library_status?.outdated ? "Rerunning…" : "Generating…")
+                    : (run?.library_status?.outdated ? "Rerun on Latest Data" : "Generate Report")}
                 </Button>
               </>
             )}

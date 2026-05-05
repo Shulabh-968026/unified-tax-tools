@@ -216,8 +216,52 @@ async def upload_run(
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     company_name = books_company or accounting_json.filename
 
+    # Library integration (Release 4.0) — save the two source files into
+    # the Client Library and pin this run to the resulting versions.  The
+    # raw bytes are no longer kept on the run document; we keep the
+    # parsed `accounting` + `ledgers_xlsx` since downstream code consumes
+    # those structures directly.
+    from modules.library import service as lib_svc
+    from modules.library.controller import DEFAULT_FIRM_ID
+
+    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+    await accounting_json.seek(0)
+    accounting_json_bytes = await accounting_json.read()
+    await ledger_xlsx.seek(0)
+    ledger_xlsx_bytes = await ledger_xlsx.read()
+
+    lib_books = await lib_svc.create_file_version(
+        firm_id=firm_id, client_id=client_id, period=period,
+        division=division_id, file_type="books_json",
+        filename_original=accounting_json.filename or "books.json",
+        content=accounting_json_bytes,
+        uploaded_by_email=user.get("email") or "",
+        parse_status="success",
+        parse_summary={
+            "n_vouchers": len(accounting.get("vouchers", [])),
+            "n_ledgers": len(accounting.get("ledgers", [])),
+            "company_name": company_name,
+        },
+    )
+    lib_xlsx = await lib_svc.create_file_version(
+        firm_id=firm_id, client_id=client_id, period=period,
+        division=division_id, file_type="ledger_mapping_xlsx",
+        filename_original=ledger_xlsx.filename or "ledger_mapping.xlsx",
+        content=ledger_xlsx_bytes,
+        uploaded_by_email=user.get("email") or "",
+        parse_status="success",
+        parse_summary={"n_rows": len(ledgers_xlsx)},
+    )
+    pinned_files = {
+        "books_json": lib_books["file_id"],
+        "ledger_mapping_xlsx": lib_xlsx["file_id"],
+    }
+    await lib_svc.pin_file_to_run(lib_books["file_id"], run_id)
+    await lib_svc.pin_file_to_run(lib_xlsx["file_id"], run_id)
+
     doc = {
         "run_id": run_id,
+        "module": "clause44",                          # NEW · enables per-module library status lookup
         "user_id": user["user_id"],                  # legacy
         "created_by_user_id": user["user_id"],
         "created_by_name": user.get("name") or user.get("email"),
@@ -239,6 +283,8 @@ async def upload_run(
         "itc_candidates": suggestions["itc_candidates"],
         "pl_ledgers": suggestions["pl_ledgers"],
         "generated": False,
+        "pinned_files": pinned_files,                  # NEW · {file_type → file_id}
+        "firm_id": firm_id,                            # NEW · forward-looking tenant key
     }
     await db.runs.insert_one(doc)
 
@@ -352,7 +398,27 @@ async def get_run(
         "exclusion_categories": run.get("exclusion_categories", {}),
         "use_itc_inference": run.get("use_itc_inference", True),
         "disclaimer_text": run.get("disclaimer_text", DEFAULT_DISCLAIMER),
+        # Library integration — pinned versions + outdated check.
+        "pinned_files": run.get("pinned_files") or {},
+        "library_status": await _compute_library_status(run),
     }
+
+
+async def _compute_library_status(run: dict) -> dict:
+    """Wrap `library.service.compute_module_status` for a Clause 44 run."""
+    try:
+        from modules.library import service as lib_svc
+        from modules.library.controller import DEFAULT_FIRM_ID
+    except Exception:
+        return {"outdated": False, "missing": False, "dependencies": []}
+    return await lib_svc.compute_module_status(
+        firm_id=run.get("firm_id") or DEFAULT_FIRM_ID,
+        client_id=run["client_id"],
+        period=run["period"],
+        division=run.get("division_id"),
+        module_key="clause44",
+        pinned_files=run.get("pinned_files") or {},
+    )
 
 
 @router.post("/runs/{run_id}/generate")
@@ -409,6 +475,98 @@ async def generate_run(
         "by_party": final["by_party"],
         "recon": final["recon"],
         "transactions_count": len(final["transactions"]),
+    }
+
+
+@router.post("/runs/{run_id}/rerun")
+async def rerun(
+    run_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Re-pin to the LATEST Library versions of this run's dependencies,
+    re-parse them, then return the updated run (without re-running
+    classification — the auditor still has to click Generate).
+
+    Preserves: itc_selection, exempt_selection, exclusion_selection,
+    use_itc_inference, exclusion_categories, disclaimer_text.
+    Re-computes: accounting + ledgers_xlsx (re-parsed from latest blobs),
+    itc_candidates, pl_ledgers.
+    """
+    user = await get_current_user(request, session_token, authorization)
+    run = await _fetch_run(run_id)
+
+    from modules.library import service as lib_svc
+    from modules.library.controller import DEFAULT_FIRM_ID
+
+    firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
+
+    # Resolve latest versions for every dep.
+    latest_books = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=run["client_id"], period=run["period"],
+        division=run.get("division_id"), file_type="books_json",
+    )
+    latest_xlsx = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=run["client_id"], period=run["period"],
+        division=run.get("division_id"), file_type="ledger_mapping_xlsx",
+    )
+    if not latest_books or not latest_xlsx:
+        raise HTTPException(409, "Cannot rerun — Library is missing required files.")
+
+    # Pull the bytes, re-parse.
+    books_bytes = await lib_svc.read_file_bytes(latest_books["file_id"])
+    xlsx_bytes = await lib_svc.read_file_bytes(latest_xlsx["file_id"])
+
+    try:
+        accounting = json.loads(books_bytes.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"Latest Books JSON failed to parse: {e}")
+    try:
+        ledgers_xlsx = parse_ledger_xlsx(xlsx_bytes)
+    except Exception as e:
+        raise HTTPException(400, f"Latest Ledger Mapping XLSX failed to parse: {e}")
+
+    suggestions = compute_suggestions(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
+
+    # Unpin OLD versions, pin the NEW ones.
+    old_pinned = run.get("pinned_files") or {}
+    for old_id in old_pinned.values():
+        if old_id and old_id not in (latest_books["file_id"], latest_xlsx["file_id"]):
+            await lib_svc.unpin_file_from_run(old_id, run_id)
+    await lib_svc.pin_file_to_run(latest_books["file_id"], run_id)
+    await lib_svc.pin_file_to_run(latest_xlsx["file_id"], run_id)
+
+    update_doc = {
+        "accounting": accounting,
+        "ledgers_xlsx": ledgers_xlsx,
+        "itc_candidates": suggestions["itc_candidates"],
+        "pl_ledgers": suggestions["pl_ledgers"],
+        "json_filename": latest_books["filename_original"],
+        "xlsx_filename": latest_xlsx["filename_original"],
+        "pinned_files": {
+            "books_json": latest_books["file_id"],
+            "ledger_mapping_xlsx": latest_xlsx["file_id"],
+        },
+        "firm_id": firm_id,
+        # Reset the "generated" flag so the UI prompts the auditor to
+        # click Generate (the morphing button) explicitly — we never
+        # silently update numbers.
+        "generated": False,
+        "rerun_at": datetime.now(timezone.utc).isoformat(),
+        "rerun_by_email": user.get("email"),
+    }
+    await db.runs.update_one({"run_id": run_id}, {"$set": update_doc})
+    return {
+        "run_id": run_id,
+        "rerun": True,
+        "vouchers_count": len(accounting.get("vouchers", [])),
+        "ledgers_count": len(accounting.get("ledgers", [])),
+        "pinned_files": update_doc["pinned_files"],
     }
 
 
