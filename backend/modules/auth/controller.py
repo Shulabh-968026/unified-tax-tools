@@ -6,13 +6,20 @@ exchange a Google session_id for an app session. Everyone else gets HTTP 403.
 from fastapi import APIRouter, HTTPException, Request, Response, Cookie, Header
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+import os
 import uuid
 import requests
 
 from core.db import db, SUPER_ADMIN_EMAIL
 
 router = APIRouter()
-EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+# Emergent-managed Google OAuth — exchange session_id for profile.  The URL
+# is a stable platform endpoint but kept env-overridable for deployment
+# flexibility (private clouds, future migrations).
+EMERGENT_AUTH_URL = os.environ.get(
+    "EMERGENT_AUTH_URL",
+    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+)
 
 
 async def get_current_user(
