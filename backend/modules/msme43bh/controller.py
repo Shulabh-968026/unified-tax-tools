@@ -44,10 +44,19 @@ async def create_session(
     user = await _auth(request, session_token, authorization)
     if not payload.client_id:
         raise HTTPException(400, "client_id is required")
+    # Release 4.5 — upsert canonical working session per (client_id, fy)
+    existing = await dao.SESSIONS.find_one(
+        {"client_id": payload.client_id, "fy": payload.fy or "", "archived": False},
+        {"_id": 0},
+    )
+    if existing:
+        return session_summary(existing)
     sid = str(uuid.uuid4())
     doc = {
         "id": sid,
         "client_id": payload.client_id,
+        "module": "msme43bh",
+        "archived": False,
         "name": payload.name or "Untitled Computation",
         "fy": payload.fy or "",
         "scope": "Single scope",

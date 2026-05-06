@@ -82,11 +82,21 @@ async def create_run(
     if not client:
         raise HTTPException(404, "Client not found")
 
+    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    existing = await RUNS.find_one(
+        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"_id": 0},
+    )
+    if existing:
+        return existing
+
     now_iso = datetime.now(timezone.utc).isoformat()
     run = {
         "id":         str(uuid.uuid4()),
         "client_id":  payload.client_id,
         "fy":         payload.fy,
+        "module":     "fin_statement",
+        "archived":   False,
         "fy_start":   payload.fy_start,
         "fy_end":     payload.fy_end,
         "name":       (payload.name or client["name"]).strip(),
@@ -110,7 +120,7 @@ async def list_runs(
     authorization: Optional[str] = Header(default=None),
 ):
     await _auth(request, session_token, authorization)
-    q = {"client_id": client_id} if client_id else {}
+    q = {"client_id": client_id, "archived": False} if client_id else {"archived": False}
     rows = await RUNS.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"rows": rows}
 
@@ -126,6 +136,11 @@ async def get_run(
     run = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not run:
         raise HTTPException(404, "Run not found")
+    if run.get("archived") and run.get("collapsed_into"):
+        winner = await RUNS.find_one({"id": run["collapsed_into"]}, {"_id": 0})
+        if winner:
+            run = winner
+            rid = winner["id"]
     try:
         firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
         run["library_status"] = await lib_svc.compute_module_status(

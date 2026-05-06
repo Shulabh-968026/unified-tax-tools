@@ -87,6 +87,13 @@ async def _fetch_run(run_id: str) -> Dict[str, Any]:
     run = await db.runs.find_one({"run_id": run_id}, {"_id": 0})
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    # Release 4.5 — silent redirect for collapsed/archived run_ids.  When
+    # an old link points to a doc that was archived during the
+    # canonical-collapse migration, transparently re-route to its winner.
+    if run.get("archived") and run.get("collapsed_into"):
+        winner = await db.runs.find_one({"run_id": run["collapsed_into"]}, {"_id": 0})
+        if winner:
+            return winner
     return run
 
 
@@ -213,7 +220,30 @@ async def upload_run(
         accounting.get("ledgers", []),
         accounting.get("vouchers", []),
     )
-    run_id = f"run_{uuid.uuid4().hex[:12]}"
+    # ── Single-working-doc upsert (Release 4.5) ─────────────────────────
+    # Look up an existing canonical doc; reuse its run_id so deep-links
+    # stay stable.  Unpin its prior Library pins so old file versions
+    # become eligible for the prune job.
+    existing = await db.runs.find_one(
+        {
+            "module": "clause44",
+            "client_id": client_id,
+            "period": period,
+            "division_id": division_id,
+            "archived": False,
+        },
+        {"_id": 0, "run_id": 1, "pinned_files": 1},
+    )
+    if existing:
+        run_id = existing["run_id"]
+        for fid in (existing.get("pinned_files") or {}).values():
+            if fid:
+                try:
+                    await lib_svc.unpin_file_from_run(fid, run_id)
+                except Exception:
+                    pass
+    else:
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
     company_name = books_company or accounting_json.filename
 
     # Library integration (Release 4.0) — save the two source files into
@@ -286,7 +316,12 @@ async def upload_run(
         "pinned_files": pinned_files,                  # NEW · {file_type → file_id}
         "firm_id": firm_id,                            # NEW · forward-looking tenant key
     }
-    await db.runs.insert_one(doc)
+    # Upsert: replace any existing canonical working doc; preserve audit
+    # fields if we're updating an existing one.  Selections / generated
+    # flag are intentionally reset because the books were re-uploaded.
+    await db.runs.replace_one(
+        {"run_id": run_id}, doc, upsert=True,
+    )
 
     return {
         "run_id": run_id,
@@ -503,6 +538,33 @@ async def generate_run(
         update_doc["firm_id"] = firm_id
 
     await db.runs.update_one({"run_id": run_id}, {"$set": update_doc})
+
+    # Release 4.5 — append-only generations log.  Records every Generate
+    # action with totals + pinned-file snapshot for the History drawer.
+    try:
+        gen_id = f"gen_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{run_id[:8]}"
+        await db.run_generations.insert_one({
+            "gen_id": gen_id,
+            "run_id": run_id,
+            "module": "clause44",
+            "client_id": run.get("client_id"),
+            "period": run.get("period"),
+            "division_id": run.get("division_id"),
+            "generated_by_email": user.get("email"),
+            "generated_at": update_doc["generated_at"],
+            "pinned_files_snapshot": run.get("pinned_files") or update_doc.get("pinned_files") or {},
+            "summary_snapshot": {
+                "col_2_total": final["summary"].get("col_2_total"),
+                "col_3_total": final["summary"].get("col_3_total"),
+                "col_4_total": final["summary"].get("col_4_total"),
+                "col_5_total": final["summary"].get("col_5_total"),
+                "col_7_total": final["summary"].get("col_7_total"),
+                "col_8_total": final["summary"].get("col_8_total"),
+            },
+        })
+    except Exception:
+        pass
+
     return {
         "run_id": run_id,
         "summary": final["summary"],
@@ -718,6 +780,27 @@ async def get_transactions(
         else:
             txns = [t for t in txns if t.get("party_name") == party]
     return {"run_id": run_id, "bucket": bucket or "all", "ledger": ledger, "party": party, "transactions": txns}
+
+
+
+@router.get("/runs/{run_id}/generations")
+async def list_generations(
+    run_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Append-only history of Generate actions on this working doc.
+    Used by the History drawer; small payload (no transactions / no
+    by_ledger).  Newest first."""
+    await get_current_user(request, session_token, authorization)
+    run = await _fetch_run(run_id)
+    canonical_id = run.get("run_id") or run_id
+    rows = await db.run_generations.find(
+        {"run_id": canonical_id},
+        {"_id": 0},
+    ).sort("generated_at", -1).to_list(length=200)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.post("/runs/{run_id}/archive")

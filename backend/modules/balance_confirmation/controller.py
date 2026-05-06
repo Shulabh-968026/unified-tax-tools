@@ -101,11 +101,32 @@ async def create_run(
     # Best-effort default for as_at_date
     as_at = (payload.as_at_date or "").strip() or fy_end_date(payload.fy)
 
+    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    existing = await RUNS.find_one(
+        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        # Reuse the canonical id; refresh metadata + as_at, but preserve
+        # status / pinned files / ledgers (auditor's prior progress).
+        rid = existing["id"]
+        await RUNS.update_one(
+            {"id": rid},
+            {"$set": {
+                "name": (payload.name or f"Balance Confirmation {payload.fy}").strip(),
+                "as_at_date": as_at,
+            }},
+        )
+        doc = await RUNS.find_one({"id": rid}, {"_id": 0})
+        return doc
+
     rid = str(uuid.uuid4())
     doc = {
         "id": rid,
         "client_id": payload.client_id,
         "fy": payload.fy,
+        "module": "balance_confirmation",
+        "archived": False,
         "name": (payload.name or f"Balance Confirmation {payload.fy}").strip(),
         "as_at_date": as_at,
         "source_filename": "",
@@ -129,7 +150,7 @@ async def list_runs(
     authorization: Optional[str] = Header(default=None),
 ):
     await _auth(request, session_token, authorization)
-    q: Dict[str, Any] = {}
+    q: Dict[str, Any] = {"archived": False}
     if client_id:
         q["client_id"] = client_id
     docs = await RUNS.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -147,6 +168,12 @@ async def get_run(
     doc = await RUNS.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    # Release 4.5 — silent redirect for collapsed/archived run_ids.
+    if doc.get("archived") and doc.get("collapsed_into"):
+        winner = await RUNS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if winner:
+            doc = winner
+            rid = winner["id"]
     # Attach library outdated/missing status — drives the morphing
     # "Rerun on Latest Data" button on the BC run shell.
     try:

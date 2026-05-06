@@ -12,7 +12,15 @@ async def insert_session(doc: Dict[str, Any]) -> None:
 
 
 async def find_session(sid: str) -> Optional[Dict[str, Any]]:
-    return await SESSIONS.find_one({"id": sid}, {"_id": 0})
+    doc = await SESSIONS.find_one({"id": sid}, {"_id": 0})
+    if not doc:
+        return None
+    # Release 4.5 — silent redirect for collapsed/archived sessions.
+    if doc.get("archived") and doc.get("collapsed_into"):
+        winner = await SESSIONS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if winner:
+            return winner
+    return doc
 
 
 async def delete_session(sid: str) -> int:

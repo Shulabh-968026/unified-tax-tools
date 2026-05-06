@@ -150,11 +150,20 @@ async def create_run(
     authorization: Optional[str] = Header(default=None),
 ):
     user = await _auth(request, session_token, authorization)
+    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    existing = await COLL.find_one(
+        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"_id": 0},
+    )
+    if existing:
+        return existing
     rid = str(uuid.uuid4())
     doc = {
         "id": rid,
         "client_id": payload.client_id,
         "fy": payload.fy,
+        "module": "gst_recon",
+        "archived": False,
         "name": payload.name or f"GST Recon {payload.fy}",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": user["user_id"],
@@ -178,7 +187,7 @@ async def list_runs(
     authorization: Optional[str] = Header(default=None),
 ):
     await _auth(request, session_token, authorization)
-    q = {"client_id": client_id} if client_id else {}
+    q = {"client_id": client_id, "archived": False} if client_id else {"archived": False}
     return await COLL.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
 
 
@@ -193,6 +202,12 @@ async def get_run(
     doc = await COLL.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    # Release 4.5 — silent redirect for collapsed/archived run_ids.
+    if doc.get("archived") and doc.get("collapsed_into"):
+        winner = await COLL.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if winner:
+            doc = winner
+            rid = winner["id"]
     try:
         firm_id = doc.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
         doc["library_status"] = await lib_svc.compute_module_status(
