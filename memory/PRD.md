@@ -1,5 +1,70 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.6 · Balance Confirmation Refinement Batch 1 (2026-02-08 PM)
+
+Two refinements per partner request (small, testable batches).
+
+### R1 — Address fields & offline PDF
+1. **CSV import/export schema split**: `address` → `address_line_1`, `address_line_2`,
+   `city`, `pincode` (4 columns). Legacy `address` column still accepted on import
+   for backward compat (heuristic split on commas + 6-digit pincode tail).
+2. **Party Master template sync**: same 4 columns now appear on Trade Payables /
+   Receivables / Loans sheets. Auto-pre-fill from Tally JSON party object using
+   `_split_party_address` helper.
+3. **Offline confirmation PDFs**: new `POST /api/balance-confirmation/runs/{rid}/offline-pdfs`
+   accepts `{ledger_ids:[...]}` and returns a ZIP of per-party PDF letters.
+   - Page 1: auditor letterhead (auto-pulled from user profile, fallback demo values)
+     → vendor block → cover letter
+   - Tear-off slip at the bottom of Page 1 with **2-way format**:
+     · Option 1 — Confirmed (signature block)
+     · Option 2 — Differs (state own balance + Dr/Cr tick + attach ledger)
+     · Sign-off table (Signature & Stamp / Contact Details)
+   - Auto-pull: `auditor.firm_name|firm_address|firm_email|partner_name` from `user`,
+     `client.name|gstin|address` from `db.clients`, `as_at_date` from run.
+4. **Frontend**: BC Workbench bulk-action bar gets `[data-testid="bc-download-offline-pdfs"]`
+   button alongside Send Selected / Reminder / All-in-View. Disabled until ≥1 row selected.
+
+### R2 — Subhead computation fix
+Previously the BC Summary "Subhead Coverage Heatmap" labelled the raw Tally
+`parent_group` as Subhead — semantically wrong for chains like
+`MSME Vendors → Domestic Suppliers → Sundry Creditors → Current Liabilities`.
+
+- New `compute_head_subhead(parent_group, group_idx)` walks the Tally chain
+  upward until it hits the first **primary** Schedule-III-like group.
+  Returns `(head, subhead)` where:
+    - `head` = primary group (e.g. "Current Liabilities", "Current Assets")
+    - `subhead` = the link immediately below the head (e.g. "Sundry Creditors",
+      "Bank Accounts")
+  Falls back gracefully when the chain can't be walked (custom CoA).
+- `service.build_ledger_records` now writes `head` + `subhead` on every ledger
+  doc; `analytics._subhead_heatmap` keys on `subhead` (with `parent_group`
+  fallback for pre-R2 ingested runs); frontend `SubheadHeatmap` shows the
+  proper subhead label with the head as a small grey suffix.
+
+### Bonus fix (caught by Release 4.5 regression suite)
+Multi-hop redirect: when a doc is collapsed twice (R4.5 → R4.5.1), the original
+single-hop redirect helpers terminated on the first archived ancestor.  All 6
+modules' GET-by-id helpers now chain-follow `archived → collapsed_into → ...`
+until a non-archived canonical winner is reached (with cycle-protection +
+404 on terminal-archived chains).
+
+### Tests
+- 10 unit tests (`tests/test_bc_release_4_6_address_offline_subhead.py`)
+- 14 live HTTP tests (`tests/test_bc_release_4_6_live.py` — added by testing agent)
+- 26 R4.5 regression tests still green (chain-redirect verified end-to-end)
+- Total: **50/50 ✅**
+
+### Verified by testing agent
+- ZIP download triggers correctly from the Offline PDFs button
+- All 4 split address columns persist round-trip via CSV
+- Legacy single-`address` CSV imports without error
+- Subhead heatmap label updated, no console errors anywhere
+
+### Known minor (informational, not a defect)
+Old BC runs ingested before R2 carry empty `head` / `subhead` (since the chain
+walker wasn't run yet). Re-ingest the books JSON to backfill — frontend
+already falls back to `parent_group` so users still see meaningful labels.
+
 ## Release 4.5.1 · firm_id normalisation patch (2026-02-08)
 
 Follow-up to Release 4.5.  The initial collapse migration keyed the canonical
