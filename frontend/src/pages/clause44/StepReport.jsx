@@ -539,9 +539,9 @@ function KPI({ label, amt, accent, testid, active = false, dimmed = false, onCli
       style={{ borderTop: `2px solid ${a.fg}` }}
     >
       <div className={`font-mono text-[10px] uppercase tracking-[0.12em] ${a.text}`}>{label}</div>
-      <div className="mt-1.5 num tracking-tight font-medium">
-        <AutoFitText maxFontPx={20} minFontPx={11} testid={`${testid}-value`}>
-          {formatINR(amt)}
+      <div className="mt-1.5 num tracking-tight font-medium min-w-0">
+        <AutoFitText maxFontPx={20} minFontPx={9} testid={`${testid}-value`}>
+          {formatINR(amt, { noPaise: true })}
         </AutoFitText>
       </div>
     </button>

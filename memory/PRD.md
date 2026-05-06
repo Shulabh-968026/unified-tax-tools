@@ -1,5 +1,15 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4.1 · KPI tile overflow hardening (2026-02-06 PM)
+
+User reported on a large client that some KPI values were bleeding past the tile edge with a trailing period (`3,46,47,747.`).  Three-pronged fix:
+
+1. **`formatINR` now accepts `{ noPaise: true }`** — KPI tiles use this; paise are summary-noise and adding them costs 3 extra characters that were pushing strings past the 9px safety floor.
+2. **`AutoFitText` runs a deferred re-measure** on the next animation frame after the synchronous one — handles the case where the parent CSS grid hasn't finalised column widths when the layout effect first fires.  Safety margin tightened from 4 % → 6 % for sub-pixel rounding.
+3. **KPI `minFontPx` lowered 11 → 9** — defensive backstop; a 14-char whole-rupee aggregate (₹99,99,99,99,999) now fits at ~10 px even in a tight 138 px tile.
+
+Verified live on ABC Textile Mills + injected synthetic 12-char values; tiles render cleanly at 13–14 px after the deferred re-measure kicks in.
+
 ## Release 4.4 · Three-pool ledger picker — Head/Subhead structural rules + virtualised 6-column tables (2026-02-06 PM)
 
 ### Why

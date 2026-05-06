@@ -44,14 +44,21 @@ export default function AutoFitText({
       setFontPx((prev) => (prev === maxFontPx ? prev : maxFontPx));
       return;
     }
-    // Scale down with a 4% safety margin, clamp to min.
-    const scaled = Math.max(minFontPx, Math.floor(maxFontPx * (avail / needed) * 0.96));
+    // Scale down with a 6% safety margin (4% sometimes leaves a hairline
+    // overflow when sub-pixel rounding kicks in), clamp to min.
+    const scaled = Math.max(minFontPx, Math.floor(maxFontPx * (avail / needed) * 0.94));
     setFontPx((prev) => (prev === scaled ? prev : scaled));
   };
 
-  // Re-measure whenever the value or the container width changes.
+  // Re-measure whenever the value or the container width changes.  We
+  // trigger TWO measurements on every dependency change — one synchronous
+  // (catches the steady state), one deferred to the next animation frame
+  // (catches the case where the parent CSS grid hasn't yet finalised its
+  // column widths when the layout effect first fires).
   useLayoutEffect(() => {
     recompute();
+    const raf = requestAnimationFrame(() => recompute());
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [children, maxFontPx, minFontPx]);
 
