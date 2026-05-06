@@ -1,35 +1,43 @@
 /**
- * Step 2 — Special Ledgers (replaces old "ITC Ledgers" step).
+ * Step 2 — Special Ledgers (Release 4.4 — three-pool model).
  *
- * Tab A · Exempt Purchases — auditor ticks P&L purchase ledgers whose
- *   underlying supplies are exempt-from-GST by nature (petroleum, alcohol,
- *   life insurance premium, etc.).  Every voucher line hitting these
- *   ledgers is forced to Col 3 (Input A).  Takes precedence over Tab B.
+ * Tab A · Exempt Purchases — every P-side ledger except those under
+ *   `Revenue from Operations` / `Other Income`.  Auditor ticks
+ *   exempt-by-nature purchases (petroleum, alcohol, life insurance, etc.).
  *
- * Tab B · ITC Ledgers — same picker as the legacy StepItc.  ITC ledger
- *   presence no longer drives Col 5 classification; it now acts as an
- *   "ITC-inference" signal for Col 3:
- *     If toggle is ON, a Regular-registered voucher with NO ITC ledger
- *     is presumed to be an exempt supply → Col 3 (Input B).
- *     If toggle is OFF, those vouchers go to Col 5 (strict ICAI).
- *   De-dup is automatic because Input A fires per-line before Input B.
+ * Tab B · ITC Ledgers — default view shows BS-side ledgers under the two
+ *   Schedule III ITC subheads (Balance with Revenue Authorities,
+ *   Statutory Dues Payable).  Toggle "Show all BS-side ledgers" expands
+ *   to every B-side ledger so firms with bespoke Schedule III taxonomy
+ *   can still pick their ITC ledgers.
  */
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { X, Info } from "@phosphor-icons/react";
-import LedgerList from "./LedgerList";
+import { Info } from "@phosphor-icons/react";
+import LedgerTable from "./LedgerTable";
 import { formatINR } from "@/lib/format";
 
 export default function StepSpecialLedgers({
   run,
-  itcSelected, setItcSelected, itcQuery, setItcQuery,
-  exemptSelected, setExemptSelected, exemptQuery, setExemptQuery,
+  itcSelected, setItcSelected,
+  exemptSelected, setExemptSelected,
   useItcInference, setUseItcInference,
   itcKindFilter, setItcKindFilter,
 }) {
-  const itcItems = run?.itc_candidates || [];
-  const plItems = run?.pl_ledgers || [];
+  const exemptItems     = run?.exempt_ledgers     || [];
+  const itcDefault      = run?.itc_ledgers        || [];
+  const itcAllBs        = run?.itc_ledgers_all_bs || [];
+
+  // "Show all BS-side ledgers" toggle — defaults to OFF (focused view).
+  const [showAllBs, setShowAllBs] = useState(false);
+
+  const itcUniverse = showAllBs ? itcAllBs : itcDefault;
+  const itcItems = useMemo(() => {
+    if (!itcKindFilter || itcKindFilter === "all") return itcUniverse;
+    return itcUniverse.filter((x) => (x.kind || "other") === itcKindFilter);
+  }, [itcUniverse, itcKindFilter]);
 
   const toggleItc = (name) => {
     const n = new Set(itcSelected);
@@ -42,102 +50,68 @@ export default function StepSpecialLedgers({
     setExemptSelected(n);
   };
 
-  // Rough live-preview counts — only approximate, the real number surfaces
-  // on the report screen after classification.
-  const exemptLedgerTotals = plItems
+  // Approximate live preview total for the exempt picker.
+  const exemptLedgerTotals = exemptItems
     .filter((x) => exemptSelected.has(x.name))
-    .reduce((a, x) => a + Math.abs(Number(x.closingBalance || 0)), 0);
+    .reduce((a, x) => a + Math.abs(Number(x.closing_balance || 0)), 0);
+
+  // Selections that exist in expanded mode but lie outside default-view
+  // subheads — surface as a hint so auditors don't silently lose them.
+  const outsideDefaultSelected = useMemo(() => {
+    const defaultSet = new Set(itcDefault.map((x) => x.name));
+    return Array.from(itcSelected).filter((n) => !defaultSet.has(n));
+  }, [itcDefault, itcSelected]);
+
+  const outputPicked = itcAllBs.filter((x) => x.kind === "output" && itcSelected.has(x.name));
 
   return (
-    <section className="mx-auto max-w-4xl" data-testid="step-special-ledgers">
+    <section className="mx-auto max-w-7xl" data-testid="step-special-ledgers">
       <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[#8A8A83]">Step 02 / 04</div>
       <h2 className="mt-1 font-heading text-2xl tracking-tight">Special Ledgers</h2>
       <p className="mt-2 text-sm text-[#52524E] max-w-3xl">
-        The books JSON carries no tax-rate or nature-of-supply signal.
-        Tag here what the auditor knows from context — <strong>Exempt
-        purchase ledgers</strong> always flow to <span className="font-mono">Col 3</span>,
-        and <strong>ITC ledgers</strong> (if the inference toggle is on)
-        help detect <em>additional</em> Col 3 candidates where a Regular-
-        registered vendor sold without charging GST.
+        Tag what the auditor knows from context. <strong>Exempt purchase ledgers</strong> always flow to <span className="font-mono">Col 3</span>; <strong>ITC ledgers</strong> (with the inference toggle on) help detect additional Col 3 candidates where a Regular-registered vendor sold without charging GST.
       </p>
 
       <Tabs defaultValue="exempt" className="mt-6">
         <TabsList className="bg-[#F3F4F1] border border-[#E5E5E0] rounded-sm p-1 h-auto">
-          <TabsTrigger
-            value="exempt"
-            className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white data-[state=active]:text-[#0F172A]"
-            data-testid="tab-exempt"
-          >
+          <TabsTrigger value="exempt" className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white" data-testid="tab-exempt">
             Exempt Purchases · Input A
             {exemptSelected.size > 0 && (
-              <Badge className="ml-2 bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">
-                {exemptSelected.size}
-              </Badge>
+              <Badge className="ml-2 bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">{exemptSelected.size}</Badge>
             )}
           </TabsTrigger>
-          <TabsTrigger
-            value="itc"
-            className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white data-[state=active]:text-[#0F172A]"
-            data-testid="tab-itc"
-          >
+          <TabsTrigger value="itc" className="font-mono text-[11px] uppercase tracking-[0.12em] data-[state=active]:bg-white" data-testid="tab-itc">
             ITC Ledgers · Input B
             {itcSelected.size > 0 && (
-              <Badge className="ml-2 bg-sky-50 text-sky-900 border border-sky-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">
-                {itcSelected.size}
-              </Badge>
+              <Badge className="ml-2 bg-sky-50 text-sky-900 border border-sky-200 rounded-sm shadow-none px-1.5 py-0 text-[10px] font-mono">{itcSelected.size}</Badge>
             )}
           </TabsTrigger>
         </TabsList>
 
-        {/* ─── Tab A · Exempt-supply purchase ledgers ─── */}
+        {/* ───── Tab A · Exempt Purchases ───── */}
         <TabsContent value="exempt" className="mt-5">
-          <div className="mb-3 flex items-baseline justify-between">
-            <div className="text-[12px] text-[#52524E] max-w-2xl">
-              Tick purchase ledgers whose underlying supplies are <strong>exempt from GST by nature</strong>.
-              Typical examples: petroleum-product purchases, alcohol stocks, life insurance premiums,
-              specified agricultural produce, notified exempt services. Every voucher line on these
-              ledgers lands in <span className="font-mono">Col 3</span>, regardless of vendor status.
-            </div>
-            <Badge className="bg-slate-100 text-slate-800 border border-slate-200 rounded-sm font-mono shadow-none">
-              {exemptSelected.size} / {plItems.length}
-            </Badge>
+          <div className="mb-3 text-[12px] text-[#52524E] max-w-3xl">
+            Tick purchase ledgers whose underlying supplies are <strong>exempt from GST by nature</strong>.
+            Typical examples: petroleum-product purchases, alcohol stocks, life-insurance premium, specified
+            agricultural produce.  Every voucher line on these ledgers lands in <span className="font-mono">Col 3</span> regardless of vendor status.
+            {exemptLedgerTotals > 0 && (
+              <span className="ml-2 font-mono text-emerald-800">≈ {formatINR(exemptLedgerTotals)} (ledger balances)</span>
+            )}
           </div>
-
-          {exemptSelected.size > 0 && (
-            <div className="mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded-sm" data-testid="exempt-preview">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-emerald-900">Flowing to Col 3 · Input A</span>
-                <span className="font-mono text-[11px] text-emerald-800">≈ {formatINR(exemptLedgerTotals)} (ledger balances)</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5 mt-2" data-testid="exempt-chips">
-                {Array.from(exemptSelected).map((n) => (
-                  <Badge key={n} className="bg-emerald-700 text-white rounded-sm shadow-none px-2 py-0.5 text-[11px] font-mono">
-                    {n}
-                    <button className="ml-1.5 opacity-70 hover:opacity-100" onClick={() => toggleExempt(n)} aria-label={`Remove ${n}`}>
-                      <X size={10} weight="bold"/>
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <LedgerList
-            items={plItems}
+          <LedgerTable
+            items={exemptItems}
             selected={exemptSelected}
+            setSelected={setExemptSelected}
             onToggle={toggleExempt}
-            onSelectAll={() => setExemptSelected(new Set(plItems.filter((x) => x.suggested).map((x) => x.name)))}
+            onSelectAllSuggested={() => setExemptSelected(new Set(exemptItems.filter((x) => x.suggested).map((x) => x.name)))}
             onClear={() => setExemptSelected(new Set())}
-            query={exemptQuery}
-            setQuery={setExemptQuery}
-            emptyHint="No P&L expenditure ledgers available — check your books upload."
             testidPrefix="exempt"
-            suggestedLabel="flagged"
-            showSubhead={false}
+            emptyHint="No P-side ledgers in this run — check your books upload."
+            suggestedLabel="exempt-hint"
           />
         </TabsContent>
 
-        {/* ─── Tab B · ITC Ledgers ─── */}
+        {/* ───── Tab B · ITC Ledgers ───── */}
         <TabsContent value="itc" className="mt-5">
           <div className="mb-3 p-3 bg-sky-50 border border-sky-200 rounded-sm" data-testid="itc-inference-toggle-row">
             <div className="flex items-start gap-3">
@@ -154,101 +128,83 @@ export default function StepSpecialLedgers({
                   />
                 </div>
                 <p className="text-[11.5px] text-sky-950/80 mt-1.5 leading-snug">
-                  <strong>When ON</strong> (default): a voucher from a Regular-registered vendor
-                  that carries <em>no</em> ITC-ledger entry is presumed to be an exempt supply and
-                  routes to <span className="font-mono">Col 3</span>. This reflects the long-standing
-                  CA practice of using ITC availment as a proxy for taxability — the books don't tag
-                  nature-of-supply per voucher.
-                  <br/>
-                  <strong>When OFF</strong>: only Input A (above) drives Col 3. All Regular vendors go
-                  to <span className="font-mono">Col 5</span> — the strict ICAI position per Para 79.13.
-                  The working-paper disclaimer will flag whichever mode you used.
+                  <strong>When ON</strong> (default): a voucher from a Regular-registered vendor that carries <em>no</em> ITC-ledger entry is presumed to be an exempt supply and routes to <span className="font-mono">Col 3</span>. <strong>When OFF</strong>: only Input A drives Col 3 — strict ICAI position per Para 79.13.
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Smart guard: warn if any Output-kind ledger has been ticked.
-              Output ledgers fire on SALES vouchers — they don't appear on
-              purchase vouchers, so tagging them as "ITC marker" makes
-              every registered-vendor purchase miss the ITC presence
-              check and (with inference ON) sweep into Col 3. */}
-          {(() => {
-            const outputPicked = itcItems.filter((x) => x.kind === "output" && itcSelected.has(x.name));
-            if (outputPicked.length === 0) return null;
-            return (
-              <div className="mb-3 p-3 bg-rose-50 border border-rose-200 rounded-sm" data-testid="itc-output-warning">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-rose-700 font-mono text-[10.5px] uppercase tracking-[0.12em] mt-0.5">⚠ Heads up</span>
-                  <p className="text-[11.5px] text-rose-950/80 leading-snug flex-1 min-w-0">
-                    You've ticked <strong>{outputPicked.length}</strong> Output-side tax ledger(s):
-                    {" "}{outputPicked.map((x) => <code key={x.name} className="font-mono text-[11px] bg-white border border-rose-200 px-1 rounded-sm mr-1">{x.name}</code>)}.
-                    Output ledgers fire on <em>sales</em> vouchers, not purchases — they will <strong>not</strong> mark a purchase as having ITC, so Input B (ITC inference) will continue treating those purchases as exempt and route them to Col 3.
-                    Untick these unless you have a specific reason to keep them, or turn the inference toggle OFF above.
-                  </p>
-                </div>
+          {outputPicked.length > 0 && (
+            <div className="mb-3 p-3 bg-rose-50 border border-rose-200 rounded-sm" data-testid="itc-output-warning">
+              <div className="flex items-start gap-2.5">
+                <span className="text-rose-700 font-mono text-[10.5px] uppercase tracking-[0.12em] mt-0.5">⚠ Heads up</span>
+                <p className="text-[11.5px] text-rose-950/80 leading-snug flex-1 min-w-0">
+                  You've ticked <strong>{outputPicked.length}</strong> Output-side tax ledger(s).  Output ledgers fire on <em>sales</em> vouchers, not purchases — they will <strong>not</strong> mark a purchase as having ITC, so Input B will continue treating those purchases as exempt and route them to Col 3.  Untick them unless you have a specific reason, or turn the inference toggle OFF above.
+                </p>
               </div>
-            );
-          })()}
-
-          {/* Quick-filter strip — Input only · All · Output only */}
-          <div className="mb-3 flex items-center gap-2 flex-wrap" data-testid="itc-kind-filter">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E]">View</span>
-            {[
-              { v: "all",    label: "All" },
-              { v: "input",  label: "Input only" },
-              { v: "output", label: "Output only" },
-              { v: "other",  label: "Other" },
-            ].map((opt) => (
-              <button
-                key={opt.v}
-                onClick={() => setItcKindFilter(opt.v)}
-                data-testid={`itc-kind-filter-${opt.v}`}
-                className={`px-2.5 py-1 rounded-sm border font-mono text-[10.5px] uppercase tracking-[0.12em] ${
-                  (itcKindFilter || "all") === opt.v
-                    ? "bg-[#0F172A] text-white border-[#0F172A]"
-                    : "bg-white text-[#52524E] border-[#E5E5E0] hover:bg-[#F3F4F1]"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-            <span className="ml-auto font-mono text-[10px] text-[#8A8A83]">
-              Pre-tick: <span className="text-emerald-800">INPUT</span>-kind + (subhead match · or · voucher usage)
-            </span>
-          </div>
-
-          {itcSelected.size > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-3" data-testid="itc-chips">
-              {Array.from(itcSelected).map((n) => (
-                <Badge key={n} className="bg-[#0F172A] text-white rounded-sm shadow-none px-2 py-0.5 text-[11px] font-mono">
-                  {n}
-                  <button className="ml-1.5 opacity-70 hover:opacity-100" onClick={() => toggleItc(n)} aria-label={`Remove ${n}`}>
-                    <X size={10} weight="bold"/>
-                  </button>
-                </Badge>
-              ))}
             </div>
           )}
 
-          <LedgerList
-            items={
-              !itcKindFilter || itcKindFilter === "all"
-                ? itcItems
-                : itcItems.filter((x) => (x.kind || "other") === itcKindFilter)
-            }
+          {showAllBs && outsideDefaultSelected.length > 0 && (
+            <div className="mb-3 p-3 bg-amber-50 border border-amber-300 rounded-sm font-mono text-[10.5px] text-amber-900" data-testid="itc-outside-default">
+              {outsideDefaultSelected.length} selected from outside the suggested ITC subheads — they will be retained when you toggle back to the focused view.
+            </div>
+          )}
+
+          <LedgerTable
+            items={itcItems}
             selected={itcSelected}
             setSelected={setItcSelected}
             onToggle={toggleItc}
-            onSelectAll={() => setItcSelected(new Set(itcItems.filter((x) => x.suggested).map((x) => x.name)))}
+            onSelectAllSuggested={() => setItcSelected(new Set(itcUniverse.filter((x) => x.suggested).map((x) => x.name)))}
             onClear={() => setItcSelected(new Set())}
-            query={itcQuery}
-            setQuery={setItcQuery}
-            emptyHint="No BS-side ledgers available — check your books upload."
             testidPrefix="itc"
-            showSubhead={true}
-            showUsageControls={true}
-            showGroupBulk={true}
+            showItcEnrichment={true}
+            emptyHint="No BS-side ledgers in this run — check your books upload."
+            suggestedLabel="itc-hint"
+            headerRight={(
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Switch
+                    checked={showAllBs}
+                    onCheckedChange={setShowAllBs}
+                    data-testid="itc-show-all-bs-toggle"
+                  />
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.12em]">
+                    Show all BS-side ledgers
+                  </span>
+                </label>
+                <span className={`font-mono text-[10.5px] uppercase tracking-[0.12em] ${showAllBs ? "text-amber-800" : "text-[#8A8A83]"}`} data-testid="itc-mode-indicator">
+                  {showAllBs
+                    ? `Expanded · ${itcAllBs.length} BS ledgers · subhead filter off`
+                    : `Focused · ${itcDefault.length} ledgers under Schedule III ITC subheads · ${itcAllBs.length - itcDefault.length} hidden`}
+                </span>
+
+                {/* kind quick-filter strip */}
+                <div className="ml-auto flex items-center gap-1.5" data-testid="itc-kind-filter">
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E]">View</span>
+                  {[
+                    { v: "all",    label: "All" },
+                    { v: "input",  label: "Input" },
+                    { v: "output", label: "Output" },
+                    { v: "other",  label: "Other" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.v}
+                      onClick={() => setItcKindFilter(opt.v)}
+                      data-testid={`itc-kind-filter-${opt.v}`}
+                      className={`px-2 py-1 rounded-sm border font-mono text-[10px] uppercase tracking-[0.12em] ${
+                        (itcKindFilter || "all") === opt.v
+                          ? "bg-[#0F172A] text-white border-[#0F172A]"
+                          : "bg-white text-[#52524E] border-[#E5E5E0] hover:bg-[#F3F4F1]"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           />
         </TabsContent>
       </Tabs>

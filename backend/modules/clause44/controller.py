@@ -213,11 +213,6 @@ async def upload_run(
         accounting.get("ledgers", []),
         accounting.get("vouchers", []),
     )
-    pools = compute_pools(
-        ledgers_xlsx,
-        accounting.get("ledgers", []),
-        accounting.get("vouchers", []),
-    )
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     company_name = books_company or accounting_json.filename
 
@@ -349,6 +344,12 @@ async def get_run(
                    if ledgers_xlsx else
                    {"itc_candidates": run.get("itc_candidates", []),
                     "pl_ledgers":     run.get("pl_ledgers", [])})
+    pools = (compute_pools(ledgers_xlsx,
+                           accounting.get("ledgers", []),
+                           accounting.get("vouchers", []))
+             if ledgers_xlsx else
+             {"exempt_ledgers": [], "itc_ledgers": [],
+              "itc_ledgers_all_bs": [], "exclusion_ledgers": []})
 
     # Silent re-classification for generated runs (choice 7A) — opening an
     # old run reflects the *current* engine logic without forcing the
@@ -389,6 +390,11 @@ async def get_run(
         "ledgers_count": len(run.get("accounting", {}).get("ledgers", [])),
         "itc_candidates": suggestions["itc_candidates"],
         "pl_ledgers":     suggestions["pl_ledgers"],
+        # Release 4.4 — three-pool model used by the new ledger tables.
+        "exempt_ledgers":     pools["exempt_ledgers"],
+        "itc_ledgers":        pools["itc_ledgers"],
+        "itc_ledgers_all_bs": pools["itc_ledgers_all_bs"],
+        "exclusion_ledgers":  pools["exclusion_ledgers"],
         "generated": run.get("generated", False),
         "generated_at": run.get("generated_at"),
         "generated_by_name": run.get("generated_by_name"),

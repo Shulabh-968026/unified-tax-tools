@@ -68,7 +68,11 @@ export default function Clause44Run() {
         // ledgers that were wrongly auto-ticked.  Drop them on first
         // load so the user sees the corrected default; we tag the run
         // doc with `itc_selection_cleaned_at` to avoid double-cleaning.
-        const candidatesByName = new Map((r.itc_candidates || []).map((c) => [c.name, c]));
+        // Source-of-truth for the cleanup is now `itc_ledgers_all_bs`
+        // (Release 4.4 — full BS-side universe; covers ledgers that may
+        // not be in the focused-view pool).
+        const itcUniverse = r.itc_ledgers_all_bs || r.itc_candidates || [];
+        const candidatesByName = new Map(itcUniverse.map((c) => [c.name, c]));
         const rawItc = r.itc_selection || [];
         const cleanedItc = rawItc.filter((n) => {
           const c = candidatesByName.get(n);
@@ -82,11 +86,15 @@ export default function Clause44Run() {
         // yet AND run has not been generated, pre-tick "suggested" rows.
         const noPriorItc = !(r.itc_selection && r.itc_selection.length) && !r.generated;
         const noPriorExc = !(r.exclusion_selection && r.exclusion_selection.length) && !r.generated;
+        const noPriorExempt = !(r.exempt_selection && r.exempt_selection.length) && !r.generated;
         if (noPriorItc) {
-          (r.itc_candidates || []).forEach((x) => { if (x.suggested) itcSeed.add(x.name); });
+          (r.itc_ledgers || []).forEach((x) => { if (x.suggested) itcSeed.add(x.name); });
         }
         if (noPriorExc) {
-          (r.pl_ledgers || []).forEach((x) => { if (x.suggested) excSeed.add(x.name); });
+          (r.exclusion_ledgers || []).forEach((x) => { if (x.suggested) excSeed.add(x.name); });
+        }
+        if (noPriorExempt) {
+          (r.exempt_ledgers || []).forEach((x) => { if (x.suggested) exemptSeed.add(x.name); });
         }
         // Release 3.2 — fold in newly-detected usage-based ITC ledgers
         // for runs uploaded under the older heuristic.  These are rows

@@ -524,14 +524,29 @@ def compute_suggestions(
 
 # ─────────────────────────────────────────────────────────────────────────
 # Release 4.4 — Three-pool model.  Replaces the heuristic-gated candidate
-# pools with pure structural rules — every eligible ledger is shown to the
-# auditor; pre-tick suggestions are still computed but no longer gate the
-# pool itself.  This eliminates the recurring "ledger missing from picker"
-# class of issues caused by bespoke client naming.
+# pools with structural rules derived from the AssureAI ledger-mapping
+# Head + Subhead taxonomy (auditor-curated, reliable — never reads Tally
+# Group Parent which varies wildly across clients / firms).
+#
+# Pool 1 · Exempt Purchases  — bsOrPl = 'P'
+#                              AND head ∉ {Revenue from Operations, Other Income}
+# Pool 2 · ITC Ledgers       — bsOrPl = 'B' AND subhead ∈ ITC_SUBHEAD_DEFAULTS
+#                              ("Show all BS-side ledgers" toggle on the UI
+#                               flips this to bsOrPl = 'B' only)
+# Pool 3 · Exclusions        — head ∉ {Revenue from Operations, Other Income}
+#                              AND ( bsOrPl = 'P' OR
+#                                    (bsOrPl = 'B' AND head ∈ FA_HEADS) )
 # ─────────────────────────────────────────────────────────────────────────
 _REVENUE_HEADS_EXCLUDE = {"revenue from operations", "other income"}
-_ITC_GROUP_PARENTS = {"current assets", "current liabilities"}
-_FIXED_ASSETS_GROUP = "fixed assets"
+_FA_HEADS = {"property, plant and equipment", "intangible fixed assets"}
+# Schedule III subheads where Input / Output GST naturally lands.  Hard-
+# coded for now — Release 4.5 will surface this as a per-firm config.
+ITC_SUBHEAD_DEFAULTS = (
+    "balance with revenue authorities",   # Input GST credit
+    "statutory dues payable",             # Output GST liability (auditors
+                                           # sometimes mark these as ITC
+                                           # markers for cross-checking)
+)
 
 
 def _norm(s: str) -> str:
@@ -560,34 +575,22 @@ def compute_pools(
     vouchers: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Build the three independent ledger pools the Clause 44 stepper
-    consumes:
-
-      * ``exempt_ledgers``    — bsOrPl == 'P' AND head ∉ {Revenue from
-        Operations, Other Income}.
-      * ``itc_ledgers``       — bsOrPl == 'B' AND groupParent ∈ {Current
-        Assets, Current Liabilities}.
-      * ``exclusion_ledgers`` — (bsOrPl == 'P') OR (bsOrPl == 'B' AND
-        groupParent == 'Fixed Assets'); AND head ∉ {Revenue from
-        Operations, Other Income}.
-
-    Each row carries: ``name, subhead, group_parent, head,
-    closing_balance, suggested``.  The ITC pool additionally carries the
-    name/group/voucher-usage classifier (``kind``, ``kind_source``,
-    ``name_kind``, ``usage_kind``, ``n_purchase``, ``n_sales``,
-    ``n_voucher``, ``usage_conflict``) so the existing kind-tinted UI
-    keeps working.
+    consumes.  Each row carries: ``name, subhead, group_parent, head,
+    closing_balance, suggested``.  The ITC pool (and the
+    ``itc_ledgers_all_bs`` companion array used by the "Show all BS-side"
+    toggle) additionally carry the name/group/voucher-usage classifier
+    so the existing kind-tinted UI keeps working.
 
     Pre-tick (``suggested=True``) preserves the existing heuristics —
-    ``_is_exclusion_hint`` for exclusions, ``_is_exempt_hint`` for exempt
-    purchases, name/group/subhead/voucher-usage merge for ITC.  Auditors
-    still get one-click "Select All Suggested".
+    ``_is_exclusion_hint`` for exclusions (plus FA heads auto-tick),
+    ``_is_exempt_hint`` for exempt purchases, name/group/subhead/voucher
+    -usage merge for ITC.
 
-    Comparisons are case- and whitespace-insensitive.
+    All comparisons are case- and whitespace-insensitive.
     """
-    # First pass — index every ledger by name so we union XLSX-mapped and
-    # JSON-only ledgers (the XLSX may not map every ledger Tally exported
-    # but the auditor still needs to see them).  XLSX values win when both
-    # sources have data for a name.
+    # Index every ledger by name — XLSX-mapped + JSON-only, XLSX wins when
+    # both have data.  Surfaces every ledger Tally exported even when the
+    # auditor mapped only a subset.
     universe: Dict[str, Dict[str, Any]] = {}
 
     def _row(name, rec, jl):
@@ -611,7 +614,7 @@ def compute_pools(
         if name not in universe:
             universe[name] = _row(name, rec, None)
 
-    # --- Exempt Purchases pool ------------------------------------------
+    # --- Pool 1 · Exempt Purchases --------------------------------------
     exempt_ledgers = []
     for r in universe.values():
         if r["bs_or_pl"] != "P":
@@ -627,26 +630,19 @@ def compute_pools(
             "suggested": _is_exempt_hint(r["name"]),
         })
 
-    # --- ITC Ledgers pool — pure structural rule (no name/group escape) -
-    itc_skeleton = []
-    for r in universe.values():
-        if r["bs_or_pl"] != "B":
-            continue
-        if _norm(r["group_parent"]) not in _ITC_GROUP_PARENTS:
-            continue
-        itc_skeleton.append(r)
+    # --- Pool 2 · ITC Ledgers -------------------------------------------
+    # Build the full BS-side skeleton first; we'll partition it into the
+    # default-view (subhead-gated) and the all-BS view downstream.
+    bs_skeleton = [r for r in universe.values() if r["bs_or_pl"] == "B"]
 
-    # Run voucher-usage detection on this pool — preserves the existing
-    # naming-agnostic auto-detection so an "Tax-Cr-Misc-A2" ledger that
-    # consistently fires on purchase vouchers still pre-ticks correctly.
+    # Voucher-usage detection — preserves naming-agnostic auto-detection.
     usage_map: Dict[str, Dict[str, Any]] = {}
     if vouchers:
         usage_map = compute_voucher_usage_kinds(
-            [{"name": r["name"]} for r in itc_skeleton], vouchers,
+            [{"name": r["name"]} for r in bs_skeleton], vouchers,
         )
 
-    itc_ledgers = []
-    for r in itc_skeleton:
+    def _enrich_itc(r: Dict[str, Any]) -> Dict[str, Any]:
         name_kind, kind_source = _classify_itc_kind(
             r["name"], r["subhead"], r["group_parent"],
         )
@@ -655,33 +651,35 @@ def compute_pools(
         n_purchase = usage.get("n_purchase", 0)
         n_sales = usage.get("n_sales", 0)
         n_voucher = usage.get("n_voucher", 0)
-
         kind = name_kind
         ksource = kind_source
         if kind == "other" and usage_kind in ("input", "output"):
             kind, ksource = usage_kind, "usage"
-
         usage_conflict = (
             name_kind == "input"
-            and n_voucher > 0
-            and n_purchase == 0
-            and n_sales > 0
+            and n_voucher > 0 and n_purchase == 0 and n_sales > 0
         )
-
+        in_default_view = _norm(r["subhead"]) in ITC_SUBHEAD_DEFAULTS
+        # Pre-tick fires only inside the default-view subheads — auditors
+        # in expanded mode still get name/usage chips for visual scanning
+        # but no auto-tick (avoids surprise when toggling back).
         suggested = (
-            kind == "input" and (
+            in_default_view and kind == "input" and (
                 _subhead_matches(r["subhead"], ITC_SUGGEST_SUBHEADS)
                 or usage_kind == "input"
             )
         )
-
-        itc_ledgers.append({
+        return {
             "name": r["name"],
             "subhead": r["subhead"],
             "group_parent": r["group_parent"],
             "head": r["head"],
             "closing_balance": r["closing_balance"],
             "suggested": suggested,
+            # Membership flag — true if this row is in the focused default
+            # view (subhead-gated).  False = only visible when "Show all
+            # BS-side ledgers" toggle is on.
+            "in_default_view": in_default_view,
             # ITC enrichments
             "kind": kind,
             "kind_source": ksource,
@@ -691,32 +689,35 @@ def compute_pools(
             "n_sales": n_sales,
             "n_voucher": n_voucher,
             "usage_conflict": usage_conflict,
-        })
+        }
 
-    # --- Exclusions pool ------------------------------------------------
+    itc_ledgers_all_bs = [_enrich_itc(r) for r in bs_skeleton]
+    itc_ledgers = [r for r in itc_ledgers_all_bs if r["in_default_view"]]
+
+    # --- Pool 3 · Exclusions --------------------------------------------
     exclusion_ledgers = []
     for r in universe.values():
         head_norm = _norm(r["head"])
         if head_norm in _REVENUE_HEADS_EXCLUDE:
             continue
-        in_pool = (
-            r["bs_or_pl"] == "P"
-            or (r["bs_or_pl"] == "B" and _norm(r["group_parent"]) == _FIXED_ASSETS_GROUP)
-        )
-        if not in_pool:
+        is_capex = (r["bs_or_pl"] == "B" and head_norm in _FA_HEADS)
+        if r["bs_or_pl"] != "P" and not is_capex:
             continue
+        # Auto-tick: existing exclusion-keyword match OR capex (FA head)
+        suggested = _is_exclusion_hint(r["name"]) or is_capex
         exclusion_ledgers.append({
             "name": r["name"],
             "subhead": r["subhead"],
             "group_parent": r["group_parent"],
             "head": r["head"],
             "closing_balance": r["closing_balance"],
-            "suggested": _is_exclusion_hint(r["name"]),
+            "suggested": suggested,
         })
 
     return {
         "exempt_ledgers": exempt_ledgers,
         "itc_ledgers": itc_ledgers,
+        "itc_ledgers_all_bs": itc_ledgers_all_bs,
         "exclusion_ledgers": exclusion_ledgers,
     }
 

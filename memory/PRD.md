@@ -1,5 +1,77 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4 · Three-pool ledger picker — Head/Subhead structural rules + virtualised 6-column tables (2026-02-06 PM)
+
+### Why
+Real-world Tally books are too inconsistent to pre-filter aggressively.  Every "fix" we shipped to widen the candidate pool was chasing the same root issue — bespoke client naming, free-text `Group Parent` configurations.  Release 4.4 flips the paradigm: **show every eligible ledger by structural rule, pre-tick what the heuristic is confident about, let the auditor decide.**
+
+### What shipped
+
+#### 1 · Head/Subhead structural rules (drops Group Parent dependency)
+
+The three pools the Clause 44 stepper consumes are now derived from the **AssureAI Schedule III taxonomy** (auditor-curated `Head` + `Map to Subhead` columns of the ledger-mapping XLSX) — never from Tally's `Group Parent` (which varies wildly across firms / clients).
+
+| Pool | Include rule |
+|---|---|
+| **Exempt Purchases** | `bsOrPl = 'P'` AND `Head ∉ {Revenue from Operations, Other Income}` |
+| **ITC Ledgers** (focused) | `bsOrPl = 'B'` AND `Subhead ∈ {Balance with Revenue Authorities, Statutory Dues Payable}` |
+| **ITC Ledgers** (expanded) | `bsOrPl = 'B'` only — toggle on the UI |
+| **Exclusions** | `Head ∉ revenue heads` AND (`bsOrPl = 'P'` OR `bsOrPl = 'B'` AND `Head ∈ {Property Plant and Equipment, Intangible Fixed Assets}`) |
+
+Comparisons are case- and whitespace-insensitive.  Capex (PPE + Intangibles) auto-pre-ticks in Exclusions.
+
+#### 2 · ITC two-mode picker — focused / expanded
+
+Default landing mode is **focused** (8 ledgers on ABC Textile Mills FY 2023-24).  Toggle "Show all BS-side ledgers" flips to **expanded** (239 ledgers — every B-side row).  Selections persist across mode switches; an amber hint surfaces when the auditor has picks outside the focused subheads ("retained when you toggle back").
+
+The two ITC subhead defaults are hard-coded for now (`ITC_SUBHEAD_DEFAULTS` in `service.py`) — Release 4.5 will surface this as a per-firm config.
+
+#### 3 · LedgerTable — 6-column virtualised picker
+
+New `frontend/src/pages/clause44/LedgerTable.jsx` replaces `LedgerList` for all three pools:
+
+- Columns: **Head · Subhead · Group Parent · Ledger Name · Closing Balance · ☑**
+- **Sortable** column headers · default sort: Head asc → Subhead asc → Name asc
+- **Per-column filter row** under the header — text-contains on text columns, **min/max range** on Closing Balance
+- **Search-all** input + `Select Suggested · N` / `Clear` toolstrip on top
+- **Column picker** (gear icon) — auditor toggles columns off; choice persists per-table in localStorage; `Ledger Name` always-on
+- **Virtualised** body via `react-window` v2 — handles 2000+ rows smoothly
+- **ITC enrichment slot** — kind chips (INPUT / OUTPUT), name-vs-usage conflict warning, kind quick-filter strip, "Show all BS-side" toggle live in `headerRight`
+- **Sticky header + filter row · sticky footer** with row count + active sort indicator
+- 6-column layout fits a 1280px viewport without horizontal scroll; auto-fit grid template
+
+#### 4 · Per-pool selection seeding
+
+Clause 44 stepper's first-load auto-tick now seeds independently from each new pool (`exempt_ledgers`, `itc_ledgers`, `exclusion_ledgers`).  Existing runs' name-array selections (`itc_selection`, `exempt_selection`, `exclusion_selection`) round-trip unchanged.  Output-kind cleanup logic now reads from `itc_ledgers_all_bs` (full universe) instead of the obsolete `itc_candidates`.
+
+### Files touched
+
+**Backend (modified):**
+- `modules/clause44/service.py` — rewrote `compute_pools()` with Head/Subhead-based logic; added `ITC_SUBHEAD_DEFAULTS`, `_FA_HEADS`, `_REVENUE_HEADS_EXCLUDE` constants; pool exposes `itc_ledgers_all_bs` companion array with `in_default_view` flag.
+- `modules/clause44/controller.py` — `get_run` now ships `exempt_ledgers`, `itc_ledgers`, `itc_ledgers_all_bs`, `exclusion_ledgers`; legacy `itc_candidates` + `pl_ledgers` still ship for backward compat.
+
+**Backend (new tests):**
+- `tests/test_clause44_release4_4_pools.py` — 9 unit tests covering all three pools, case-insensitive matching, Group Parent independence, ITC subhead constants, JSON-only ledger surfacing, pre-tick semantics for each pool.
+
+**Frontend (modified):**
+- `pages/clause44/StepSpecialLedgers.jsx` — rewritten to use `LedgerTable`; ITC tab gets `Show all BS-side ledgers` toggle, mode indicator, and outside-default-selection hint.
+- `pages/clause44/StepExclusion.jsx` — rewritten to use `LedgerTable`; replaces the legacy chip-strip + LedgerList combo.
+- `pages/clause44/Clause44Run.jsx` — auto-tick seed now reads from new pools; output-kind cleanup reads from `itc_ledgers_all_bs`.
+
+**Frontend (new):**
+- `pages/clause44/LedgerTable.jsx` — virtualised 6-column ledger picker (~330 LOC).
+
+**Dependencies:**
+- `react-window` 2.2.7 (added via `yarn add`).
+
+### Verified live on ABC Textile Mills (cli_ad137f29aebb, FY 2023-24)
+* Exempt pool: 40 P-side ledgers · 0 from revenue heads · pre-tick on petrol/alcohol/life-insurance hints.
+* ITC focused: 8 ledgers under {Balance with Revenue Authorities, Statutory Dues Payable}.  Expanded: 239 BS-side ledgers, subhead filter off.  Toggle round-trip preserves picks.
+* Exclusions: 47 ledgers · 7 capex auto-suggested (PPE + Intangibles) · sort Head asc → Subhead → Name.
+
+### Tests · 39 / 39 (zero new regressions)
+All Clause 44 R3.2 + R4.4 + Library Phase A + Library Phase B tests green.
+
 ## Release 4.3 · Catalog refinements + 4-state catalog status + 2 new templates (2026-02-06 PM)
 
 User feedback on 4.2 brought 6 refinements:
