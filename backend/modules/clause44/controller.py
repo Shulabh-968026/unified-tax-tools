@@ -11,7 +11,7 @@ from rapidfuzz import fuzz
 from core.db import db
 from modules.auth.controller import get_current_user
 from modules.clause44.service import (
-    parse_ledger_xlsx, build_group_chain, compute_suggestions,
+    parse_ledger_xlsx, build_group_chain, compute_suggestions, compute_pools,
     determine_expenditure_ledgers, classify_vouchers,
     compute_recon_and_filter, merge_runs_for_consolidation,
     is_valid_period,
@@ -209,6 +209,11 @@ async def upload_run(
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {e}")
 
     suggestions = compute_suggestions(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
+    pools = compute_pools(
         ledgers_xlsx,
         accounting.get("ledgers", []),
         accounting.get("vouchers", []),

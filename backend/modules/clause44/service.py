@@ -522,6 +522,205 @@ def compute_suggestions(
     return {"itc_candidates": itc_candidates, "pl_ledgers": pl_ledgers}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Release 4.4 — Three-pool model.  Replaces the heuristic-gated candidate
+# pools with pure structural rules — every eligible ledger is shown to the
+# auditor; pre-tick suggestions are still computed but no longer gate the
+# pool itself.  This eliminates the recurring "ledger missing from picker"
+# class of issues caused by bespoke client naming.
+# ─────────────────────────────────────────────────────────────────────────
+_REVENUE_HEADS_EXCLUDE = {"revenue from operations", "other income"}
+_ITC_GROUP_PARENTS = {"current assets", "current liabilities"}
+_FIXED_ASSETS_GROUP = "fixed assets"
+
+
+def _norm(s: str) -> str:
+    """Normalise a free-form mapping value for case-insensitive comparison."""
+    return (s or "").strip().lower()
+
+
+def _is_exempt_hint(name: str) -> bool:
+    """Best-guess pre-tick for the Exempt Purchases pool — flags ledgers
+    whose name strongly suggests an exempt-supply purchase (alcohol,
+    petroleum, life-insurance premium etc.).  Conservative; auditor must
+    still confirm.  When in doubt we return False — exempt purchases are
+    a deliberate auditor opt-in by design.
+    """
+    n = (name or "").lower()
+    EXEMPT_HINTS = (
+        "petrol", "diesel", "alcoh", "liquor", "spirit", "tobacco",
+        "life insurance", "insurance premium",
+    )
+    return any(h in n for h in EXEMPT_HINTS)
+
+
+def compute_pools(
+    ledgers_xlsx: Dict[str, Dict[str, Any]],
+    ledgers_json: List[Dict[str, Any]],
+    vouchers: List[Dict[str, Any]] | None = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Build the three independent ledger pools the Clause 44 stepper
+    consumes:
+
+      * ``exempt_ledgers``    — bsOrPl == 'P' AND head ∉ {Revenue from
+        Operations, Other Income}.
+      * ``itc_ledgers``       — bsOrPl == 'B' AND groupParent ∈ {Current
+        Assets, Current Liabilities}.
+      * ``exclusion_ledgers`` — (bsOrPl == 'P') OR (bsOrPl == 'B' AND
+        groupParent == 'Fixed Assets'); AND head ∉ {Revenue from
+        Operations, Other Income}.
+
+    Each row carries: ``name, subhead, group_parent, head,
+    closing_balance, suggested``.  The ITC pool additionally carries the
+    name/group/voucher-usage classifier (``kind``, ``kind_source``,
+    ``name_kind``, ``usage_kind``, ``n_purchase``, ``n_sales``,
+    ``n_voucher``, ``usage_conflict``) so the existing kind-tinted UI
+    keeps working.
+
+    Pre-tick (``suggested=True``) preserves the existing heuristics —
+    ``_is_exclusion_hint`` for exclusions, ``_is_exempt_hint`` for exempt
+    purchases, name/group/subhead/voucher-usage merge for ITC.  Auditors
+    still get one-click "Select All Suggested".
+
+    Comparisons are case- and whitespace-insensitive.
+    """
+    # First pass — index every ledger by name so we union XLSX-mapped and
+    # JSON-only ledgers (the XLSX may not map every ledger Tally exported
+    # but the auditor still needs to see them).  XLSX values win when both
+    # sources have data for a name.
+    universe: Dict[str, Dict[str, Any]] = {}
+
+    def _row(name, rec, jl):
+        return {
+            "name": name,
+            "subhead": (rec or {}).get("subhead", "") or "",
+            "group_parent": (rec or {}).get("groupParent", "") or (jl or {}).get("parentGroup", "") or "",
+            "head": (rec or {}).get("head", "") or "",
+            "closing_balance": (rec or {}).get("closingBalance") if rec else (jl or {}).get("closingBalance"),
+            "bs_or_pl": ((rec or {}).get("bsOrPl") or (jl or {}).get("bsOrPnl") or "").strip().upper(),
+        }
+
+    for jl in (ledgers_json or []):
+        name = jl.get("name", "")
+        if not name:
+            continue
+        rec = ledgers_xlsx.get(name)
+        universe[name] = _row(name, rec, jl)
+
+    for name, rec in ledgers_xlsx.items():
+        if name not in universe:
+            universe[name] = _row(name, rec, None)
+
+    # --- Exempt Purchases pool ------------------------------------------
+    exempt_ledgers = []
+    for r in universe.values():
+        if r["bs_or_pl"] != "P":
+            continue
+        if _norm(r["head"]) in _REVENUE_HEADS_EXCLUDE:
+            continue
+        exempt_ledgers.append({
+            "name": r["name"],
+            "subhead": r["subhead"],
+            "group_parent": r["group_parent"],
+            "head": r["head"],
+            "closing_balance": r["closing_balance"],
+            "suggested": _is_exempt_hint(r["name"]),
+        })
+
+    # --- ITC Ledgers pool — pure structural rule (no name/group escape) -
+    itc_skeleton = []
+    for r in universe.values():
+        if r["bs_or_pl"] != "B":
+            continue
+        if _norm(r["group_parent"]) not in _ITC_GROUP_PARENTS:
+            continue
+        itc_skeleton.append(r)
+
+    # Run voucher-usage detection on this pool — preserves the existing
+    # naming-agnostic auto-detection so an "Tax-Cr-Misc-A2" ledger that
+    # consistently fires on purchase vouchers still pre-ticks correctly.
+    usage_map: Dict[str, Dict[str, Any]] = {}
+    if vouchers:
+        usage_map = compute_voucher_usage_kinds(
+            [{"name": r["name"]} for r in itc_skeleton], vouchers,
+        )
+
+    itc_ledgers = []
+    for r in itc_skeleton:
+        name_kind, kind_source = _classify_itc_kind(
+            r["name"], r["subhead"], r["group_parent"],
+        )
+        usage = usage_map.get(r["name"], {})
+        usage_kind = usage.get("usage_kind", "neutral")
+        n_purchase = usage.get("n_purchase", 0)
+        n_sales = usage.get("n_sales", 0)
+        n_voucher = usage.get("n_voucher", 0)
+
+        kind = name_kind
+        ksource = kind_source
+        if kind == "other" and usage_kind in ("input", "output"):
+            kind, ksource = usage_kind, "usage"
+
+        usage_conflict = (
+            name_kind == "input"
+            and n_voucher > 0
+            and n_purchase == 0
+            and n_sales > 0
+        )
+
+        suggested = (
+            kind == "input" and (
+                _subhead_matches(r["subhead"], ITC_SUGGEST_SUBHEADS)
+                or usage_kind == "input"
+            )
+        )
+
+        itc_ledgers.append({
+            "name": r["name"],
+            "subhead": r["subhead"],
+            "group_parent": r["group_parent"],
+            "head": r["head"],
+            "closing_balance": r["closing_balance"],
+            "suggested": suggested,
+            # ITC enrichments
+            "kind": kind,
+            "kind_source": ksource,
+            "name_kind": name_kind,
+            "usage_kind": usage_kind if vouchers else None,
+            "n_purchase": n_purchase,
+            "n_sales": n_sales,
+            "n_voucher": n_voucher,
+            "usage_conflict": usage_conflict,
+        })
+
+    # --- Exclusions pool ------------------------------------------------
+    exclusion_ledgers = []
+    for r in universe.values():
+        head_norm = _norm(r["head"])
+        if head_norm in _REVENUE_HEADS_EXCLUDE:
+            continue
+        in_pool = (
+            r["bs_or_pl"] == "P"
+            or (r["bs_or_pl"] == "B" and _norm(r["group_parent"]) == _FIXED_ASSETS_GROUP)
+        )
+        if not in_pool:
+            continue
+        exclusion_ledgers.append({
+            "name": r["name"],
+            "subhead": r["subhead"],
+            "group_parent": r["group_parent"],
+            "head": r["head"],
+            "closing_balance": r["closing_balance"],
+            "suggested": _is_exclusion_hint(r["name"]),
+        })
+
+    return {
+        "exempt_ledgers": exempt_ledgers,
+        "itc_ledgers": itc_ledgers,
+        "exclusion_ledgers": exclusion_ledgers,
+    }
+
+
 def determine_expenditure_ledgers(
     ledgers_xlsx: Dict[str, Dict[str, Any]],
     ledgers_json: List[Dict[str, Any]],
