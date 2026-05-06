@@ -34,7 +34,7 @@ const PIVOT_COLS = [
   { key: "col8",       label: "Col 8 · Excluded",      bucket: "col8", accent: "slate" },
 ];
 
-export default function StepReport({ run }) {
+export default function StepReport({ run, setRun }) {
   const col3FromA = run?.summary?.col3_from_input_a || 0;
   const col3FromB = run?.summary?.col3_from_input_b || 0;
   const rcmCount = run?.summary?.rcm_vouchers || 0;
@@ -133,8 +133,19 @@ export default function StepReport({ run }) {
               onUpdateCategory={async (ledgerName, newBucket) => {
                 try {
                   const next = { ...(run.exclusion_categories || {}), [ledgerName]: newBucket };
-                  await saveSelections(run.run_id, { exclusion_categories: next });
-                  toast.success(`Re-categorised '${ledgerName}' — re-generate to refresh totals`);
+                  const resp = await saveSelections(run.run_id, { exclusion_categories: next });
+                  // Live rebucket — backend returns the recomputed recon
+                  // so the UI moves the line into its new bucket
+                  // immediately and the Excel download will reflect the
+                  // override without a full re-generate.
+                  if (setRun) {
+                    setRun((prev) => prev ? ({
+                      ...prev,
+                      exclusion_categories: resp?.exclusion_categories || next,
+                      recon: resp?.recon || prev.recon,
+                    }) : prev);
+                  }
+                  toast.success(`Re-categorised '${ledgerName}' — totals updated`);
                 } catch {
                   toast.error("Failed to save category");
                 }

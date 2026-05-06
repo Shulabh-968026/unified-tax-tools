@@ -1,5 +1,21 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4.2 · Live recon rebucket on category override (2026-02-06 PM)
+
+User reported a typo'd ledger ("Depriciation") was sitting in **Other exclusions** because the keyword auto-categoriser keys off correct spellings.  The dropdown override was being persisted but the line wasn't moving between buckets in the on-screen recon table — and the Excel export used a stale `recon` payload until the next full Generate.
+
+### Fix
+- **Backend** — `PATCH /api/runs/{run_id}/selections` now reruns `compute_recon_and_filter` server-side whenever `exclusion_categories` is in the body.  Cheap recompute (no voucher reclassifying — re-buckets already-classified Col 8 ledgers) using the persisted `by_ledger` / `summary` / `ledgers_xlsx` / groups.  Fresh recon is persisted on the run doc and echoed in the response.
+- **Frontend** — `StepReport`'s recon onChange now threads the response back through `setRun`, updating the parent `run.recon` immediately.  Toast copy changed from "re-generate to refresh totals" → "totals updated".
+
+### Verified live (run_0ef0127bba5c)
+- PATCH-only flow moves `Cash Discount A/c` from `other_total` → `non_cash_total` (12,495 INR delta), Excel "Reconciliation" sheet immediately renders it under "Less: Non-cash charges" with the correct total.
+
+### Files touched
+- `backend/modules/clause44/controller.py` — `save_selections` now rebuckets + persists `recon` when `exclusion_categories` changes.
+- `frontend/src/pages/clause44/StepReport.jsx` — recon onChange threads response back through parent setter.
+- `frontend/src/pages/clause44/Clause44Run.jsx` — passes `setRun` to `StepReport`.
+
 ## Release 4.4.1 · KPI tile overflow hardening (2026-02-06 PM)
 
 User reported on a large client that some KPI values were bleeding past the tile edge with a trailing period (`3,46,47,747.`).  Three-pronged fix:

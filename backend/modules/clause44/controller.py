@@ -641,11 +641,55 @@ async def save_selections(
         update["exclusion_categories"] = dict(body.exclusion_categories)
     if body.disclaimer_text is not None:
         update["disclaimer_text"] = body.disclaimer_text
+
+    # Live rebucket — when the auditor changes one or more
+    # `exclusion_categories` overrides, recompute the recon block from the
+    # persisted run state so the UI / Excel export reflect the change
+    # without requiring a full Generate.  Cheap: no voucher reclassifying,
+    # just re-bucketing already-classified excluded ledgers.
+    fresh_recon = None
+    if body.exclusion_categories is not None:
+        run = await db.runs.find_one(
+            {"run_id": run_id},
+            {"_id": 0, "by_ledger": 1, "by_party": 1, "summary": 1,
+             "transactions": 1, "ledgers_xlsx": 1, "accounting": 1},
+        )
+        if run and run.get("by_ledger"):
+            from modules.clause44.service import (
+                build_group_chain, compute_recon_and_filter,
+            )
+            ledgers_xlsx = run.get("ledgers_xlsx") or {}
+            groups = (run.get("accounting") or {}).get("groups", [])
+            group_chains = build_group_chain(groups)
+            full_result = {
+                "by_ledger":    run["by_ledger"],
+                "by_party":     run.get("by_party") or {},
+                "summary":      run.get("summary") or {},
+                "transactions": run.get("transactions") or [],
+            }
+            recon_payload = compute_recon_and_filter(
+                full_result,
+                set(update.get("exclusion_selection")
+                    or (await db.runs.find_one({"run_id": run_id}, {"_id": 0, "exclusion_selection": 1}) or {}).get("exclusion_selection") or []),
+                ledgers_xlsx=ledgers_xlsx,
+                group_chains=group_chains,
+                exclusion_categories=update["exclusion_categories"],
+            )
+            fresh_recon = recon_payload["recon"]
+            update["recon"] = fresh_recon
     if not update:
         return {"run_id": run_id, "saved": False}
     update["last_selections_saved_at"] = datetime.now(timezone.utc).isoformat()
     await db.runs.update_one({"run_id": run_id}, {"$set": update})
-    return {"run_id": run_id, "saved": True, **update}
+    resp: Dict[str, Any] = {"run_id": run_id, "saved": True}
+    # Echo the persisted scalars (lists / dicts) so the client can reuse
+    # them without an extra GET — but not the heavy by_ledger blob.
+    for k, v in update.items():
+        if k in ("itc_selection", "exclusion_selection", "exempt_selection",
+                 "use_itc_inference", "exclusion_categories",
+                 "disclaimer_text", "last_selections_saved_at", "recon"):
+            resp[k] = v
+    return resp
 
 
 @router.get("/runs/{run_id}/transactions")

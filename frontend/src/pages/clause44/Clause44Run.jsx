@@ -387,7 +387,7 @@ export default function Clause44Run() {
           />
         )}
         {step === "report" && (
-          <StepReport run={run}/>
+          <StepReport run={run} setRun={setRun}/>
         )}
       </div>
     </AppShell>
