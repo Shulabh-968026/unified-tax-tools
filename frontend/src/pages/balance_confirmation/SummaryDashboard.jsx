@@ -475,13 +475,13 @@ function SubheadHeatmap({ rows }) {
   return (
     <div className="bg-white border border-gray-200 rounded-sm p-5" data-testid="bc-subhead-heatmap">
       <SectionTitle eyebrow="Sampling rationale" title="Subhead Coverage Heatmap"
-        hint="Group-wise exposure + coverage. Intensity encodes ₹ coverage achieved."/>
+        hint="Subhead-wise exposure + coverage (Schedule-III sub-group, e.g. Sundry Creditors / Bank Accounts). Intensity encodes ₹ coverage achieved."/>
       {!sorted.length ? <EmptyRow msg="No subhead data yet."/> : (
         <div className="overflow-x-auto mt-3 -mx-2">
           <table className="w-full text-[12.5px]" data-testid="bc-subhead-table">
             <thead>
               <tr className="text-[10px] font-mono uppercase tracking-wider text-gray-500 bg-gray-50">
-                <th className="text-left px-3 py-2 border-b border-gray-200">Subhead (parent group)</th>
+                <th className="text-left px-3 py-2 border-b border-gray-200">Subhead</th>
                 <th className="text-right px-3 py-2 border-b border-gray-200 w-[12%]">Parties</th>
                 <th className="text-right px-3 py-2 border-b border-gray-200 w-[18%]">Exposure ₹</th>
                 <th className="text-right px-3 py-2 border-b border-gray-200 w-[18%]">Coverage ₹ %</th>
@@ -496,9 +496,13 @@ function SubheadHeatmap({ rows }) {
                   : v >= 25 ? "bg-amber-50 text-amber-800"
                   : v > 0   ? "bg-rose-50 text-rose-800"
                   :            "bg-gray-50 text-gray-500";
+                const label = r.subhead || r.parent_group || "—";
                 return (
-                  <tr key={r.parent_group} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 border-b border-gray-100 truncate" title={r.parent_group}>{r.parent_group || "—"}</td>
+                  <tr key={label} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 border-b border-gray-100 truncate" title={`${label}${r.head ? ` · under ${r.head}` : ""}`}>
+                      {label}
+                      {r.head && <span className="ml-1.5 text-[10px] font-mono text-gray-400">· {r.head}</span>}
+                    </td>
                     <td className="px-3 py-2 border-b border-gray-100 text-right font-mono">{r.count}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-right font-mono">{inrCompact(r.amount)}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-right">

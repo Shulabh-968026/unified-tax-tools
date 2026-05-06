@@ -16,11 +16,15 @@ async def find_session(sid: str) -> Optional[Dict[str, Any]]:
     if not doc:
         return None
     # Release 4.5 — silent redirect for collapsed/archived sessions.
-    if doc.get("archived") and doc.get("collapsed_into"):
-        winner = await SESSIONS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
-        if winner:
-            return winner
-        # Orphaned pointer — treat as not found.
+    # Chain-follow in case the session was collapsed twice.
+    seen = {doc["id"]}
+    while doc.get("archived") and doc.get("collapsed_into") and doc["collapsed_into"] not in seen:
+        nxt = await SESSIONS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if not nxt:
+            return None
+        seen.add(nxt["id"])
+        doc = nxt
+    if doc.get("archived"):
         return None
     return doc
 

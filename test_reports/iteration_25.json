@@ -1,0 +1,63 @@
+{
+  "summary": "Release 4.6 · BC Refinement Batch 1 (R1 split-address + offline PDFs + R2 Subhead from Tally chain) — full backend + frontend regression. 14/14 NEW live HTTP tests pass (test_bc_release_4_6_live.py), 10/10 unit tests pass (test_bc_release_4_6_address_offline_subhead.py), and pre-existing 26/26 R4.5 collapse tests still pass — total 50/50 green. Frontend: BC Workbench shows the new 'Offline PDFs' button alongside Send Selected / Send Reminder / Send All in View; disabled→enabled toggle works; click triggers ZIP download with PDF entries (verified .zip filename + %PDF magic + 1 entry / 2941B). Subhead Coverage Heatmap renders with column header 'Subhead' and SUBHEAD column added to Workbench table. No console/page errors on any BC view.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified": {
+    "csv_export_header": "GET /api/balance-confirmation/runs/{rid}/ledgers/export.csv → 200, header = ledger_id,name,parent_group,head,subhead,category,closing_balance,dr_cr,email,cc_emails,bcc_emails,contact_name,phone,gstin,pan,address_line_1,address_line_2,city,pincode (19 cols, NO legacy 'address').",
+    "csv_import_split_address_persists": "POST import.csv with address_line_1/2/city/pincode → 200; subsequent GET /ledgers shows '12 MG Road' / Pune / 411001 / TEST_qa@x.in persisted.",
+    "csv_import_legacy_backward_compat": "POST import.csv with single 'address' column → status <500 (graceful accept).",
+    "offline_pdfs_zip": "POST /runs/{rid}/offline-pdfs with 3 ledger_ids → 200, Content-Type=application/zip, Content-Disposition=attachment; filename=BalanceConfirmation_OfflineLetters_*.zip. Each entry starts with %PDF and >=2KB.",
+    "offline_pdfs_400_empty": "POST with ledger_ids=[] → 400.",
+    "offline_pdfs_404_run_not_found": "POST to nonexistent_run_id → 404.",
+    "offline_pdfs_404_no_match": "POST with bogus ledger_ids → 404.",
+    "analytics_subheads_shape": "GET /analytics returns subheads array; each row carries subhead, head, parent_group, count, amount, audit_amount_pct, response_amount_pct.",
+    "subhead_old_run_fallback": "Pre-R2-ingested run still has head='' and subhead==parent_group — frontend correctly falls back via `r.subhead || r.parent_group`. Re-ingest required to populate proper Schedule III subheads (documented in agent context).",
+    "regression_r45_collapse": "26/26 R4.5 live + extras tests pass — chain-redirect for multi-hop archived→canonical confirmed.",
+    "regression_pre_existing_bc": "list_runs / list_ledgers / get_run / generations envelope endpoints all 200 OK on the seeded run.",
+    "frontend_offline_pdfs_button": "data-testid='bc-download-offline-pdfs' present in Workbench bulk-action bar (4 buttons, in spec order: Send Selected · Send Reminder · Send All in View · Offline PDFs). Disabled with 0 selection, enabled at >=1.",
+    "frontend_zip_download": "Click triggers Playwright download event → filename ends with .zip → ZIP opens cleanly with %PDF entries.",
+    "frontend_subhead_heatmap": "data-testid='bc-subhead-heatmap' present on Dashboard tab; column header reads 'Subhead'; first cell shows label without grey 'head' suffix because old run lacks head (expected).",
+    "frontend_workbench_subhead_column": "Workbench table now exposes a 'SUBHEAD' column populated for every row (e.g. 'Designs Kokeva', 'Apparel Hpa & Bros', 'Direct-2').",
+    "no_console_errors": "Zero console errors / page errors on Dashboard view AND Workbench view of the BC working-doc page."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bc_release_4_6_live.py",
+    "/app/backend/tests/test_bc_release_4_6_address_offline_subhead.py",
+    "/app/test_reports/pytest/iter25_r46_live.xml"
+  ],
+  "action_items": [
+    "[Optional] Re-ingest the seeded ABC Textile Mills BC run (rid 7de985da-…) so head/subhead are backfilled from the Tally chain — currently subhead==parent_group on this old run (e.g. 'Designs Kokeva' instead of 'Sundry Debtors'). The fallback works correctly so this is data-only, not a code defect."
+  ],
+  "critical_code_review_comments": [
+    "controller.py @ /runs/{rid}/offline-pdfs — clean: 404 before 400 for missing run, 400 before fetch for empty ledger_ids, 404 after fetch for no-match. Auto-pull of auditor letterhead from `user` and client info from clients collection is implemented as spec requires; falls back to demo values if user fields are absent (acceptable).",
+    "service.py EMAIL_CSV_COLUMNS — 19 columns, properly drops legacy 'address'. import_email_csv is backward-compat (legacy 'address' csv parses without 5xx via _split_address heuristic).",
+    "classifier.compute_head_subhead — walks the chain to first PRIMARY group; final fallback returns last link as best-effort head with empty subhead (handled in test_subhead_unmapped_chain_returns_blank).",
+    "offline_pdf.build_offline_letters_zip — generates ReportLab PDFs with cover letter + 2-way tear-off slip; verified PDF magic header + multi-KB size in unit test.",
+    "SummaryDashboard.jsx label rule `r.subhead || r.parent_group || '—'` plus optional grey `· head` suffix is correct; degrades gracefully for pre-R2 runs.",
+    "Landing.jsx bulk-action bar order matches spec exactly; Offline PDFs button is conditional on `selected.size && !busy`.",
+    "Minor: server doesn't seem to validate that ledger_ids is a list of strings — if frontend ever sends [null] it would attempt $in:[null] and 404 on no-match. Low risk."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bc_release_4_6_live.py (NEW — 14 live HTTP tests, 4 classes, ABC Textile Mills client + first BC run as fixture)"
+  ],
+  "success_rate": {
+    "backend_release_4_6_live": "100% (14/14)",
+    "backend_release_4_6_unit": "100% (10/10)",
+    "backend_release_4_5_regression": "100% (26/26)",
+    "frontend_bc_offline_pdfs_flow": "100% (button visible / disabled / enabled / ZIP download / contents valid)",
+    "frontend_bc_subhead_heatmap": "100% (column header 'Subhead', label resolves via fallback)"
+  },
+  "test_credentials": "cookie session_token=qa_test_session_token_20260206_dev (admin role) — verified active.",
+  "seed_data_creation": "No new fixtures created — used existing seeded client cli_ad137f29aebb (ABC Textile Mills) and BC run 7de985da-3fad-4541-ac8f-525246aadb62.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) test_bc_release_4_6_live.py is the regression suite for Release 4.6 — run with REACT_APP_BACKEND_URL=https://unified-tax-tools.preview.emergentagent.com. It uses the QA bypass cookie + ABC Textile Mills client. 2) The seeded run (7de985da-…) was ingested before R2, so its rows still have head='' and subhead==parent_group. To verify the *full* heatmap label format ('Subhead · Head' grey suffix) end-to-end, re-ingest the run (POST /runs/{rid}/upload-books) or create a fresh run. 3) BC Landing now has TWO sub-views: Dashboard (default — contains SummaryDashboard incl. Subhead heatmap) and Workbench (table — contains Offline PDFs button). 4) Verified ZIP integrity directly: 1 entry × ~3KB, starts with %PDF.",
+  "rca of the issue": "n/a — no defects."
+}

@@ -44,6 +44,8 @@ class LedgerOut(BaseModel):
     run_id: str
     name: str
     parent_group: str = ""
+    head:    str = ""
+    subhead: str = ""
     category: str
     opening_balance: float = 0.0
     closing_balance: float = 0.0
@@ -53,6 +55,10 @@ class LedgerOut(BaseModel):
     bcc_emails: List[str] = []
     contact_name: str = ""
     address: str = ""
+    address_line_1: str = ""
+    address_line_2: str = ""
+    city: str = ""
+    pincode: str = ""
     phone: str = ""
     gstin: str = ""
     pan: str = ""
@@ -69,6 +75,10 @@ class LedgerPatch(BaseModel):
     bcc_emails: Optional[List[str]] = None
     contact_name: Optional[str] = None
     address: Optional[str] = None
+    address_line_1: Optional[str] = None
+    address_line_2: Optional[str] = None
+    city: Optional[str] = None
+    pincode: Optional[str] = None
     phone: Optional[str] = None
     gstin: Optional[str] = None
     pan: Optional[str] = None

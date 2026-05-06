@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 from modules.balance_confirmation.classifier import (
     build_group_index,
     classify_ledger,
+    compute_head_subhead,
     dr_cr_indicator,
 )
 
@@ -58,6 +59,7 @@ def build_ledger_records(run_id: str,
             continue
         parent = (L.get("parentGroup") or "").strip()
         category = classify_ledger(parent, g_idx)
+        head, subhead = compute_head_subhead(parent, g_idx)
         try:
             closing = float(L.get("closingBalance") or 0)
         except (TypeError, ValueError):
@@ -66,11 +68,14 @@ def build_ledger_records(run_id: str,
             opening = float(L.get("openingBalance") or 0)
         except (TypeError, ValueError):
             opening = 0.0
+        addr_parts = _split_address(L)
         out.append({
             "ledger_id": str(uuid.uuid4()),
             "run_id": run_id,
             "name": name,
             "parent_group": parent,
+            "head":    head,
+            "subhead": subhead,
             "category": category,
             "opening_balance": round(opening, 2),
             "closing_balance": round(closing, 2),
@@ -78,7 +83,11 @@ def build_ledger_records(run_id: str,
             "credit_period_days": int(L.get("creditPeriod") or 0),
             "gstin": (L.get("gstNumber") or L.get("gstin") or "").strip().upper(),
             "pan": (L.get("itPan") or L.get("pan") or "").strip().upper(),
-            "address": _build_address(L),
+            "address":        _build_address(L),       # legacy concat (backward compat)
+            "address_line_1": addr_parts["address_line_1"],
+            "address_line_2": addr_parts["address_line_2"],
+            "city":           addr_parts["city"],
+            "pincode":        addr_parts["pincode"],
             "phone": (L.get("phoneNumber") or L.get("phone") or "").strip(),
             "email": "",
             "cc_emails": [],
@@ -89,6 +98,51 @@ def build_ledger_records(run_id: str,
             "last_modified": now,
         })
     return out
+
+
+def _split_address(ledger: Dict[str, Any]) -> Dict[str, str]:
+    """Tally's ledger has scattered address fields.  Return a dict with
+    ``address_line_1, address_line_2, city, pincode`` individually populated
+    so BC's CSV + Party Master template can expose them as 4 separate
+    columns.  The legacy concatenated ``address`` string is still built
+    (for backward compat with older CSV uploads) via ``_build_address``.
+    """
+    def _clean(v: Any) -> str:
+        return v.strip() if isinstance(v, str) else ""
+    line1 = _clean(ledger.get("addressLine1"))
+    line2 = _clean(ledger.get("addressLine2"))
+    line3 = _clean(ledger.get("addressLine3"))
+    city = _clean(ledger.get("city"))
+    pincode = _clean(ledger.get("pinCode") or ledger.get("pincode") or ledger.get("pin_code"))
+
+    # If Tally squeezed a joined string into `address` (legacy tcp export),
+    # try to split it on commas so line1/line2/city/pincode aren't empty.
+    if not (line1 or line2 or line3 or city or pincode):
+        blob = ""
+        addr = ledger.get("address")
+        if isinstance(addr, list):
+            blob = ", ".join(str(a).strip() for a in addr if a)
+        elif isinstance(addr, str):
+            blob = addr.strip()
+        parts = [p.strip() for p in blob.split(",") if p.strip()]
+        # Last numeric-looking token → pincode; previous → city; rest → lines.
+        if parts and parts[-1].replace(" ", "").isdigit() and len(parts[-1].replace(" ", "")) == 6:
+            pincode = parts.pop()
+        if parts:
+            city = parts.pop()
+        line1 = parts[0] if parts else ""
+        line2 = parts[1] if len(parts) > 1 else ""
+        line3 = ", ".join(parts[2:]) if len(parts) > 2 else ""
+
+    # Roll line3 into line2 when present (we only expose 2 lines).
+    if line3:
+        line2 = (line2 + ", " + line3).strip(", ") if line2 else line3
+    return {
+        "address_line_1": line1,
+        "address_line_2": line2,
+        "city":           city,
+        "pincode":        pincode,
+    }
 
 
 def _build_address(ledger: Dict[str, Any]) -> str:
@@ -136,10 +190,11 @@ def summarise_ledgers(ledgers: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 # ============================ CSV import / export =============================
 EMAIL_CSV_COLUMNS = [
-    "ledger_id", "name", "parent_group", "category",
+    "ledger_id", "name", "parent_group", "head", "subhead", "category",
     "closing_balance", "dr_cr",
     "email", "cc_emails", "bcc_emails", "contact_name",
-    "phone", "gstin", "pan", "address",
+    "phone", "gstin", "pan",
+    "address_line_1", "address_line_2", "city", "pincode",
 ]
 
 
@@ -159,6 +214,8 @@ def export_email_csv(ledgers: List[Dict[str, Any]]) -> bytes:
             L.get("ledger_id", ""),
             L.get("name", ""),
             L.get("parent_group", ""),
+            L.get("head", ""),
+            L.get("subhead", ""),
             L.get("category", ""),
             f"{float(L.get('closing_balance') or 0):.2f}",
             (L.get("dr_cr") or "").upper(),
@@ -169,15 +226,20 @@ def export_email_csv(ledgers: List[Dict[str, Any]]) -> bytes:
             L.get("phone", ""),
             L.get("gstin", ""),
             L.get("pan", ""),
-            L.get("address", ""),
+            L.get("address_line_1", ""),
+            L.get("address_line_2", ""),
+            L.get("city", ""),
+            L.get("pincode", ""),
         ])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
 def import_email_csv(content: bytes) -> List[Dict[str, Any]]:
     """Parse uploaded CSV → list of {ledger_id, email, cc_emails, bcc_emails,
-    contact_name, phone, gstin, pan, address, category} updates. Other
-    columns ignored.
+    contact_name, phone, gstin, pan, address_line_1, address_line_2, city,
+    pincode, category} updates. Legacy single-column `address` is still
+    accepted for backward compatibility — when present AND the split columns
+    are blank, it's split on commas + last-six-digits-as-pincode heuristic.
 
     Matching priority: ledger_id (preferred) > exact name (fallback).
     """
@@ -197,9 +259,17 @@ def import_email_csv(content: bytes) -> List[Dict[str, Any]]:
             rec["cc_emails"] = _split_emails(row.get("cc_emails", ""))
         if "bcc_emails" in row:
             rec["bcc_emails"] = _split_emails(row.get("bcc_emails", ""))
-        for k in ("contact_name", "phone", "gstin", "pan", "address"):
+        for k in ("contact_name", "phone", "gstin", "pan",
+                  "address_line_1", "address_line_2", "city", "pincode"):
             if k in row:
                 rec[k] = (row.get(k) or "").strip()
+        # Legacy single-column `address` support: only fall back to it when
+        # none of the split fields were provided in the row.
+        if "address" in row and not any(rec.get(k) for k in ("address_line_1", "address_line_2", "city", "pincode")):
+            split = _split_address({"address": row.get("address", "")})
+            for k, v in split.items():
+                if v:
+                    rec[k] = v
         if row.get("category"):
             cat = row["category"].strip().lower().replace(" ", "_")
             if cat in valid_categories:

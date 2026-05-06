@@ -142,12 +142,14 @@ def _bucket_key_for(rec: dict, ledger_name: str) -> str:
 # slot count in `_row_for_bucket`.
 # ---------------------------------------------------------------------------
 COMMON_COLS = ["Party Name", "Subhead / Group", "Closing Balance (Cr / Dr)"]
+ADDRESS_COLS = ["Address Line 1", "Address Line 2", "City", "Pincode"]
 
 COLUMN_SETS = {
     "payables": {
         "headers": COMMON_COLS + [
             "GSTIN", "GST Registration Type", "Country",
-            "Email ID", "Alternate Email", "Phone", "Address",
+            "Email ID", "Alternate Email", "Phone",
+        ] + ADDRESS_COLS + [
             "PAN", "Notes",
         ],
         "notes": [
@@ -160,7 +162,10 @@ COLUMN_SETS = {
             "Required for Balance Confirmation",
             "Optional · CC on confirmation emails",
             "Optional",
+            "Optional · pre-filled where Tally has it",
             "Optional",
+            "Optional",
+            "6-digit postal code",
             "Optional",
             "Free text",
         ],
@@ -169,7 +174,8 @@ COLUMN_SETS = {
     "receivables": {
         "headers": COMMON_COLS + [
             "GSTIN", "GST Registration Type", "Country",
-            "Email ID", "Alternate Email", "Phone", "Address",
+            "Email ID", "Alternate Email", "Phone",
+        ] + ADDRESS_COLS + [
             "PAN", "Notes",
         ],
         "notes": [
@@ -182,7 +188,10 @@ COLUMN_SETS = {
             "Required for Balance Confirmation",
             "Optional · CC on confirmation emails",
             "Optional",
+            "Optional · pre-filled where Tally has it",
             "Optional",
+            "Optional",
+            "6-digit postal code",
             "Optional",
             "Free text",
         ],
@@ -191,7 +200,8 @@ COLUMN_SETS = {
     "loans": {
         "headers": COMMON_COLS + [
             "GSTIN", "Country",
-            "Email ID", "Phone", "Address",
+            "Email ID", "Phone",
+        ] + ADDRESS_COLS + [
             "PAN", "Loan Agreement Date", "Interest Rate (% p.a.)", "Notes",
         ],
         "notes": [
@@ -203,6 +213,9 @@ COLUMN_SETS = {
             "Required for Balance Confirmation",
             "Optional",
             "Optional",
+            "Optional",
+            "Optional",
+            "6-digit postal code",
             "Optional",
             "DD-MM-YYYY",
             "Optional",
@@ -244,6 +257,35 @@ COLUMN_SETS = {
 # ---------------------------------------------------------------------------
 # Per-bucket row builder.
 # ---------------------------------------------------------------------------
+def _split_party_address(json_party: dict) -> tuple:
+    """Extract (line1, line2, city, pincode) from a Tally JSON party object."""
+    def _s(v):
+        return v.strip() if isinstance(v, str) else ""
+    line1 = _s(json_party.get("addressLine1"))
+    line2 = _s(json_party.get("addressLine2"))
+    line3 = _s(json_party.get("addressLine3"))
+    city = _s(json_party.get("city"))
+    pincode = _s(json_party.get("pinCode") or json_party.get("pincode"))
+    if line3:
+        line2 = (line2 + ", " + line3).strip(", ") if line2 else line3
+    # Legacy shape — sometimes addresses are nested in `address` list.
+    if not (line1 or line2 or city or pincode):
+        addr = json_party.get("address")
+        parts: list = []
+        if isinstance(addr, list):
+            parts = [str(a).strip() for a in addr if a]
+        elif isinstance(addr, str):
+            parts = [p.strip() for p in addr.split(",") if p.strip()]
+        if parts:
+            if parts[-1].replace(" ", "").isdigit() and len(parts[-1].replace(" ", "")) == 6:
+                pincode = parts.pop()
+            if parts:
+                city = parts.pop()
+            line1 = parts[0] if parts else ""
+            line2 = ", ".join(parts[1:]) if len(parts) > 1 else ""
+    return line1, line2, city, pincode
+
+
 def _row_for_bucket(bucket_key: str, name: str, rec: dict, json_party: dict | None) -> list:
     closing = rec.get("closingBalance")
     closing_str = ""
@@ -254,6 +296,7 @@ def _row_for_bucket(bucket_key: str, name: str, rec: dict, json_party: dict | No
     country = (json_party.get("country") or "").strip()
     country_str = "" if country.lower() in ("india", "") else country
     subhead = rec.get("subhead") or rec.get("groupParent") or ""
+    line1, line2, city, pincode = _split_party_address(json_party)
 
     if bucket_key in ("payables", "receivables"):
         return [
@@ -261,25 +304,31 @@ def _row_for_bucket(bucket_key: str, name: str, rec: dict, json_party: dict | No
             json_party.get("partyGSTIN") or "",
             (json_party.get("gstRegistrationType") or "").lower(),
             country_str,
-            "",  # email
-            "",  # alt email
-            "",  # phone
-            "",  # address
-            "",  # PAN
-            "",  # notes
+            "",       # email
+            "",       # alt email
+            "",       # phone
+            line1,    # Address Line 1
+            line2,    # Address Line 2
+            city,     # City
+            pincode,  # Pincode
+            "",       # PAN
+            "",       # notes
         ]
     if bucket_key == "loans":
         return [
             name, subhead, closing_str,
             json_party.get("partyGSTIN") or "",
             country_str,
-            "",  # email
-            "",  # phone
-            "",  # address
-            "",  # PAN
-            "",  # loan date
-            "",  # interest rate
-            "",  # notes
+            "",       # email
+            "",       # phone
+            line1,    # Address Line 1
+            line2,    # Address Line 2
+            city,     # City
+            pincode,  # Pincode
+            "",       # PAN
+            "",       # loan date
+            "",       # interest rate
+            "",       # notes
         ]
     if bucket_key == "bank":
         return [

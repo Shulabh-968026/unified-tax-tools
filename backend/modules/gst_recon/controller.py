@@ -204,13 +204,16 @@ async def get_run(
     if not doc:
         raise HTTPException(404, "Run not found")
     # Release 4.5 — silent redirect for collapsed/archived run_ids.
-    if doc.get("archived") and doc.get("collapsed_into"):
-        winner = await COLL.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
-        if winner:
-            doc = winner
-            rid = winner["id"]
-        else:
+    seen = {doc["id"]}
+    while doc.get("archived") and doc.get("collapsed_into") and doc["collapsed_into"] not in seen:
+        nxt = await COLL.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if not nxt:
             raise HTTPException(404, "Run not found")
+        seen.add(nxt["id"])
+        doc = nxt
+        rid = nxt["id"]
+    if doc.get("archived"):
+        raise HTTPException(404, "Run not found")
     try:
         firm_id = doc.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
         doc["library_status"] = await lib_svc.compute_module_status(

@@ -208,14 +208,17 @@ async def get_run(
     if not run:
         raise HTTPException(404, "Run not found")
     # Release 4.5 — silent redirect for collapsed/archived run_ids.
-    if run.get("archived") and run.get("collapsed_into"):
-        winner = await RUNS.find_one({"id": run["collapsed_into"]}, {"_id": 0})
-        if winner:
-            run = winner
-            rid = winner["id"]
-        else:
-            # Orphaned pointer (winner was hard-deleted) — treat as not found.
+    # Chain-follow in case the run was collapsed twice (R4.5 → R4.5.1).
+    seen = {run["id"]}
+    while run.get("archived") and run.get("collapsed_into") and run["collapsed_into"] not in seen:
+        nxt = await RUNS.find_one({"id": run["collapsed_into"]}, {"_id": 0})
+        if not nxt:
             raise HTTPException(404, "Run not found")
+        seen.add(nxt["id"])
+        run = nxt
+        rid = nxt["id"]
+    if run.get("archived"):
+        raise HTTPException(404, "Run not found")
     try:
         firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
         run["library_status"] = await lib_svc.compute_module_status(

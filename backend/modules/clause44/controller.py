@@ -90,11 +90,16 @@ async def _fetch_run(run_id: str) -> Dict[str, Any]:
     # Release 4.5 — silent redirect for collapsed/archived run_ids.  When
     # an old link points to a doc that was archived during the
     # canonical-collapse migration, transparently re-route to its winner.
-    if run.get("archived") and run.get("collapsed_into"):
-        winner = await db.runs.find_one({"run_id": run["collapsed_into"]}, {"_id": 0})
-        if winner:
-            return winner
-        # Orphaned pointer — treat as not found.
+    # Follow the chain in case a run was archived twice (R4.5 → R4.5.1).
+    seen = {run["run_id"]}
+    while run.get("archived") and run.get("collapsed_into") and run["collapsed_into"] not in seen:
+        nxt = await db.runs.find_one({"run_id": run["collapsed_into"]}, {"_id": 0})
+        if not nxt:
+            raise HTTPException(status_code=404, detail="Run not found")
+        seen.add(nxt["run_id"])
+        run = nxt
+    if run.get("archived"):
+        # Cycle or terminal-archived doc — orphaned pointer.
         raise HTTPException(status_code=404, detail="Run not found")
     return run
 

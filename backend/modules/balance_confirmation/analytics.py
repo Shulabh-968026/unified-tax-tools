@@ -244,15 +244,24 @@ def _subhead_heatmap(ledgers: List[Dict[str, Any]],
                      limit: int = 12) -> List[Dict[str, Any]]:
     """Coverage heatmap — only the audit-relevant heads. Subheads belonging to
     'other' ledgers (salaries, duties, taxes, etc.) are excluded because the
-    balance-confirmation exercise doesn't apply to them."""
+    balance-confirmation exercise doesn't apply to them.
+
+    Release 4.6 · R2 fix — groups by the proper **Subhead** (computed by
+    walking the Tally group chain to the level just beneath the
+    Schedule-III-like primary group) instead of the raw ``parent_group``.
+    When a ledger's subhead can't be resolved, it falls back to
+    ``parent_group`` so nothing disappears from the heatmap.
+    """
     groups: Dict[str, Dict[str, Any]] = {}
     for L in ledgers:
         cat = _category_for(L)
         if cat not in _SUBHEAD_RELEVANT_CATEGORIES:
             continue
-        key = (L.get("parent_group") or "—").strip() or "—"
+        key = (L.get("subhead") or L.get("parent_group") or "—").strip() or "—"
         g = groups.setdefault(key, {
             "parent_group": key,
+            "subhead":      key,
+            "head":         (L.get("head") or "").strip(),
             "category":     cat,
             "count": 0,
             "amount": 0.0,

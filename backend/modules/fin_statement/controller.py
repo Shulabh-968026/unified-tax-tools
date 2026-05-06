@@ -138,11 +138,15 @@ async def get_run(
     if not run:
         raise HTTPException(404, "Run not found")
     if run.get("archived") and run.get("collapsed_into"):
-        winner = await RUNS.find_one({"id": run["collapsed_into"]}, {"_id": 0})
-        if winner:
-            run = winner
-            rid = winner["id"]
-        else:
+        seen = {run["id"]}
+        while run.get("archived") and run.get("collapsed_into") and run["collapsed_into"] not in seen:
+            nxt = await RUNS.find_one({"id": run["collapsed_into"]}, {"_id": 0})
+            if not nxt:
+                raise HTTPException(404, "Run not found")
+            seen.add(nxt["id"])
+            run = nxt
+            rid = nxt["id"]
+        if run.get("archived"):
             raise HTTPException(404, "Run not found")
     try:
         firm_id = run.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID

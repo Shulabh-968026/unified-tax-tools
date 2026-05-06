@@ -74,6 +74,61 @@ def classify_ledger(parent_group: str, group_idx: Dict[str, str]) -> str:
     return "other"
 
 
+# Tally's primary (Schedule-III-like) top-level groups.  Anything in this set
+# is treated as "Head" when it appears in a ledger's chain.
+_PRIMARY_GROUPS = {
+    "current assets", "current liabilities", "capital account",
+    "loans (liability)", "loans & advances (asset)", "fixed assets",
+    "investments", "misc. expenses (asset)", "branch / divisions",
+    "suspense a/c", "deposits (asset)", "direct expenses", "direct incomes",
+    "indirect expenses", "indirect incomes", "purchase accounts",
+    "sales accounts", "duties & taxes", "reserves & surplus",
+    "provisions", "secured loans", "unsecured loans", "bank accounts",
+    "bank od a/c", "sundry creditors", "sundry debtors",
+    "cash-in-hand", "stock-in-hand", "retained earnings",
+}
+
+
+def compute_head_subhead(parent_group: str, group_idx: Dict[str, str]) -> tuple:
+    """Walk the ledger's group chain to locate the proper **Head** (Tally's
+    Schedule-III-like top-level group) and **Subhead** (the group just below
+    the Head — e.g. "Sundry Creditors" → Head, "MSME" → Subhead).
+
+    Returns ``(head, subhead)`` — both strings.  Either may be empty when
+    the chain can't be walked (custom chart of accounts without a reserved
+    parent).
+
+    Example chains (start → root):
+       ["msme", "domestic suppliers", "sundry creditors", "current liabilities"]
+       → head = "Current Liabilities", subhead = "Sundry Creditors"
+
+       ["hdfc bank", "bank accounts", "current assets"]
+       → head = "Current Assets", subhead = "Bank Accounts"
+
+       ["tata steel", "sundry debtors"]   (chain stops at reserved group)
+       → head = "Sundry Debtors", subhead = ""
+    """
+    chain = _root_chain(parent_group, group_idx)
+    if not chain:
+        return "", ""
+
+    # Find the topmost (rootward) primary group in the chain.
+    head_idx = -1
+    for i in range(len(chain) - 1, -1, -1):
+        if chain[i] in _PRIMARY_GROUPS:
+            head_idx = i
+            break
+    if head_idx < 0:
+        # No primary group found — best effort: head = last link, subhead = blank.
+        return chain[-1].title(), ""
+
+    head = chain[head_idx].title()
+    # Subhead = the link **immediately below** the Head in the chain.
+    if head_idx > 0:
+        return head, chain[head_idx - 1].title()
+    return head, ""
+
+
 def dr_cr_indicator(closing_balance: float) -> str:
     """Tally sign convention: + amount = Credit, - amount = Debit.
     Returns 'dr' / 'cr' / '' (zero balance)."""

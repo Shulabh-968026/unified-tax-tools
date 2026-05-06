@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity, LayoutDashboard, Table2 } from "lucide-react";
+import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity, LayoutDashboard, Table2, Printer } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import SummaryDashboard from "./SummaryDashboard";
@@ -192,6 +192,38 @@ export default function BalanceConfirmationLanding() {
   };
   const sendSelected = () => sendIds(Array.from(selected), false);
   const remindSelected = () => sendIds(Array.from(selected), true);
+
+  const downloadOfflinePdfs = async () => {
+    const ids = Array.from(selected);
+    if (!ids.length) {
+      toast.info("Select at least one party first");
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await http.post(
+        `/balance-confirmation/runs/${rid}/offline-pdfs`,
+        { ledger_ids: ids },
+        { responseType: "blob" },
+      );
+      const blob = new Blob([resp.data], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = resp.headers?.["content-disposition"] || "";
+      const m = /filename="([^"]+)"/.exec(cd);
+      a.download = m ? m[1] : `BC_OfflineLetters_${rid.slice(0, 8)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`Generated ${ids.length} offline confirmation PDF${ids.length > 1 ? "s" : ""}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Offline PDF generation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
   const sendAllVisible = () => {
     const ids = visibleLedgers.filter(l => l.email && (l.confirmation_status === "not_sent" || l.confirmation_status === "failed")).map(l => l.ledger_id);
     if (!ids.length) { toast.info("No eligible ledgers in current view (need email + status not_sent or failed)"); return; }
@@ -430,6 +462,12 @@ export default function BalanceConfirmationLanding() {
                         className="px-3 py-1.5 rounded-sm border border-gray-300 text-gray-700 bg-white font-medium inline-flex items-center gap-1.5 hover:bg-gray-100 disabled:opacity-40"
                         data-testid="bc-send-all-visible">
                         <Send size={12}/> Send All in View
+                      </button>
+                      <button disabled={!selected.size || busy} onClick={downloadOfflinePdfs}
+                        className="px-3 py-1.5 rounded-sm border border-slate-300 text-slate-700 bg-white font-medium inline-flex items-center gap-1.5 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                        data-testid="bc-download-offline-pdfs"
+                        title="Download printable PDF letters for postal/manual dispatch (with tear-off slip)">
+                        <Printer size={12}/> Offline PDFs
                       </button>
                       <span className="text-[11px] text-gray-500 ml-auto">Sender: <code>onboarding@resend.dev</code> · Reply-to: your email · Default cadence: 3/7/14 days</span>
                     </div>

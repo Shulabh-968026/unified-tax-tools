@@ -28,6 +28,7 @@ from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
 from modules.library.generations import append_generation, list_generations
 from modules.balance_confirmation.exports import build_authorization_template_docx
+from modules.balance_confirmation.offline_pdf import build_offline_letters_zip
 from modules.balance_confirmation.recon import auto_match, parse_recipient_statement
 from modules.balance_confirmation.schemas import (
     AuthorizationOut,
@@ -170,13 +171,16 @@ async def get_run(
     if not doc:
         raise HTTPException(404, "Run not found")
     # Release 4.5 — silent redirect for collapsed/archived run_ids.
-    if doc.get("archived") and doc.get("collapsed_into"):
-        winner = await RUNS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
-        if winner:
-            doc = winner
-            rid = winner["id"]
-        else:
+    seen = {doc["id"]}
+    while doc.get("archived") and doc.get("collapsed_into") and doc["collapsed_into"] not in seen:
+        nxt = await RUNS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
+        if not nxt:
             raise HTTPException(404, "Run not found")
+        seen.add(nxt["id"])
+        doc = nxt
+        rid = nxt["id"]
+    if doc.get("archived"):
+        raise HTTPException(404, "Run not found")
     # Attach library outdated/missing status — drives the morphing
     # "Rerun on Latest Data" button on the BC run shell.
     try:
@@ -269,7 +273,8 @@ async def rerun_on_latest(
         prev = existing.get(rec["name"])
         if prev:
             for k in ("email", "cc_emails", "bcc_emails", "contact_name", "phone",
-                      "address", "gstin", "pan", "category"):
+                      "address", "address_line_1", "address_line_2", "city",
+                      "pincode", "gstin", "pan", "category"):
                 if prev.get(k):
                     rec[k] = prev[k]
             rec["response_token"] = prev.get("response_token") or rec["response_token"]
@@ -359,7 +364,8 @@ async def upload_books(
         if prev:
             # carry forward user-edited fields
             for k in ("email", "cc_emails", "bcc_emails", "contact_name", "phone",
-                      "address", "gstin", "pan", "category"):
+                      "address", "address_line_1", "address_line_2", "city",
+                      "pincode", "gstin", "pan", "category"):
                 if prev.get(k):
                     rec[k] = prev[k]
             # keep the prior token + status so any sent/awaiting links don't break
@@ -509,6 +515,78 @@ async def import_ledgers_csv(
         "not_found": not_found[:50],
         "summary": summary,
     }
+
+
+class OfflinePdfRequest(BaseModel):
+    """Payload for the offline-PDF bulk download."""
+    ledger_ids: List[str] = []
+    as_at_date: Optional[str] = None
+    letter_date: Optional[str] = None  # free-form, printed as-is (e.g. "15 Feb 2026")
+
+
+@router.post("/runs/{rid}/offline-pdfs")
+async def download_offline_pdfs(
+    rid: str,
+    payload: OfflinePdfRequest,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Generate a ZIP of per-party confirmation PDFs for offline dispatch.
+
+    Each PDF has:
+      • Letter from auditor to party (auto-pulled letterhead, client info)
+      • Tear-off slip at bottom with 2-way confirmation options + sign-off block
+    """
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    if not payload.ledger_ids:
+        raise HTTPException(400, "Select at least one party to generate offline PDFs")
+
+    # Fetch selected ledgers, preserve input order.
+    rows = await LEDGERS.find(
+        {"run_id": rid, "ledger_id": {"$in": payload.ledger_ids}}, {"_id": 0},
+    ).to_list(20000)
+    order = {lid: i for i, lid in enumerate(payload.ledger_ids)}
+    rows.sort(key=lambda r: order.get(r.get("ledger_id"), 9999))
+    if not rows:
+        raise HTTPException(404, "None of the selected ledgers were found")
+
+    # Auto-pull auditor letterhead from user profile (fallback to demo values).
+    auditor = {
+        "firm_name":    (user.get("firm_name") if isinstance(user, dict) else None)
+                        or "AssureAI & Co · Chartered Accountants",
+        "firm_address": (user.get("firm_address") if isinstance(user, dict) else None)
+                        or "102, Audit House, Connaught Place, New Delhi — 110001",
+        "firm_phone":   (user.get("firm_phone") if isinstance(user, dict) else "") or "",
+        "firm_email":   (user.get("email") if isinstance(user, dict) else "") or "",
+        "partner_name": (user.get("name") if isinstance(user, dict) else "") or "Engagement Partner",
+        "udin":         "",
+    }
+    # Auto-pull client identity from Mongo.
+    cli_doc = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0}) or {}
+    client = {
+        "name":    cli_doc.get("name") or run.get("company") or run.get("client_id") or "",
+        "gstin":   cli_doc.get("gstin") or "",
+        "address": cli_doc.get("address") or "",
+        "fy_end":  run.get("as_at_date") or "",
+    }
+
+    as_at = payload.as_at_date or run.get("as_at_date") or fy_end_date(run.get("fy", ""))
+    letter_date = payload.letter_date or datetime.now(timezone.utc).strftime("%d %b %Y")
+
+    zip_bytes = build_offline_letters_zip(
+        ledgers=rows, client=client, auditor=auditor,
+        as_at_date=as_at, letter_date=letter_date,
+    )
+    fname = f"BalanceConfirmation_OfflineLetters_{rid[:8]}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.zip"
+    return StreamingResponse(
+        iter([zip_bytes]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # ============================ Authorization Letter ===========================
