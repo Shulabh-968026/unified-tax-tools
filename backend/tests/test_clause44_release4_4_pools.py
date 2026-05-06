@@ -62,7 +62,12 @@ def test_itc_subhead_match_is_case_insensitive():
     assert {r["name"] for r in pools["itc_ledgers"]} == {"Input GST", "Output GST"}
 
 
-def test_exclusion_includes_capex_and_auto_ticks_them():
+def test_exclusion_includes_capex_and_does_not_auto_tick_them():
+    """Capex (PPE + Intangibles) appears in the Exclusions pool but is
+    NEVER auto-ticked — auditors decide per audit whether to bring capex
+    into the recon as an add-back.  P-side keyword matches still
+    auto-tick.  Each row carries `recon_role` so the UI can flag
+    add-back vs subtract."""
     rows = [
         ("Plant & Machinery", "B", "Property, Plant and Equipment", "Plant and Machinery", "Fixed Assets", 200000),
         ("Goodwill",          "B", "Intangible Fixed Assets",       "Goodwill",            "Fixed Assets", 50000),
@@ -72,10 +77,15 @@ def test_exclusion_includes_capex_and_auto_ticks_them():
     pools = compute_pools(_mapping(rows), [], None)
     excl = {r["name"]: r for r in pools["exclusion_ledgers"]}
     assert set(excl) == {"Plant & Machinery", "Goodwill", "Salaries"}
-    # Capex auto-ticked
-    assert excl["Plant & Machinery"]["suggested"] is True
-    assert excl["Goodwill"]["suggested"] is True
-    # Cash (BS, not capex) is NOT in the exclusion pool
+    # Capex appears but NOT auto-ticked.
+    assert excl["Plant & Machinery"]["suggested"] is False
+    assert excl["Plant & Machinery"]["recon_role"] == "addback"
+    assert excl["Goodwill"]["suggested"] is False
+    assert excl["Goodwill"]["recon_role"] == "addback"
+    # P-side keyword matches still auto-tick.
+    assert excl["Salaries"]["suggested"] is True
+    assert excl["Salaries"]["recon_role"] == "subtract"
+    # Cash (BS, not capex) is NOT in the exclusion pool.
     assert "Cash" not in excl
 
 

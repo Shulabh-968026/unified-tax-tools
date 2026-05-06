@@ -1,5 +1,23 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4.5 · Capex no longer auto-pre-ticked + Recon roles surfaced (2026-02-06 PM)
+
+User flag: capex (Fixed Assets + Intangibles) was auto-pre-ticked on the Exclusion step alongside Sch III items, and the Step 3 copy said "Excluded ledgers are removed from Clause 44 totals" — which read as if the system was telling the auditor to *remove* capex from Col 2.  Mechanically the recon was using these picks correctly (capex got bucketed under `capex_addback` — an addition, not subtraction), but the UX implied the opposite.
+
+### Fix
+- **Capex no longer auto-pre-ticks.**  Only P-side keyword matches (Sch III / non-cash / money / penal interest etc.) auto-tick.  Capex appears in the same picker but unticked — auditor opts in per audit judgement.
+- **`recon_role` per row** — every exclusion-pool row now carries `"subtract"` (P-side, removed from P&L) or `"addback"` (capex, added back to bridge to Col 2).  Surfaces as a violet `↑ ADD-BACK` or slate `↓ SUBTRACT` badge in `LedgerTable`.
+- **Step 3 retitled** "Recon Adjustments" with explicit copy explaining the bidirectional nature.
+
+### Files touched
+- `backend/modules/clause44/service.py` — capex `suggested=False` rule; new `recon_role` field on each exclusion row.
+- `frontend/src/pages/clause44/LedgerTable.jsx` — render `↑ ADD-BACK` / `↓ SUBTRACT` badges.
+- `frontend/src/pages/clause44/StepExclusion.jsx` — retitled, rewrote intro copy with bullet-list role explanation.
+- `backend/tests/test_clause44_release4_4_pools.py` — updated `test_exclusion_includes_capex_and_does_not_auto_tick_them` to assert the new behaviour + `recon_role`.
+
+### Verified live
+ABC Textile Mills run_0ef0127bba5c — Exclusion picker shows 7 selected (down from 10), all P-side keyword hits.  All 7 capex ledgers (Buildings / Computers / Free Hold Lands / Furniture / Office Equipments / Plant & Machinery / Vehicles) are visible with the violet ADD-BACK badge, unticked, opt-in only.  35/35 backend tests green.
+
 ## Release 4.4.4 · Interest / Discount on Loans = Exempt Supply (Col 3 / Input A) (2026-02-06 PM)
 
 User flag: literature review confirmed that interest / discount on **loans / deposits / advances** is an **exempt supply** under GST (Schedule III + Notification 12/2017-CT entry 27 + ICAI GN Para 79.13), not an exclusion.  Engine was previously flagging every `Interest on …` ledger as Exclusion via the bare `interest` keyword in `EXCLUSION_HINT_KEYWORDS`.

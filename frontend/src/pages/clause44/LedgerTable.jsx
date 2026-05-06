@@ -211,6 +211,16 @@ export default function LedgerTable({
                         ⚠ name vs usage
                       </Badge>
                     )}
+                    {it.recon_role === "addback" && (
+                      <Badge className="shrink-0 bg-violet-50 text-violet-900 border border-violet-200 rounded-sm shadow-none px-1.5 py-0 text-[9.5px] font-mono" title="Tick to ADD BACK to P&L expenditure (capex is reportable in Col 2 — recon needs it added back)">
+                        ↑ ADD-BACK
+                      </Badge>
+                    )}
+                    {it.recon_role === "subtract" && it.suggested && (
+                      <Badge className="shrink-0 bg-slate-50 text-slate-700 border border-slate-200 rounded-sm shadow-none px-1.5 py-0 text-[9.5px] font-mono" title="Tick to SUBTRACT from P&L expenditure (Sch III / non-cash / money / other)">
+                        ↓ SUBTRACT
+                      </Badge>
+                    )}
                   </div>
                 );
               }

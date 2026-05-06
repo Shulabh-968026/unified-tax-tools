@@ -746,8 +746,13 @@ def compute_pools(
         is_capex = (r["bs_or_pl"] == "B" and head_norm in _FA_HEADS)
         if r["bs_or_pl"] != "P" and not is_capex:
             continue
-        # Auto-tick: existing exclusion-keyword match OR capex (FA head)
-        suggested = _is_exclusion_hint(r["name"]) or is_capex
+        # Auto-tick rule (Release 4.4.5): keyword match for genuine Sch III
+        # / non-cash / money exclusions only.  Capex (FA + Intangibles) is
+        # NEVER auto-ticked — it's reportable in Col 2 and only flows
+        # through the recon's `capex_addback` bucket if the auditor
+        # explicitly opts it in.  The badge below tells the auditor what
+        # each tick does.
+        suggested = (not is_capex) and _is_exclusion_hint(r["name"])
         exclusion_ledgers.append({
             "name": r["name"],
             "subhead": r["subhead"],
@@ -755,6 +760,10 @@ def compute_pools(
             "head": r["head"],
             "closing_balance": r["closing_balance"],
             "suggested": suggested,
+            # `recon_role` tells the UI whether ticking this row will
+            # SUBTRACT it from P&L (most exclusions) or ADD IT BACK to
+            # P&L (capex — Col 2 already includes capex purchases).
+            "recon_role": "addback" if is_capex else "subtract",
         })
 
     return {
