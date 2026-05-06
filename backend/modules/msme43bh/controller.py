@@ -25,6 +25,7 @@ from modules.msme43bh.service import (
 )
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
+from modules.library.generations import append_generation, list_generations
 
 router = APIRouter(prefix="/msme")
 logger = logging.getLogger("msme43bh")
@@ -310,7 +311,43 @@ async def compute_session(
     except Exception:
         logger.exception("Failed to auto-save 43B(h) creditor report to Library (non-fatal)")
 
+    # Release 4.5 — append-only generations log
+    try:
+        s = (result or {}).get("summary") or {}
+        await append_generation(
+            run_id=sid, module="msme43bh",
+            client_id=doc.get("client_id"),
+            period=doc.get("fy"),
+            generated_by_email=user.get("email"),
+            pinned_files_snapshot=pinned_files,
+            summary_snapshot={
+                "final_disallowance": s.get("final_disallowance"),
+                "bill_count": s.get("bill_count"),
+                "disallowed_count": s.get("disallowed_count"),
+            },
+        )
+    except Exception:
+        logger.exception("append_generation failed (non-fatal)")
+
     return result
+
+
+@router.get("/sessions/{sid}/generations")
+async def session_generations(
+    sid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Append-only history of compute actions on this working session.
+    Newest first."""
+    await _auth(request, session_token, authorization)
+    doc = await dao.find_session(sid)
+    if not doc:
+        raise HTTPException(404, "Session not found")
+    canonical_id = doc.get("id") or sid
+    rows = await list_generations(canonical_id)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.get("/sessions/{sid}/results")

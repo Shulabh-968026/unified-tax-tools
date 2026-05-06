@@ -10,10 +10,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  Loader2, Upload, ChartLine, FileText, Sparkles, Download, Building2,
+  Loader2, Upload, ChartLine, FileText, Sparkles, Download, Building2, History,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 
 const inr = (v, { dashZero = true } = {}) => {
   const n = Number(v || 0);
@@ -31,6 +32,7 @@ export default function FsRunPage() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(null); // "classic" | "boardroom" | null
+  const [showHistory, setShowHistory] = useState(false);
   const fileRef = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -142,15 +144,24 @@ export default function FsRunPage() {
             onChange={onUpload} className="hidden" ref={fileRef}
             data-testid="fs-ingest-input"
           />
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            data-testid="fs-ingest-btn"
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-sky-800 hover:bg-sky-900 text-white text-[13px] disabled:opacity-60"
-          >
-            {uploading ? <Loader2 size={14} className="animate-spin"/> : <Upload size={14}/>}
-            {run.books_loaded ? "Re-ingest JSON" : "Upload Statement JSON"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              data-testid="fs-open-history"
+              className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-700 text-[12px] hover:bg-slate-50"
+            >
+              <History size={13}/> History
+            </button>
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              data-testid="fs-ingest-btn"
+              className="inline-flex items-center gap-2 px-3.5 py-2 bg-sky-800 hover:bg-sky-900 text-white text-[13px] disabled:opacity-60"
+            >
+              {uploading ? <Loader2 size={14} className="animate-spin"/> : <Upload size={14}/>}
+              {run.books_loaded ? "Re-ingest JSON" : "Upload Statement JSON"}
+            </button>
+          </div>
         </div>
 
         {!run.books_loaded ? (
@@ -167,6 +178,15 @@ export default function FsRunPage() {
           </>
         ) : null}
       </div>
+      {showHistory && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/fin-statement/runs/${rid}`}
+          moduleLabel="Financial Statement Designer"
+          module="fin_statement"
+        />
+      )}
     </div>
   );
 }

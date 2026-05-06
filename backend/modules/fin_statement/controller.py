@@ -21,6 +21,7 @@ from core.db import db
 from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
+from modules.library.generations import append_generation, list_generations
 from modules.fin_statement.normalizer import normalize_final_statement
 from modules.fin_statement.pdf_renderer import render_pdf
 
@@ -247,8 +248,39 @@ async def ingest_statement(
             "firm_id":      user.get("firm_id") or DEFAULT_FIRM_ID,
         }},
     )
+    # Release 4.5 — append-only generations log
+    try:
+        await append_generation(
+            run_id=rid, module="fin_statement",
+            client_id=run.get("client_id"),
+            period=run.get("fy"),
+            generated_by_email=user.get("email"),
+            pinned_files_snapshot=pinned_files,
+            summary_snapshot={
+                "note_count":   doc.get("counts", {}).get("notes", 0),
+                "detail_count": doc.get("counts", {}).get("details", 0),
+            },
+        )
+    except Exception:
+        log.exception("append_generation failed (non-fatal)")
     doc.pop("_id", None)
     return doc
+
+
+@router.get("/runs/{rid}/generations")
+async def fs_generations(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1, "collapsed_into": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    canonical_id = run.get("collapsed_into") or run.get("id") or rid
+    rows = await list_generations(canonical_id)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.get("/runs/{rid}/document")

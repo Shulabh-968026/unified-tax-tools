@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History, Download } from "lucide-react";
+import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History, Download, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 
 const BUCKETS = [
   { id: "gstr1",   label: "GSTR-1",    expected: 12 },
@@ -45,6 +46,7 @@ export default function GstReconLanding() {
   const [pastRuns, setPastRuns] = useState([]);
   const [unmapped, setUnmapped] = useState([]);
   const [showPast, setShowPast] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
   const [relaxed, setRelaxed] = useState(true); // ON by default — auto-matches same-party + same-period + same-amount
   const inputRef = useRef();
 
@@ -229,6 +231,15 @@ export default function GstReconLanding() {
           <div className="flex items-center gap-3">
             {runId && (
               <button
+                onClick={() => setShowHistory(true)}
+                className="h-9 px-3 rounded-sm border border-gray-300 text-xs font-medium bg-white hover:bg-gray-50 inline-flex items-center gap-1.5"
+                data-testid="gst-open-history"
+              >
+                <Activity size={13}/> History
+              </button>
+            )}
+            {runId && (
+              <button
                 onClick={() => setShowPast(true)}
                 className="h-9 px-3 rounded-sm border border-gray-300 text-xs font-medium bg-white hover:bg-gray-50 inline-flex items-center gap-1.5"
                 data-testid="view-past-runs-btn"
@@ -407,6 +418,15 @@ export default function GstReconLanding() {
 
         {summary && <SummaryPanel summary={summary} runId={runId} relaxed={relaxed} onRelaxedChange={setRelaxed} />}
       </div>
+      {showHistory && runId && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/gst-recon/runs/${runId}`}
+          moduleLabel="GST Turnover & ITC Reconciliation"
+          module="gst_recon"
+        />
+      )}
     </div>
   );
 }

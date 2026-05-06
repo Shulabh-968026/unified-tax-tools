@@ -14,6 +14,7 @@ from helpers.mapping import parse_ledger_mapping
 from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
+from modules.library.generations import append_generation, list_generations
 from modules.gst_recon.schemas import RunCreate, RunOut
 from modules.gst_recon.aggregators import (
     aggregate_books,
@@ -426,7 +427,35 @@ async def compute_summary(
         {"id": rid},
         {"$set": {"summary": summary, "status": "summarized"}},
     )
+    # Release 4.5 — append-only generations log
+    try:
+        await append_generation(
+            run_id=rid, module="gst_recon",
+            client_id=doc.get("client_id"),
+            period=doc.get("fy"),
+            generated_by_email=None,
+            pinned_files_snapshot=doc.get("pinned_files") or {},
+            summary_snapshot={"summary": summary or {}},
+        )
+    except Exception:
+        pass
     return summary
+
+
+@router.get("/runs/{rid}/generations")
+async def gst_generations(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await COLL.find_one({"id": rid}, {"_id": 0, "id": 1, "collapsed_into": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    canonical_id = run.get("collapsed_into") or run.get("id") or rid
+    rows = await list_generations(canonical_id)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.post("/runs/{rid}/match")

@@ -23,6 +23,7 @@ from core.db import db
 from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
+from modules.library.generations import append_generation, list_generations
 from modules.fixed_assets.additions_xlsx import (
     block_drift,
     build_additions_workbook,
@@ -2411,7 +2412,40 @@ async def compute_run_endpoint(
         "status":           "computed",
         "last_computed_at": datetime.now(timezone.utc).isoformat(),
     }})
+    # Release 4.5 — append-only generations log
+    try:
+        run = inputs.get("run") or {}
+        await append_generation(
+            run_id=rid, module="fixed_assets",
+            client_id=run.get("client_id"),
+            period=run.get("fy"),
+            generated_by_email=None,
+            pinned_files_snapshot=run.get("pinned_files") or {},
+            summary_snapshot={
+                "totals": totals,
+                "row_count": len(rows or []),
+            },
+        )
+    except Exception:
+        log.exception("append_generation failed (non-fatal)")
     return {"ok": True, "rows": rows, "totals": totals}
+
+
+@router.get("/runs/{rid}/generations")
+async def fa_generations(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Append-only history of compute actions on this working run."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1, "collapsed_into": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    canonical_id = run.get("collapsed_into") or run.get("id") or rid
+    rows = await list_generations(canonical_id)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.get("/runs/{rid}/export.xlsx")

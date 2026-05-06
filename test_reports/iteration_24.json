@@ -1,0 +1,60 @@
+{
+  "summary": "Release 4.5 (Multi-run collapse + generations log) — full backend + frontend verification. Backend: 26/26 live tests pass (7 in test_release_4_5_collapse_live.py + 19 new in test_release_4_5_collapse_extras.py). Verified upsert idempotency, archived filtering, generations envelope shape, stale→canonical redirect, and generation-row presence on a real computed MSME session. Frontend: all 6 module History buttons (clause44, bc, fa, fs, gst, msme) open the GenerationsDrawer correctly with proper title and either rows or empty state. No console errors on any landing page.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/fixed-assets/runs/{stale_id}", "issue": "If the canonical winner doc has been hard-deleted (orphaned collapsed_into pointer), the route falls back to returning the archived doc itself with archived=True instead of 404/410. Observed for archived id 0e4cc62f-… whose winner 477895f6-… no longer exists. The redirect itself works correctly when the winner exists (verified for MSME and Clause 44). Cleanup-script gap, not a code bug per se."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified": {
+    "upsert_post_runs": "All 5 modules (BC, FA, FS, GST, MSME) — POST with same {client_id, fy} returns identical id on repeat call. FS additionally requires fy_start/fy_end.",
+    "archived_listing_filter": "Confirmed via direct DB inspection that archived rows exist (fa_runs, msme_sessions, runs) yet GET /runs (and GET /api/runs?archived=false) never surface them.",
+    "generations_envelope": "Each module's GET /{run|session}/{id}/generations returns 200 with {run_id, generations: list}. Each row carries gen_id, module, client_id, period, summary_snapshot.",
+    "stale_id_redirect_msme": "GET /api/msme/sessions/9c7d41c3-… (archived) returns canonical 25f823c3-… with archived=False.",
+    "stale_id_redirect_clause44": "GET /api/runs/run_8d427d1f97e0 (archived) returns canonical run_7cc908029728 with archived=False.",
+    "generation_row_after_compute": "Canonical MSME session 25f823c3-… already has 1 synthesised generation row (final_disallowance=2,195,939.47, bills=65, disallowed=48) populated by the migration backfill — proves append works end-to-end.",
+    "frontend_history_drawers": {
+      "clause44": "[data-testid='clause44-open-history'] → drawer opens with title 'Tax Audit Utility' / module label, empty state for fresh run.",
+      "bc": "[data-testid='bc-open-history'] → drawer opens with title 'Balance Confirmation', empty state. Button only renders when rid is in URL (correctly conditional).",
+      "fa": "[data-testid='fa-open-history'] → drawer opens with title 'Fixed Assets · IT Depreciation', empty state.",
+      "fs": "[data-testid='fs-open-history'] → drawer opens, empty state.",
+      "gst": "[data-testid='gst-open-history'] → button renders only after Resume selects a run (correct conditional on runId); drawer opens with title 'GST Turnover & ITC Reconciliation'.",
+      "msme": "[data-testid='msme-open-history'] → drawer opens, empty state."
+    },
+    "smoke_no_console_errors": "Navigated to BC / FA / FS / GST / MSME / Clause 44 landings — zero console errors added in any."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_release_4_5_collapse_live.py",
+    "/app/backend/tests/test_release_4_5_collapse_extras.py",
+    "/app/test_reports/pytest/iter24_r45.xml"
+  ],
+  "action_items": [
+    "[Optional / minor] Decide policy for orphaned collapsed_into pointer in fixed_assets/controller.get_run: either 410 Gone, or seamless 404, or fix the migration to ensure winner always exists. Currently returns the archived doc itself, which the frontend may render as 'archived=true' state. Same pattern likely exists in BC/FS/GST/MSME — only FA had a winner missing in current seed data."
+  ],
+  "critical_code_review_comments": [
+    "library/generations.py — clean shared helper. Both append_generation and list_generations use a single canonical schema {gen_id, run_id, module, client_id, period, generated_by_email, generated_at, pinned_files_snapshot, summary_snapshot, synthesised}. Good.",
+    "All 6 modules — get_run/get_session implements the exact same redirect pattern (archived && collapsed_into → fetch winner). Could be refactored into a tiny helper in modules/library/collapse_utils.py to DRY up the duplicated 4-line block, but acceptable as-is.",
+    "GenerationsDrawer.jsx — properly cancels in-flight fetch on unmount via the cancelled flag; renders empty/loading/list states distinctly with data-testid hooks. summaryLines() switch covers all 6 modules and degrades gracefully when fields are missing.",
+    "balance_confirmation/Landing.jsx + fixed_assets/Landing.jsx + gst_recon/Landing.jsx — History button correctly conditional on rid/runId so it doesn't render on the empty 'pick a run' state. Sensible UX.",
+    "POST /api/balance-confirmation/runs is idempotent regardless of empty payload fields (e.g., as_at_date defaults). Good.",
+    "Clause 44 list still has multiple non-archived 'Single scope' rows for the same client/fy — likely differentiated by scope_type/division so it's not a collapse violation, but worth flagging visually if it ever becomes confusing for auditors."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_release_4_5_collapse_extras.py (NEW — 19 live HTTP tests)"
+  ],
+  "success_rate": {
+    "backend_release_4_5_combined": "100% (26/26)",
+    "frontend_history_drawer_module_coverage": "100% (6/6 modules verified)"
+  },
+  "test_credentials": "cookie session_token=qa_test_session_token_20260206_dev (admin role) — verified active.",
+  "seed_data_creation": "No new fixtures created — used existing client cli_ad137f29aebb (ABC Textile Mills) and pre-seeded archived rows from the migration to verify redirect behaviour.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "1) test_release_4_5_collapse_extras.py is the regression suite for Release 4.5 — run with REACT_APP_BACKEND_URL set in env. 2) Stale-id redirect in fixed_assets/controller.py has an edge case: if winner doc was hard-deleted (orphaned pointer), it returns the archived doc itself rather than 404 — only fa_runs has that orphan in current DB; could be reproduced or fixed in next release. 3) Clause 44 still shows 2 active 'Single scope' runs for ABC Textile Mills FY 2023-24; verify whether that's intentional (different division/scope_type) or a collapse miss. 4) Frontend conditional rendering: BC/FA/GST History buttons only render when a run is loaded — their landing-only URL won't show the button (this matches the spec: 'working-doc page shows a History button in its header').",
+  "rca of the issue": "n/a — no defects blocking the release. Single minor edge case (orphaned collapsed_into in FA) noted under action_items."
+}

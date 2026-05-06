@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Loader2, Play, Plus, Zap } from "lucide-react";
+import { ArrowLeft, Loader2, Play, Plus, Zap, History } from "lucide-react";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { api, http } from "@/lib/msme-api";
 import AppShell from "@/components/AppShell";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 import Footer from "@/components/msme43bh/Footer";
 import YearEndUpload from "@/components/msme43bh/YearEndUpload";
 import ProfilesEditor from "@/components/msme43bh/ProfilesEditor";
@@ -22,6 +23,7 @@ export default function Msme43bhSessionDashboard() {
   const [busy, setBusy] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [forceFifo, setForceFifo] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const loadSession = useCallback(async (id) => {
     const { data } = await api.get(`/sessions/${id}`);
@@ -224,6 +226,13 @@ export default function Msme43bhSessionDashboard() {
               </span>
             </div>
             <button
+              onClick={() => setShowHistory(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-700 text-[12px] hover:bg-slate-50"
+              data-testid="msme-open-history"
+            >
+              <History size={13}/> History
+            </button>
+            <button
               onClick={runCompute}
               disabled={busy || !session?.has_yearend}
               className="btn-primary-swiss flex items-center gap-2"
@@ -266,6 +275,15 @@ export default function Msme43bhSessionDashboard() {
       </main>
 
       <Footer />
+      {showHistory && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/msme/sessions/${sid}`}
+          moduleLabel="MSME 43B(h) Disallowance"
+          module="msme43bh"
+        />
+      )}
     </AppShell>
   );
 }

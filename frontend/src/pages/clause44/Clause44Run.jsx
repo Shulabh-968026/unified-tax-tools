@@ -11,10 +11,11 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, CheckCircle, DownloadSimple, Lightning, BookOpen } from "@phosphor-icons/react";
+import { ArrowLeft, CheckCircle, DownloadSimple, Lightning, BookOpen, ClockCounterClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
 import { generateRun, getRun, saveSelections, exportRunUrl, rerunRun } from "@/lib/api";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 import StepSpecialLedgers from "./StepSpecialLedgers";
 import StepExclusion from "./StepExclusion";
 import StepReport from "./StepReport";
@@ -56,6 +57,7 @@ export default function Clause44Run() {
   // Step 3 — Exclusions
   const [exc, setExc] = useState(new Set());
   const [excQuery, setExcQuery] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
 
   // Load run + seed selections.
   useEffect(() => {
@@ -239,6 +241,14 @@ export default function Clause44Run() {
           >
             <BookOpen size={11}/> Readme
           </a>
+          <button
+            onClick={() => setShowHistory(true)}
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 border border-[#E5E5E0] rounded-sm bg-white hover:bg-[#0F172A] hover:text-white hover:border-[#0F172A] text-[#0F172A] font-mono text-[10px] uppercase tracking-[0.1em] transition-colors"
+            data-testid="clause44-open-history"
+            title="View append-only history of every Generate"
+          >
+            <ClockCounterClockwise size={11}/> History
+          </button>
           {/* Outdated chip — Library detected a newer Books JSON or
               Ledger Map than this run is pinned to.  Generate button
               below morphs to "Rerun on Latest Data". */}
@@ -390,6 +400,15 @@ export default function Clause44Run() {
           <StepReport run={run} setRun={setRun}/>
         )}
       </div>
+      {showHistory && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/runs/${runId}`}
+          moduleLabel="Clause 44"
+          module="clause44"
+        />
+      )}
     </AppShell>
   );
 }

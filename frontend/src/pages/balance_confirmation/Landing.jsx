@@ -4,6 +4,7 @@ import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload,
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import SummaryDashboard from "./SummaryDashboard";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 
 /* ---------- Helpers ---------- */
 const inr = (v) => {
@@ -56,6 +57,7 @@ export default function BalanceConfirmationLanding() {
   const [showAuth, setShowAuth] = useState(false);
   const [showSendLog, setShowSendLog] = useState(false);
   const [showResponses, setShowResponses] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [universalCc, setUniversalCc] = useState("");
   const [universalBcc, setUniversalBcc] = useState("");
@@ -253,6 +255,11 @@ export default function BalanceConfirmationLanding() {
             <button onClick={() => setShowAuth(true)} className="h-9 px-3 rounded-sm border border-gray-300 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-white" data-testid="bc-open-auth">
               <ShieldCheck size={13}/> Authorisation Letter
             </button>
+            {rid && (
+              <button onClick={() => setShowHistory(true)} className="h-9 px-3 rounded-sm border border-gray-300 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-white" data-testid="bc-open-history">
+                <Activity size={13}/> History
+              </button>
+            )}
             <button onClick={createRun} disabled={busy} className="h-9 px-3 rounded-sm border border-emerald-700 bg-emerald-700 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-emerald-800 disabled:opacity-50" data-testid="bc-new-run">
               <Plus size={13}/> New Run
             </button>
@@ -449,6 +456,15 @@ export default function BalanceConfirmationLanding() {
       {showAuth && <AuthorisationDrawer clientId={clientId} onClose={() => setShowAuth(false)}/>}
       {showSendLog && <SendLogDrawer rid={rid} onClose={() => setShowSendLog(false)}/>}
       {showResponses && <ResponsesDrawer rid={rid} onClose={() => setShowResponses(false)}/>}
+      {showHistory && rid && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/balance-confirmation/runs/${rid}`}
+          moduleLabel="Balance Confirmation"
+          module="balance_confirmation"
+        />
+      )}
     </div>
   );
 }

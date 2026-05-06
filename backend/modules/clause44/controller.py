@@ -224,6 +224,9 @@ async def upload_run(
     # Look up an existing canonical doc; reuse its run_id so deep-links
     # stay stable.  Unpin its prior Library pins so old file versions
     # become eligible for the prune job.
+    from modules.library import service as lib_svc
+    from modules.library.controller import DEFAULT_FIRM_ID
+
     existing = await db.runs.find_one(
         {
             "module": "clause44",
@@ -251,9 +254,6 @@ async def upload_run(
     # raw bytes are no longer kept on the run document; we keep the
     # parsed `accounting` + `ledgers_xlsx` since downstream code consumes
     # those structures directly.
-    from modules.library import service as lib_svc
-    from modules.library.controller import DEFAULT_FIRM_ID
-
     firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
     await accounting_json.seek(0)
     accounting_json_bytes = await accounting_json.read()

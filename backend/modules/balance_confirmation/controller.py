@@ -26,6 +26,7 @@ from core.db import db
 from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
+from modules.library.generations import append_generation, list_generations
 from modules.balance_confirmation.exports import build_authorization_template_docx
 from modules.balance_confirmation.recon import auto_match, parse_recipient_statement
 from modules.balance_confirmation.schemas import (
@@ -1014,12 +1015,46 @@ async def bulk_send(
         {"id": rid},
         {"$set": {"summary": summarise_ledgers(rows), "status": "sending"}},
     )
+    # Release 4.5 — append-only generations log
+    try:
+        await append_generation(
+            run_id=rid, module="balance_confirmation",
+            client_id=run.get("client_id"),
+            period=run.get("fy"),
+            generated_by_email=user.get("email"),
+            pinned_files_snapshot=run.get("pinned_files") or {},
+            summary_snapshot={
+                "sent": sent_count,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "kind": "reminder" if payload.is_reminder else "send",
+            },
+        )
+    except Exception:
+        pass
     return {
         "sent": sent_count,
         "failed": failed_count,
         "skipped": skipped_count,
         "results": results,
     }
+
+
+@router.get("/runs/{rid}/generations")
+async def bc_generations(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Append-only history of bulk-send actions on this working doc."""
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1, "collapsed_into": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    canonical_id = run.get("collapsed_into") or run.get("id") or rid
+    rows = await list_generations(canonical_id)
+    return {"run_id": canonical_id, "generations": rows}
 
 
 @router.get("/runs/{rid}/reminders")

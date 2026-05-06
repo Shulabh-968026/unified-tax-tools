@@ -29,7 +29,8 @@ async def delete_session(sid: str) -> int:
 
 
 async def list_sessions(client_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    query: Dict[str, Any] = {}
+    # Release 4.5 — only show non-archived (canonical) sessions.
+    query: Dict[str, Any] = {"archived": {"$ne": True}}
     if client_id:
         query["client_id"] = client_id
     return await SESSIONS.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)

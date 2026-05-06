@@ -8,13 +8,14 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator, LayoutGrid } from "lucide-react";
+import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator, LayoutGrid, History } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import AdditionsTab from "@/pages/fixed_assets/AdditionsTab";
 import CreditsTab from "@/pages/fixed_assets/CreditsTab";
 import ComputeTab from "@/pages/fixed_assets/ComputeTab";
 import SummaryTab from "@/pages/fixed_assets/SummaryTab";
+import GenerationsDrawer from "@/components/GenerationsDrawer";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -37,6 +38,7 @@ export default function FixedAssetsLanding() {
   const [filter, setFilter] = useState("all"); // all | unclassified | classified
   const [tab, setTab] = useState("ledgers"); // ledgers | additions | credits | compute | summary
   const [auditFilter, setAuditFilter] = useState(null); // optional audit-flag filter passed to AdditionsTab
+  const [showHistory, setShowHistory] = useState(false);
   const dropRef = useRef(null);
 
   // Cross-tab navigation helper invoked by Summary's audit-flag cards.
@@ -273,6 +275,13 @@ export default function FixedAssetsLanding() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              data-testid="fa-open-history"
+              onClick={() => setShowHistory(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-700 text-[12px] hover:bg-slate-50"
+            >
+              <History size={13}/> History
+            </button>
             <BooksDrop dropRef={dropRef} onFile={onIngest} busy={busy}/>
           </div>
         </div>
@@ -406,6 +415,15 @@ export default function FixedAssetsLanding() {
           <SummaryTab rid={rid} onJumpToFlag={goToFilteredAdditions}/>
         )}
       </div>
+      {showHistory && (
+        <GenerationsDrawer
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          endpoint={`/fixed-assets/runs/${rid}`}
+          moduleLabel="Fixed Assets · IT Depreciation"
+          module="fixed_assets"
+        />
+      )}
     </div>
   );
 }
