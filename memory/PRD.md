@@ -1,5 +1,50 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.6.1 · BC Refinement Batch 2 (2026-02-08 evening)
+
+### R3 — Universal CC/BCC persistence + multiple addresses
+**Bug**: Universal CC/BCC inputs lived only in client React state — values
+disappeared on refresh / nav-away.
+
+**Fix**:
+- New `GET` + `PATCH /api/balance-confirmation/runs/{rid}/universal-recipients`
+  endpoints persist `universal_cc` + `universal_bcc` arrays on the run doc.
+- `_normalise_emails` helper accepts a list OR comma-/semicolon-/whitespace-
+  separated string; lower-cases, trims, dedupes, drops invalid items.
+- `bulk_send` merges run-level universal lists with per-ledger lists (single
+  source of truth from server — no more client-side passing).
+- New `UniversalRecipientsPopover.jsx` component — chip input UI with `+ pill
+  count badge` trigger.  Supports Enter / comma / semicolon / space / paste-
+  separated batch entry.  Persists on every add/remove (no save button).
+
+### R4 — Per-row CC/BCC columns optional via toggle
+- New `Columns` button in the workbench toolbar opens a small menu with
+  checkboxes for "Show CC column" / "Show BCC column" — both **OFF by default**.
+- Preferences persist in `localStorage` keys `bc.showCcCol` / `bc.showBccCol`.
+- `LedgerTable` + `Row` re-flow column widths when optional columns are
+  hidden.
+- When a row has per-row CC/BCC populated AND the column is hidden, a small
+  `+Ncc` / `+Nbcc` chip appears next to the email input so users still know
+  custom data exists.
+
+### Bonus — Subhead backfill on existing runs
+- New script `backend/scripts/bc_backfill_head_subhead_20260208.py` — walks
+  every `bc_runs` row, decompresses the cached `bc_books_raw` JSON, rebuilds
+  the Tally group index and computes proper `(head, subhead)` for each
+  ledger.  **Executed: 4,393 ledgers updated across 14 BC runs.**
+- After backfill, BC Workbench Subhead column AND Dashboard Subhead Coverage
+  Heatmap both show proper Schedule-III subheads ("Sundry Creditors", "Bank
+  Accounts", etc.) instead of raw parent groups.
+
+### Tests · 16 / 16 + full E2E ✅
+- 6 new live HTTP tests (`tests/test_bc_release_4_6_universal_recipients.py`):
+  envelope, round-trip, normalisation, dedup, empty-clears, 404-on-unknown.
+- 10 unit tests carry-forward from R4.6 batch 1.
+- `testing_agent_v3_fork` Playwright E2E verified the full flow:
+  popover → chip add → comma-batch → chip remove → count badge →
+  persistence-across-reload; column-toggle → localStorage persist; Subhead
+  column populated correctly post-backfill.
+
 ## Release 4.6 · Balance Confirmation Refinement Batch 1 (2026-02-08 PM)
 
 Two refinements per partner request (small, testable batches).
