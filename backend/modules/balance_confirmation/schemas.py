@@ -33,6 +33,8 @@ class RunOut(BaseModel):
     source_filename: str = ""
     status: str = "draft"
     summary: Optional[dict] = None
+    universal_cc: List[str] = []
+    universal_bcc: List[str] = []
     created_at: str
     created_by_name: str = ""
     created_by_email: str = ""

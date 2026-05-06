@@ -816,6 +816,83 @@ async def delete_template(
     return {"deleted": True}
 
 
+# ============================ Phase 3 — Universal recipients ================
+class UniversalRecipientsPayload(BaseModel):
+    """Per-run universal CC / BCC list — applied to every send / reminder.
+
+    Accepts either a list[str] (preferred) or a single comma/semicolon-
+    separated string. Invalid items are dropped silently.
+    """
+    universal_cc:  List[str] = []
+    universal_bcc: List[str] = []
+
+
+def _normalise_emails(raw: Any) -> List[str]:
+    """Accept list/str/None → list of unique, lower-cased valid emails.
+    Keeps user-friendly insertion order."""
+    items: List[str] = []
+    if isinstance(raw, str):
+        items = [p for p in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, (list, tuple)):
+        for r in raw:
+            if isinstance(r, str):
+                items.extend(p for p in r.replace(";", ",").split(","))
+    seen, out = set(), []
+    for it in items:
+        e = (it or "").strip().lower()
+        if "@" in e and "." in e.split("@", 1)[-1] and e not in seen:
+            out.append(e)
+            seen.add(e)
+    return out
+
+
+@router.get("/runs/{rid}/universal-recipients")
+async def get_universal_recipients(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one(
+        {"id": rid}, {"_id": 0, "universal_cc": 1, "universal_bcc": 1},
+    )
+    if not run:
+        raise HTTPException(404, "Run not found")
+    return {
+        "universal_cc":  run.get("universal_cc") or [],
+        "universal_bcc": run.get("universal_bcc") or [],
+    }
+
+
+@router.patch("/runs/{rid}/universal-recipients")
+async def patch_universal_recipients(
+    rid: str,
+    payload: UniversalRecipientsPayload,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Persist per-run universal CC + BCC. Lists are normalised
+    (lower-cased, de-duplicated, invalid items dropped).
+    """
+    await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0, "id": 1})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    cc = _normalise_emails(payload.universal_cc)
+    bcc = _normalise_emails(payload.universal_bcc)
+    await RUNS.update_one(
+        {"id": rid},
+        {"$set": {
+            "universal_cc":  cc,
+            "universal_bcc": bcc,
+            "universal_recipients_updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"universal_cc": cc, "universal_bcc": bcc}
+
+
 # ============================ Phase 3 — Sending engine =======================
 class BulkSendRequest(BaseModel):
     ledger_ids: List[str]
@@ -952,9 +1029,15 @@ async def bulk_send(
         )
         text_body = _strip_html(body)
 
-        # Per-ledger cc = universal + ledger.cc_emails
-        cc_list = list(set([*(payload.cc or []), *(ledger.get("cc_emails") or [])]))
-        bcc_list = list(set([*(payload.bcc or []), *(ledger.get("bcc_emails") or [])]))
+        # Per-ledger cc = universal (run-level) + legacy payload (back-compat) + ledger.cc_emails
+        run_universal_cc = run.get("universal_cc") or []
+        run_universal_bcc = run.get("universal_bcc") or []
+        cc_list = list(set([
+            *run_universal_cc, *(payload.cc or []), *(ledger.get("cc_emails") or []),
+        ]))
+        bcc_list = list(set([
+            *run_universal_bcc, *(payload.bcc or []), *(ledger.get("bcc_emails") or []),
+        ]))
 
         # Attachments
         attachments: List[Dict[str, Any]] = []

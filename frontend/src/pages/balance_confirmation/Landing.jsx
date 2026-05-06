@@ -5,6 +5,7 @@ import { http } from "@/lib/api";
 import { toast } from "sonner";
 import SummaryDashboard from "./SummaryDashboard";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
+import { UniversalRecipientsTrigger } from "./UniversalRecipientsPopover";
 
 /* ---------- Helpers ---------- */
 const inr = (v) => {
@@ -58,9 +59,15 @@ export default function BalanceConfirmationLanding() {
   const [showSendLog, setShowSendLog] = useState(false);
   const [showResponses, setShowResponses] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showCcCol, setShowCcCol]   = useState(() => localStorage.getItem("bc.showCcCol") === "1");
+  const [showBccCol, setShowBccCol] = useState(() => localStorage.getItem("bc.showBccCol") === "1");
+  const [showColMenu, setShowColMenu] = useState(false);
+  useEffect(() => { localStorage.setItem("bc.showCcCol",  showCcCol ? "1" : "0"); }, [showCcCol]);
+  useEffect(() => { localStorage.setItem("bc.showBccCol", showBccCol ? "1" : "0"); }, [showBccCol]);
+
   const [selected, setSelected] = useState(() => new Set());
-  const [universalCc, setUniversalCc] = useState("");
-  const [universalBcc, setUniversalBcc] = useState("");
+  // Universal CC/BCC are now persisted server-side via UniversalRecipientsPopover
+  // (Release 4.6).  No client-side state required.
   const [skipZeros, setSkipZeros] = useState(true);
   const [runView, setRunView] = useState("dashboard"); // dashboard | workbench
   const dropRef = useRef(null);
@@ -172,10 +179,10 @@ export default function BalanceConfirmationLanding() {
     if (!ledger_ids?.length) return;
     setBusy(true);
     try {
-      const cc = universalCc.split(",").map(s => s.trim()).filter(s => s.includes("@"));
-      const bcc = universalBcc.split(",").map(s => s.trim()).filter(s => s.includes("@"));
+      // Universal CC / BCC are persisted per-run on the server (Release 4.6),
+      // so the bulk-send endpoint already merges them in.  No client payload.
       const { data } = await http.post(`/balance-confirmation/runs/${rid}/send`, {
-        ledger_ids, cc, bcc, is_reminder: isReminder,
+        ledger_ids, is_reminder: isReminder,
       });
       const tone = data.failed > 0 ? "warning" : "success";
       const msg = `Sent ${data.sent} · Failed ${data.failed}${data.skipped ? ` · Skipped ${data.skipped}` : ""}`;
@@ -420,15 +427,37 @@ export default function BalanceConfirmationLanding() {
                           className="text-xs h-8 pl-7 pr-3 border border-gray-300 rounded-sm w-56 focus:outline-none focus:border-emerald-600"
                           data-testid="bc-search"/>
                       </div>
-                      <div className="ml-auto flex items-center gap-2">
-                        <input type="text" placeholder="Universal cc" value={universalCc}
-                          onChange={e => setUniversalCc(e.target.value)}
-                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-40 focus:outline-none focus:border-emerald-600"
-                          data-testid="bc-universal-cc"/>
-                        <input type="text" placeholder="Universal bcc" value={universalBcc}
-                          onChange={e => setUniversalBcc(e.target.value)}
-                          className="text-xs h-8 px-2 border border-gray-300 rounded-sm w-40 focus:outline-none focus:border-emerald-600"
-                          data-testid="bc-universal-bcc"/>
+                      <div className="ml-auto flex items-center gap-2 relative">
+                        <UniversalRecipientsTrigger rid={rid}/>
+                        <div className="relative">
+                          <button onClick={() => setShowColMenu(s => !s)}
+                            className="text-xs px-3 h-8 rounded-sm border border-gray-300 inline-flex items-center gap-1.5 hover:bg-gray-50"
+                            data-testid="bc-columns-toggle">
+                            <FileEdit size={12}/> Columns
+                          </button>
+                          {showColMenu && (
+                            <>
+                              <div className="fixed inset-0 z-30" onClick={() => setShowColMenu(false)}/>
+                              <div className="absolute right-0 top-full mt-1.5 w-44 bg-white border border-gray-200 rounded-sm shadow-lg z-40 p-2"
+                                data-testid="bc-columns-menu">
+                                <div className="text-[10px] font-mono uppercase tracking-wider text-gray-500 px-2 pb-1">Optional columns</div>
+                                <label className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-gray-50 cursor-pointer">
+                                  <input type="checkbox" checked={showCcCol} onChange={e => setShowCcCol(e.target.checked)}
+                                    className="accent-emerald-700" data-testid="bc-toggle-cc-col"/>
+                                  Show CC column
+                                </label>
+                                <label className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-gray-50 cursor-pointer">
+                                  <input type="checkbox" checked={showBccCol} onChange={e => setShowBccCol(e.target.checked)}
+                                    className="accent-emerald-700" data-testid="bc-toggle-bcc-col"/>
+                                  Show BCC column
+                                </label>
+                                <div className="text-[10px] font-mono text-gray-400 px-2 pt-1.5 leading-tight">
+                                  Per-row CC/BCC. Use only when a specific party needs different recipients than the universal list.
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
                         <button onClick={() => setShowResponses(true)} className="text-xs px-3 h-8 rounded-sm border border-emerald-300 text-emerald-800 inline-flex items-center gap-1.5 hover:bg-emerald-50" data-testid="bc-open-responses">
                           <Mail size={12}/> Responses
                         </button>
@@ -473,7 +502,8 @@ export default function BalanceConfirmationLanding() {
                     </div>
 
                     <LedgerTable rows={visibleLedgers} onPatch={patchLedger}
-                      selected={selected} onToggle={toggleRow} onToggleAll={() => toggleAll(visibleLedgers)}/>
+                      selected={selected} onToggle={toggleRow} onToggleAll={() => toggleAll(visibleLedgers)}
+                      showCcCol={showCcCol} showBccCol={showBccCol}/>
                     {visibleLedgers.length === 0 && (
                       <div className="p-8 text-center text-xs text-gray-500 font-mono">No ledgers match the current filter.</div>
                     )}
@@ -583,13 +613,30 @@ function PastRunsTable({ runs, activeRid, onOpen, onDelete }) {
 }
 
 /* ============================================================ */
-function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
+function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll, showCcCol = false, showBccCol = false }) {
   const allChecked = rows.length > 0 && rows.every(r => selected.has(r.ledger_id));
+  // Layout — re-distribute width when CC / BCC columns are hidden so the
+  // visible columns breathe a little on smaller screens.
+  const optionalCount = (showCcCol ? 1 : 0) + (showBccCol ? 1 : 0);
+  const ledgerW   = optionalCount === 0 ? "30%" : optionalCount === 1 ? "26%" : "22%";
+  const subheadW  = optionalCount === 0 ? "13%" : optionalCount === 1 ? "11%" : "10%";
+  const closingW  = "11%";
+  const statusW   = "9%";
+  const emailW    = optionalCount === 0 ? "20%" : optionalCount === 1 ? "17%" : "15%";
+  const contactW  = optionalCount === 0 ? "12%" : optionalCount === 1 ? "10%" : "8%";
   return (
     <div className="overflow-x-auto" data-testid="bc-ledger-table">
       <table className="w-full text-[12px] table-fixed">
         <colgroup>
-          <col style={{ width: "32px" }}/><col style={{ width: "22%" }}/><col style={{ width: "10%" }}/><col style={{ width: "11%" }}/><col style={{ width: "8%"  }}/><col style={{ width: "15%" }}/><col style={{ width: "13%" }}/><col style={{ width: "13%" }}/><col style={{ width: "8%"  }}/>
+          <col style={{ width: "32px" }}/>
+          <col style={{ width: ledgerW }}/>
+          <col style={{ width: subheadW }}/>
+          <col style={{ width: closingW }}/>
+          <col style={{ width: statusW }}/>
+          <col style={{ width: emailW }}/>
+          {showCcCol  && <col style={{ width: "13%" }}/>}
+          {showBccCol && <col style={{ width: "13%" }}/>}
+          <col style={{ width: contactW }}/>
         </colgroup>
         <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase tracking-wider">
           <tr>
@@ -601,15 +648,16 @@ function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
             <th className="text-right px-3 py-2 border-b border-gray-200">Closing</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Status</th>
             <th className="text-left px-3 py-2 border-b border-gray-200">Email</th>
-            <th className="text-left px-3 py-2 border-b border-gray-200">Cc</th>
-            <th className="text-left px-3 py-2 border-b border-gray-200">Bcc</th>
+            {showCcCol  && <th className="text-left px-3 py-2 border-b border-gray-200">Cc</th>}
+            {showBccCol && <th className="text-left px-3 py-2 border-b border-gray-200">Bcc</th>}
             <th className="text-left px-3 py-2 border-b border-gray-200">Contact</th>
           </tr>
         </thead>
         <tbody>
           {rows.map(r => (
             <Row key={r.ledger_id} row={r} onPatch={onPatch}
-              checked={selected.has(r.ledger_id)} onToggle={() => onToggle(r.ledger_id)}/>
+              checked={selected.has(r.ledger_id)} onToggle={() => onToggle(r.ledger_id)}
+              showCcCol={showCcCol} showBccCol={showBccCol}/>
           ))}
         </tbody>
       </table>
@@ -617,30 +665,50 @@ function LedgerTable({ rows, onPatch, selected, onToggle, onToggleAll }) {
   );
 }
 
-function Row({ row, onPatch, checked, onToggle }) {
+function Row({ row, onPatch, checked, onToggle, showCcCol, showBccCol }) {
   const statusInfo = STATUS_CHIP[row.confirmation_status] || STATUS_CHIP.not_sent;
+  const ccCount  = (row.cc_emails  || []).length;
+  const bccCount = (row.bcc_emails || []).length;
   return (
     <tr className="hover:bg-gray-50" data-testid={`bc-row-${row.ledger_id}`}>
       <td className="px-2 py-2 border-b border-gray-100 text-center">
         <input type="checkbox" checked={checked} onChange={onToggle} disabled={!row.email} className="accent-emerald-700 disabled:opacity-30" data-testid={`bc-row-${row.ledger_id}-select`}/>
       </td>
       <td className="px-3 py-2 border-b border-gray-100 truncate" title={row.name}>{row.name}</td>
-      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] truncate" title={row.parent_group}>{row.parent_group || "—"}</td>
+      <td className="px-3 py-2 border-b border-gray-100 text-gray-500 font-mono text-[11px] truncate" title={`${row.subhead || row.parent_group}${row.head ? ` · under ${row.head}` : ""}`}>
+        {row.subhead || row.parent_group || "—"}
+      </td>
       <td className="px-3 py-2 border-b border-gray-100 text-right font-mono whitespace-nowrap">
         {inr(Math.abs(row.closing_balance))} <span className={`text-[10px] ${row.dr_cr === "dr" ? "text-rose-700" : "text-emerald-700"}`}>{(row.dr_cr || "").toUpperCase()}</span>
       </td>
       <td className="px-3 py-2 border-b border-gray-100">
         <span className={`text-[10px] font-mono px-1.5 py-0.5 border rounded-sm ${statusInfo.cls}`} data-testid={`bc-row-${row.ledger_id}-status`}>{statusInfo.label}</span>
       </td>
-      <Editable value={row.email} placeholder="email@example.com" type="email"
-        onSave={v => onPatch(row.ledger_id, { email: v })}
-        testid={`bc-row-${row.ledger_id}-email`}/>
-      <Editable value={(row.cc_emails || []).join(", ")} placeholder="cc1, cc2"
-        onSave={v => onPatch(row.ledger_id, { cc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
-        testid={`bc-row-${row.ledger_id}-cc`}/>
-      <Editable value={(row.bcc_emails || []).join(", ")} placeholder="bcc1, bcc2"
-        onSave={v => onPatch(row.ledger_id, { bcc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
-        testid={`bc-row-${row.ledger_id}-bcc`}/>
+      <td className="px-2 py-1.5 border-b border-gray-100">
+        <div className="flex items-center gap-1.5">
+          <Editable value={row.email} placeholder="email@example.com" type="email"
+            onSave={v => onPatch(row.ledger_id, { email: v })}
+            testid={`bc-row-${row.ledger_id}-email`} bare/>
+          {!showCcCol  && ccCount  > 0 && (
+            <span className="text-[9.5px] font-mono px-1 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-sm" title={(row.cc_emails || []).join(", ")}
+              data-testid={`bc-row-${row.ledger_id}-cc-chip`}>+{ccCount}cc</span>
+          )}
+          {!showBccCol && bccCount > 0 && (
+            <span className="text-[9.5px] font-mono px-1 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-sm" title={(row.bcc_emails || []).join(", ")}
+              data-testid={`bc-row-${row.ledger_id}-bcc-chip`}>+{bccCount}bcc</span>
+          )}
+        </div>
+      </td>
+      {showCcCol && (
+        <Editable value={(row.cc_emails || []).join(", ")} placeholder="cc1, cc2"
+          onSave={v => onPatch(row.ledger_id, { cc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
+          testid={`bc-row-${row.ledger_id}-cc`}/>
+      )}
+      {showBccCol && (
+        <Editable value={(row.bcc_emails || []).join(", ")} placeholder="bcc1, bcc2"
+          onSave={v => onPatch(row.ledger_id, { bcc_emails: v ? v.split(",").map(s => s.trim()).filter(s => s.includes("@")) : [] })}
+          testid={`bc-row-${row.ledger_id}-bcc`}/>
+      )}
       <Editable value={row.contact_name} placeholder="Mr. ABC"
         onSave={v => onPatch(row.ledger_id, { contact_name: v })}
         testid={`bc-row-${row.ledger_id}-contact`}/>
@@ -648,19 +716,21 @@ function Row({ row, onPatch, checked, onToggle }) {
   );
 }
 
-function Editable({ value, placeholder, onSave, type = "text", testid }) {
+function Editable({ value, placeholder, onSave, type = "text", testid, bare = false }) {
   const [v, setV] = useState(value || "");
   const [dirty, setDirty] = useState(false);
   useEffect(() => { setV(value || ""); setDirty(false); }, [value]);
+  const inputEl = (
+    <input type={type} value={v} placeholder={placeholder}
+      onChange={e => { setV(e.target.value); setDirty(true); }}
+      onBlur={() => { if (dirty) onSave(v); }}
+      onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+      className={`text-[11.5px] px-1.5 py-1 border rounded-sm w-full ${dirty ? "border-amber-400 bg-amber-50/50" : "border-transparent hover:border-gray-200 focus:border-emerald-500 bg-transparent"} focus:outline-none`}
+      data-testid={testid}/>
+  );
+  if (bare) return inputEl;
   return (
-    <td className="px-2 py-1.5 border-b border-gray-100">
-      <input type={type} value={v} placeholder={placeholder}
-        onChange={e => { setV(e.target.value); setDirty(true); }}
-        onBlur={() => { if (dirty) onSave(v); }}
-        onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
-        className={`text-[11.5px] px-1.5 py-1 border rounded-sm w-full ${dirty ? "border-amber-400 bg-amber-50/50" : "border-transparent hover:border-gray-200 focus:border-emerald-500 bg-transparent"} focus:outline-none`}
-        data-testid={testid}/>
-    </td>
+    <td className="px-2 py-1.5 border-b border-gray-100">{inputEl}</td>
   );
 }
 

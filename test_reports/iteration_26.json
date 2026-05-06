@@ -1,0 +1,55 @@
+{
+  "summary": "Release 4.6 · BC Refinement Batch 2 (R3 Universal CC/BCC persistence + R4 column toggle + subhead backfill) — full backend + frontend regression. Backend 16/16 PASS (6 new universal-recipients live tests + 10 carry-forward R4.6 batch-1 unit tests). Frontend E2E end-to-end on the seeded ABC Textile Mills run (rid 7de985da-…) via Playwright + QA bypass cookie: Universal CC/BCC button visible (NOT inline inputs), popover opens with two chip inputs, Enter / comma-batch parsing both work, chip-X removal works, count badge updates, chips and column-visibility BOTH persist across full page reload, localStorage keys bc.showCcCol/bc.showBccCol set as expected, subhead heatmap on Dashboard now shows proper Schedule-III subheads ('Sundry Debtors · Current Assets', 'Sundry Creditors · Current Liabilities', 'Bank Od A/C · Loans (Liability)') and the Workbench Subhead column is populated ('Sundry Debtors', 'Sundry Creditors', …) instead of the raw parent group. No console / page errors during the entire flow except a benign one-time 401 on /api/auth/me from the React auth-guard probe before the QA bypass cookie kicks in. Cleanup: cleared all CC chips at the end of the run to leave the seeded run in a clean E2E state.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "backend_get_universal_envelope": "GET /api/balance-confirmation/runs/{rid}/universal-recipients → 200 with {universal_cc:[], universal_bcc:[]}",
+    "backend_patch_round_trip": "PATCH then GET round-trips identical sets — values lower-cased, trimmed, deduped, invalid items dropped, ; / , separators auto-split.",
+    "backend_patch_empty_clears": "PATCH with [] clears both lists (idempotent reset).",
+    "backend_patch_404_unknown_run": "PATCH on unknown rid returns 404.",
+    "backend_bulk_send_merge": "controller.py L1033-1040: cc/bcc set is union(run.universal_cc, payload.cc, ledger.cc_emails) — saved universal recipients are applied during send (code-reviewed).",
+    "backend_subhead_backfill": "Live test_existing_bc_ledgers_have_subhead_after_backfill PASSES — at least one ledger and the first trade_payable both carry non-empty subhead on rid 7de985da-…",
+    "frontend_universal_btn": "[data-testid='bc-universal-recipients-btn'] visible on Workbench toolbar (no inline text inputs).",
+    "frontend_popover_chip_inputs": "[data-testid='bc-universal-recipients-popover'] opens with bc-universal-cc-input + bc-universal-bcc-input chip inputs.",
+    "frontend_chip_add_enter": "Type 'partner@firm.in' + Enter → chip [data-testid='bc-universal-cc-chip-partner@firm.in'] appears, persisted to backend.",
+    "frontend_comma_batch": "Type 'a@x.com,b@y.com,c@z.com' + Enter → 3 chips added simultaneously.",
+    "frontend_chip_remove": "Click [data-testid='bc-universal-cc-remove-c@z.com'] → chip disappears, persisted (count badge drops from 4 to 3).",
+    "frontend_count_badge": "[data-testid='bc-universal-recipients-count'] reads '3' after add/remove sequence.",
+    "frontend_chip_persist_reload": "Full page reload → count badge still '3'; chips for partner@firm.in & a@x.com remain — persisted from backend.",
+    "frontend_columns_toggle_btn": "[data-testid='bc-columns-toggle'] visible alongside Export/Import CSV.",
+    "frontend_columns_menu_defaults": "[data-testid='bc-columns-menu'] shows two checkboxes; both unchecked by default.",
+    "frontend_columns_toggle_cc": "Tick bc-toggle-cc-col → 'Cc' header appears in workbench table; untick → header disappears.",
+    "frontend_columns_localstorage": "localStorage keys bc.showCcCol='1' / bc.showBccCol='0' set; reload preserves CC column visibility.",
+    "frontend_subhead_workbench_column": "Workbench row Subhead cells render 'Sundry Debtors' / 'Sundry Creditors' (Schedule-III subheads) — verified visually in screenshot for first 8 rows.",
+    "frontend_subhead_dashboard_heatmap": "[data-testid='bc-subhead-heatmap'] shows 'Sundry Debtors · Current Assets', 'Sundry Creditors · Current Liabilities', 'Bank Od A/C · Loans (Liability)'."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bc_release_4_6_universal_recipients.py",
+    "/app/backend/tests/test_bc_release_4_6_address_offline_subhead.py",
+    "/app/test_reports/pytest/iter26_r46_b2.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "controller.py @ /runs/{rid}/universal-recipients — clean 200/404; _normalise_emails handles list+string, comma+semicolon+whitespace, lower-case, trim, dedupe, drops invalid via simple regex.",
+    "controller.py bulk_send L1033-1040 correctly merges run.universal_cc + payload.cc + ledger.cc_emails into a deduped set before the per-ledger informational notice. Mirror logic exists for BCC.",
+    "schemas.py RunOut now exposes universal_cc / universal_bcc (verified by GET round-trip).",
+    "UniversalRecipientsPopover.jsx is well-isolated; persists to backend on every add/remove (no save button, matches spec); chip parser handles Enter / comma / semicolon / paste.",
+    "Landing.jsx column-toggle menu uses localStorage keys bc.showCcCol/bc.showBccCol (correct); LedgerTable accepts showCcCol/showBccCol props; per-row +Ncc/+Nbcc chips render only when col is hidden AND row has non-empty cc_emails/bcc_emails.",
+    "Subhead resolution in row uses `r.subhead || r.parent_group` fallback — backfill makes r.subhead populate properly post-script, so heatmap and workbench both show real Schedule-III subheads now.",
+    "Minor (non-blocking): _normalise_emails drops empty strings silently — no UI hint on bad input, but spec explicitly says backend strips invalid silently, so this is by design."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend_release_4_6_b2_universal_recipients": "100% (6/6)",
+    "backend_release_4_6_b1_unit_carry_forward": "100% (10/10)",
+    "frontend_universal_recipients_e2e": "100% (button → popover → chip add → comma-batch → chip remove → count badge → reload persistence)",
+    "frontend_columns_toggle_e2e": "100% (button → menu → toggle CC col → localStorage persist → reload restore)",
+    "frontend_subhead_e2e": "100% (Workbench Subhead column populated; Dashboard heatmap shows Schedule-III subheads)"
+  },
+  "test_credentials": "cookie session_token=qa_test_session_token_20260206_dev (admin role) — verified active.",
+  "seed_data_creation": "No new seed data. Used existing client cli_ad137f29aebb (ABC Textile Mills) and BC run 7de985da-3fad-4541-ac8f-525246aadb62. Cleaned up universal CC chips at end of E2E run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Release 4.6 BC Refinement Batch 2 is fully verified. Universal CC/BCC persists on the run document and merges with payload + per-ledger lists during bulk_send. Column toggle preferences persist in localStorage (bc.showCcCol / bc.showBccCol). Subhead backfill executed cleanly across 4393 ledgers / 14 runs — both Workbench column and Dashboard heatmap now display proper Schedule-III subheads. The QA bypass cookie still works; the only console noise is a benign 401 on /api/auth/me before the bypass cookie initialises React auth state. Pre-existing test_balance_confirmation_phase3.py::test_extract_pdf_built_inline remains known-failing and unrelated.",
+  "rca of the issue": "n/a — no defects found."
+}
