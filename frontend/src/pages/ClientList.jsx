@@ -30,11 +30,16 @@ export default function ClientList() {
 
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [tab]);
 
-  const filtered = clients.filter((c) => {
-    if (!q.trim()) return true;
-    const s = q.toLowerCase();
-    return (c.name || "").toLowerCase().includes(s) || (c.file_number || "").toLowerCase().includes(s);
-  });
+  const filtered = clients
+    .filter((c) => {
+      if (!q.trim()) return true;
+      const s = q.toLowerCase();
+      return (c.name || "").toLowerCase().includes(s) || (c.file_number || "").toLowerCase().includes(s);
+    })
+    // Alphabetical sort by client name (case-insensitive, locale-aware so
+    // "Sri Ram" / "Sriram" / "Sun" order naturally; Indian English collation).
+    .slice()
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "en-IN", { sensitivity: "base" }));
 
   const onArchive = async (e, id, archived) => {
     e.stopPropagation();
