@@ -129,9 +129,9 @@
   <p>Clause 44's four reportable cohorts (Col 3 / Col 4 / Col 5 / Col 7) are mutually exclusive and mutually exhaustive across reportable expenditure. Below is the cascade this engine runs <strong>per expense line</strong> (not per voucher — one voucher can contribute to multiple cohorts if it has multiple expense debits):</p>
 
   <ol style="line-height: 1.9;">
-    <li><strong>Auditor-excluded ledger</strong> (Step 3 tick) → <strong>Col 8</strong>. Wins above everything; lets the recon present per ICAI Para 79.4 (non-cash / Sch III / money / other / capex add-back).</li>
+    <li><strong>Auditor-elected recon adjustment</strong> (Step 3 tick) → <strong>Col 8</strong>. Wins above everything; lets the recon present per ICAI Para 79.4 (non-cash / Sch III / money / other / capex add-back).</li>
     <li><strong>RCM voucher type</strong> (voucherTypeName == "Reverse Charge") → <strong>Col 7</strong> with an <code>is_rcm</code> flag. ICAI is silent on RCM-specific reporting; CA practice is to treat and disclose separately.</li>
-    <li><strong>Input A — auditor-tagged exempt purchase ledger</strong> → <strong>Col 3</strong>. The auditor ticks purchase ledgers whose nature is exempt-from-GST (petroleum products, alcoholic liquor for human consumption, life insurance, notified exempt services, etc.) during the wizard's Step 2.</li>
+    <li><strong>Input A — auditor-tagged exempt purchase ledger</strong> → <strong>Col 3</strong>. The auditor ticks purchase ledgers whose nature is exempt-from-GST (petroleum products, alcoholic liquor for human consumption, life-insurance premium, financing interest / discount on loans &amp; deposits per Sch III + Notif 12/2017-CT entry 27, notified exempt services, etc.) during the wizard's Step 2.</li>
     <li><strong>Foreign supplier / import</strong> (party <code>country</code> set and ≠ India) → <strong>Col 7</strong> with an <code>is_import</code> flag. Defensible: no Indian GSTIN on the supplier side.</li>
     <li><strong>Composition dealer</strong> (party <code>gstRegistrationType == "composition"</code>) → <strong>Col 4</strong>.</li>
     <li><strong>Registered (Regular) vendor</strong> with a valid GSTIN:
@@ -144,14 +144,13 @@
   </ol>
 
   <div class="callout callout--note">
-    <span class="callout__title">How the engine surfaces ITC ledgers (multi-signal)</span>
-    Step 2 / Tab B's candidate pool is built from the <strong>union</strong> of the books-XLSX mapping and the Tally JSON ledger list, so an ITC ledger that wasn't mapped in the XLSX still appears in the picker. Each candidate is classified <code>input</code> / <code>output</code> / <code>other</code> using three signals, in order of priority:
-    <ol style="margin-top: 8px; margin-bottom: 8px;">
-      <li><strong>Name</strong> — pattern match on <code>Input ...</code>, <code>Output ...</code>, <code>ITC ...</code>, <code>Cenvat ...</code>, with whitespace collapsed (so <code>SGST IN PUT</code> matches <code>SGST INPUT</code>).</li>
-      <li><strong>Parent group</strong> — Tally users frequently file ledgers under groups like <code>INPUT CREDIT</code>, <code>OUTPUT CREDIT</code>, <code>Defrerred Input Credit</code> regardless of how the leaf is named.</li>
-      <li><strong>Voucher usage</strong> — the engine walks the daybook and tallies how many <em>purchase</em> vs <em>sales</em> vouchers each candidate ledger appears on. A 3:1 dominance with ≥ 3 appearances flips an otherwise-neutral ledger to <code>input</code> (auto-detected even if its name is bespoke like <code>Tax-Cr-Misc-A2</code>).</li>
-    </ol>
-    <strong>Subhead override:</strong> when name or parent-group strongly signal input/output, the candidate is admitted to the pool <em>regardless</em> of whether the auditor mis-mapped its books-XLSX subhead to <code>Sundry Debtors</code> / <code>Trade Receivables</code> (a common real-world mistake).
+    <span class="callout__title">How the ITC ledger picker works (Release 4.4 — three-pool structural model)</span>
+    Step 2 / Tab B's universe is built from a <strong>structural rule</strong>, not name guessing — so it works the same way no matter how bespokely the client's accountant has named ledgers. Two views:
+    <ul style="margin-top: 8px; margin-bottom: 8px;">
+      <li><strong>Focused (default)</strong> — every <code>BS</code>-side ledger whose AssureAI-mapping <em>Subhead</em> is <strong>Balance with Revenue Authorities</strong> or <strong>Statutory Dues Payable</strong>. These are the Schedule III subheads under which Input GST and Output GST naturally sit. Tight 5–15 row picker for ~80% of clients.</li>
+      <li><strong>Expanded</strong> — flip the "Show all BS-side ledgers" toggle to drop the subhead gate; every <code>BS</code>-side ledger surfaces. Use this when the firm's Schedule-III mapping is bespoke and your real ITC ledgers sit under a different subhead. An amber chip surfaces if you've ticked anything outside the focused subheads — selections persist across mode switches and aren't lost when you flip back.</li>
+    </ul>
+    Each row carries up to four chips: <strong>INPUT</strong> / <strong>OUTPUT</strong> kind, name-vs-usage conflict warning, name/group/subhead/voucher-usage provenance, and N-purchase / N-sales voucher-usage telemetry. Pre-tick (auditor's "Select Suggested" one-click) fires only inside the focused subheads to avoid surprise — auditors in expanded mode still get the chips for visual scanning but no auto-tick.
   </div>
 
   <div class="callout callout--note">
@@ -161,7 +160,7 @@
 
   <div class="callout callout--note">
     <span class="callout__title">Why Input A wins over Input B</span>
-    An auditor-tagged exempt ledger (Input A) always routes to Col 3 for that line before Input B is even considered — so a ledger like "Petroleum Purchase" on a vendor that wasn't charging GST can never double-count into Col 3 once via Input A and again via Input B. The report surfaces the Col 3 split — "Input A ≈ ₹X · Input B ≈ ₹Y" — on the Schedule header.
+    An auditor-tagged exempt ledger (Input A) always routes to Col 3 for that line before Input B is even considered — so a ledger like "Petroleum Purchase" or "Interest on Term Loan" on a vendor that wasn't charging GST can never double-count into Col 3 once via Input A and again via Input B. The report surfaces the Col 3 split — "Input A ≈ ₹X · Input B ≈ ₹Y" — on the Schedule header.
   </div>
 
   <div class="grid-2">
@@ -284,19 +283,14 @@
     <div class="step__num">2</div>
     <div class="step__body">
       <h3>Special Ledgers — two tabs</h3>
-      <p>Step 2 in the wizard houses two tabs and one critical toggle.</p>
+      <p>Step 2 in the wizard houses two tabs and one critical toggle. Both tabs use a 6-column virtualised picker — <em>Head</em>, <em>Subhead</em>, <em>Group Parent</em>, <em>Ledger Name</em>, <em>Closing Balance</em>, plus the select tick-box. Every column has a sticky filter row (text-contains; min/max range on Closing Balance), the headers are sortable, and a gear icon top-right opens a column picker (your choices persist per-table in your browser). The body is virtualised so it stays smooth even on 2,000+ ledger book-sets.</p>
       <h4>Tab A · Exempt Purchases (Input A)</h4>
-      <p>Scroll your P&amp;L ledger list; tick the ones whose underlying supplies are <strong>exempt from GST by nature</strong> — typical examples: Petroleum Purchase, Alcohol Stock, Life Insurance Premium, specified agricultural produce, notified exempt services. Any voucher line hitting these ledgers goes to <strong>Col 3</strong>, overriding every other rule.</p>
+      <p>Universe: every <strong>P-side</strong> ledger except those mapped under the <em>Revenue from Operations</em> or <em>Other Income</em> heads. Tick the ones whose underlying supplies are <strong>exempt from GST by nature</strong> — typical examples: Petroleum Purchase, Alcohol Stock, Life-Insurance Premium, financing interest paid on loans / deposits / advances and bill-discount charges (Sch III + Notif 12/2017-CT entry 27), notified exempt services. Any voucher line hitting these ledgers goes to <strong>Col 3</strong>, overriding every other rule. Auto-suggested ticks fire on name hints (petrol / diesel / alcohol / tobacco / life insurance) and on the financing-interest / loan-discount pattern.</p>
       <h4>Tab B · ITC Ledgers (Input B)</h4>
-      <p>BS-side picker showing every balance-sheet ledger that <em>could</em> be an input-tax-credit ledger (trade payables / receivables / fixed assets / cash / bank are filtered out). Each row carries up to four chips:</p>
-      <ul>
-        <li><strong>INPUT</strong> / <strong>OUTPUT</strong> — the engine's classification of the ledger.</li>
-        <li><strong>via name match · group match · subhead match · voucher usage</strong> — provenance, telling you <em>why</em> the engine flagged it. "voucher usage" means the ledger consistently fires on Purchase or Sales vouchers regardless of how it was named.</li>
-        <li><strong>N purchase · N sales</strong> — voucher-usage telemetry. Confidence at a glance.</li>
-        <li><strong>unused</strong> — the ledger never appeared in any voucher this period.</li>
-      </ul>
-      <p>Pre-ticked = <strong>INPUT</strong>-kind AND (books-XLSX subhead is <em>Balance with Revenue Authorities</em> / <em>Statutory Dues Payable</em>, OR voucher usage scored input). The "Used in vouchers only" toggle hides dormant ledgers; group headers carry a one-click "Tick all" button so you can bulk-select an entire branch (e.g. all ledgers under <em>INPUT CREDIT</em>).</p>
-      <p>Output ledgers are <em>never</em> pre-ticked — they fire on sales vouchers, not purchases, so tagging them as "ITC marker" sweeps registered-vendor purchases into Col 3 incorrectly. A red banner appears if any output ledger is ticked.</p>
+      <p>Default view ("Focused") shows only <strong>BS-side</strong> ledgers whose AssureAI <em>Subhead</em> is <strong>Balance with Revenue Authorities</strong> or <strong>Statutory Dues Payable</strong> — the two Schedule III subheads under which Input GST and Output GST naturally land. Tight, low-noise picker.</p>
+      <p>Toggle <strong>"Show all BS-side ledgers"</strong> to drop the subhead gate. Use this when the firm's Schedule-III mapping is bespoke and your real ITC ledgers sit under a different subhead (e.g. <em>Other Current Assets</em>). The mode indicator turns amber and tells you how many ledgers are now visible vs hidden; selections persist across mode flips. If you tick anything outside the focused subheads, an amber callout above the table reminds you those picks will be retained when you toggle back.</p>
+      <p>Each row carries up to four chips: <strong>INPUT</strong> / <strong>OUTPUT</strong> kind, name-vs-usage conflict warning, provenance (name / group / subhead / voucher-usage match), and N-purchase / N-sales voucher-usage telemetry. Pre-tick (the "Select Suggested" button) fires only inside the focused subheads to avoid surprise. Output ledgers are <em>never</em> pre-ticked — they fire on sales vouchers, not purchases, so tagging them as ITC markers sweeps registered-vendor purchases into Col 3 incorrectly. A red banner appears if any output ledger is ticked.</p>
+      <p>A "kind" quick-filter strip on the right (<em>All / Input / Output / Other</em>) sits next to the Show-all toggle for fast narrowing.</p>
       <h4>The "Use ITC inference for Col 3" toggle (default ON)</h4>
       <ul>
         <li><strong>ON</strong> — a voucher from a Regular-registered vendor that carries <em>no</em> ITC-ledger entry is presumed an exempt supply and routes to Col 3 (Input B). Reflects long-standing CA practice.</li>
@@ -309,9 +303,18 @@
   <div class="step">
     <div class="step__num">3</div>
     <div class="step__body">
-      <h3>Exclusions</h3>
-      <p>Step 3 is the P&amp;L exclusion picker — tick any ledger that should be excluded from Clause 44 reporting. The engine pre-ticks keyword-matched suggestions (<em>Wages, Salary, Interest, PF/ESI, Provident Fund, etc.</em>) but you are the final authority.</p>
-      <p>Fixed-asset / capex ledgers are <strong>not</strong> pre-ticked — ICAI Para 79.18 requires capex to flow into Col 2. The recon sheet (next step) shows capex as an explicit add-back for transparency.</p>
+      <h3>Recon Adjustments</h3>
+      <p>Step 3 is the bridge between your <strong>P&amp;L expenditure</strong> and the Clause 44 <strong>Col 2 reportable expenditure</strong>. Same 6-column LedgerTable as Step 2; two kinds of ticks here, marked per row:</p>
+      <ul>
+        <li><strong><span style="background: #F1F5F9; border: 1px solid #CBD5E1; padding: 1px 6px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 10px;">↓ SUBTRACT</span></strong> — ledgers that aren't supplies: depreciation, salaries &amp; wages, penal interest on tax dues (Income Tax / TDS / GST late-fee), PF / ESI / Provident Fund, drawings, capital A/c, etc. We've pre-ticked obvious name matches.</li>
+        <li><strong><span style="background: #F5F3FF; border: 1px solid #DDD6FE; padding: 1px 6px; border-radius: 2px; font-family: 'JetBrains Mono', monospace; font-size: 10px;">↑ ADD-BACK</span></strong> — capex ledgers whose Head is <em>Property, Plant and Equipment</em> or <em>Intangible Fixed Assets</em>. Capex purchases <em>are</em> reportable in Col 2 but don't sit in P&amp;L — tick to bring them into the recon as an add-back. <strong>Not pre-ticked</strong> by design; review and pick per audit judgement.</li>
+      </ul>
+      <p><strong>What's auto-pre-ticked vs. not:</strong></p>
+      <ul style="line-height: 1.8;">
+        <li>Auto: <em>Salaries / wages, depreciation, PF / EPF / ESI, drawings, capital A/c (proprietor), penal interest on tax dues, late fees, penalties, gratuity, bonus.</em></li>
+        <li>Never auto: capex (Fixed Assets + Intangibles), financing interest on loans (those go to Input A in Step 2), trade discounts (auditor opt-in only).</li>
+      </ul>
+      <p>Your picks here populate the 5-line ICAI recon and the Excel "Reconciliation" sheet.</p>
     </div>
   </div>
 
@@ -337,7 +340,7 @@
       <p>Three tabs:</p>
       <ul>
         <li><strong>Schedule</strong> — a 7-tile <strong>clickable</strong> KPI strip across the top (<code>Col 2 · Col 3 · Col 4 · Col 5 · Col 6 · Col 7 · Col 8</code>), the seven-column per-ledger / per-party pivot below, and voucher-level drill-downs on every row. <strong>Click any KPI tile</strong> (or any column header in the pivot) to filter the table to rows that contributed to that bucket — non-zero rows only, sorted by that bucket descending; the active column is highlighted, others dim. A filter banner with a <em>Clear filter</em> link appears between the strip and the pivot. A contextual chip line above the strip shows the Col 3 split (Input A vs B), RCM voucher count, imports total, and the coverage advisory when applicable.</li>
-        <li><strong>Reconciliation</strong> — ICAI 5-line format. Every excluded ledger (Col 8) carries an auto-detected sub-bucket (non-cash · Sch III · money · capex add-back · other) with a per-line override dropdown.</li>
+        <li><strong>Reconciliation</strong> — ICAI 5-line format. Every ticked Col-8 ledger carries an auto-detected sub-bucket (non-cash · Sch III · money / securities · capex add-back · other) with a per-line override dropdown. <strong>Overrides apply live</strong> — the totals re-bucket the moment you change the dropdown and the next Excel download reflects it; no need to re-generate. Useful when the engine misses a typo'd ledger name (e.g. "Depriciation" → reclassify to Non-cash).</li>
         <li><strong>Disclaimer</strong> — free-text editor seeded with the default Para 79.21 boilerplate. Edit per client; the final text is stamped onto the Excel reconciliation sheet on every export.</li>
       </ul>
     </div>
@@ -384,7 +387,7 @@
   <h2>6 · Edge cases &amp; common pitfalls</h2>
 
   <h3>6.1 Capital expenditure</h3>
-  <p>ICAI Para 79.18 requires capex to appear in Cols 2 &amp; 5/7 — the engine flows FA-group ledgers into the expenditure pool by default. The recon tab shows "<em>+ Capex additions</em>" as an explicit line for transparency. If you want to exclude capex contrary to ICAI, manually tick the FA ledger on the Exclusions step and override its recon bucket to <em>Capex add-back</em>.</p>
+  <p>ICAI Para 79.18 requires capex to appear in Cols 2 &amp; 5/7 — voucher debits to Fixed-Asset / Intangible ledgers are already counted in Col 2 by the engine via voucher analysis. Step 3 / Recon Adjustments lists the capex ledgers with the violet <strong>↑ ADD-BACK</strong> badge but does <strong>not</strong> pre-tick them — opt them in only if you want the recon's "+ Capex additions" line populated for working-paper transparency.</p>
 
   <h3>6.2 Reverse Charge (RCM) vouchers</h3>
   <p>Vouchers with <code>voucherTypeName == "Reverse Charge"</code> are auto-bucketed to <strong>Col 7</strong> regardless of vendor status. They carry an <code>is_rcm</code> flag visible in the Excel RCM column and as a chip on the Schedule header. If your firm's policy requires RCM vouchers to follow vendor status instead, uncheck the toggle and classify manually (future releases will expose a firm-wide preference).</p>
@@ -393,19 +396,24 @@
   <p>Any ledger whose <code>country</code> field is set and not "India" routes to <strong>Col 7</strong> (no Indian GSTIN). The reason column records the country. This is the defensible ICAI position for foreign suppliers; note that IGST paid at customs sits in a separate expenditure head (not auto-classified as import).</p>
 
   <h3>6.4 Salaries, PF, ESI, gratuity (Schedule III)</h3>
-  <p>These are <strong>not expenditure under Clause 44</strong> per ICAI Para 79.2 — they're excluded via the Exclusions step and auto-categorised to the Schedule III bucket in the recon. The engine's suggestion engine pre-ticks them.</p>
+  <p>These are <strong>not expenditure under Clause 44</strong> per ICAI Para 79.2 — Step 3 pre-ticks them with the slate <strong>↓ SUBTRACT</strong> badge and the recon auto-categorises them to the Schedule III bucket.</p>
 
   <h3>6.5 Depreciation &amp; provisions</h3>
-  <p>Non-cash charges. Excluded on the Exclusions step; auto-categorised to the Non-cash bucket in the recon.</p>
+  <p>Non-cash charges. Pre-ticked on Step 3; auto-categorised to the Non-cash bucket in the recon. If the ledger name is mis-spelled (e.g. "Depriciation") the keyword auto-tick may miss it — tick it manually on Step 3 OR use the per-line dropdown override on the Recon tab to move it from "Other" → "Non-cash" (live re-bucket, no re-generate needed).</p>
 
-  <h3>6.6 Interest, TDS, investments</h3>
-  <p>Money / securities transactions are not a "supply" under GST — excluded via the Exclusions step and auto-categorised to the Money bucket in the recon.</p>
+  <h3>6.6 Interest — financing vs penal (Sch III split)</h3>
+  <p>Two different placements per Schedule III + ICAI GN Para 79.13:</p>
+  <ul>
+    <li><strong>Financing interest / discount on loans / deposits / advances</strong> ("Interest on Term Loan", "Bank Interest Paid", "Working Capital Loan Interest", "Bill Discounting Charges") = <strong>exempt supply</strong> per Notif 12/2017-CT entry 27 → <strong>Col 3 (Input A)</strong>. Auto-pre-ticked in Step 2 / Tab A.</li>
+    <li><strong>Penal / statutory interest on tax dues</strong> ("Interest on Income Tax", "Interest on TDS", "Interest on GST", "Interest u/s 234B", "Late Fees", "Penalty") = <strong>Sch III no-supply</strong> → <strong>Col 8</strong> (Money / securities bucket in the recon). Auto-pre-ticked in Step 3.</li>
+  </ul>
+  <p>The split is keyword-driven — auditor can override either auto-tick from the table.</p>
 
   <h3>6.7 Composition vendors with no marker</h3>
   <p>The engine relies on <code>gstRegistrationType == "composition"</code> in the party master. If the client accountant didn't maintain this field, Composition vendors leak into Col 5 (Registered). Mitigation: use the expense-wise drill-down, identify such vendors by bill-of-supply inspection, and tag the party ledger manually in Tally before re-exporting.</p>
 
   <h3>6.8 Status at time of supply</h3>
-  <p>ICAI Para 79.17 implies the supplier's status <em>at the time of supply</em> is what matters. Our engine only has the current party-master state. If a supplier's GSTIN was active during the supply but has since been cancelled, you would see them as URD today — override via the Exclusions step if material.</p>
+  <p>ICAI Para 79.17 implies the supplier's status <em>at the time of supply</em> is what matters. Our engine only has the current party-master state. If a supplier's GSTIN was active during the supply but has since been cancelled, you would see them as URD today — override via the Recon Adjustments step if material.</p>
 </section>
 
 {# ════════════════════════════════════════════════════════════════════════
@@ -472,6 +480,12 @@
 
     <dt>Reconciliation (ICAI Para 79.4)</dt>
     <dd>The 5-line working-paper that ties books to Clause 44: P&amp;L total + capex additions &minus; non-cash charges &minus; Schedule III items &minus; money/securities transactions &minus; other auditor exclusions = Reportable Col 2.</dd>
+
+    <dt>Recon role</dt>
+    <dd>A per-row tag on the Recon Adjustments picker — <strong>↓ SUBTRACT</strong> (Sch III / non-cash / money / other — removed from P&amp;L) or <strong>↑ ADD-BACK</strong> (capex — added back to bridge to Col 2). Surfaces as a coloured badge alongside each ledger.</dd>
+
+    <dt>ITC subhead defaults</dt>
+    <dd>The two Schedule III subheads — <em>Balance with Revenue Authorities</em> (Input GST) and <em>Statutory Dues Payable</em> (Output GST) — that gate Step 2's focused ITC view. Hard-coded in v4.4; configurable per firm in a future release.</dd>
 
     <dt>Run</dt>
     <dd>A workspace tied to (client × period × division). Holds the uploaded books JSON + ledger XLSX, classification selections, and the generated working paper.</dd>

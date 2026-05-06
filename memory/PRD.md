@@ -1,5 +1,25 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4.6 · Clause 44 Readme refresh — aligned to 4.4.x logic (2026-02-06 PM)
+
+The in-app Clause 44 Readme (HTML + PDF download at `/api/docs/clause-44`) was last written for v1.0 (Release 3.x logic).  Re-wrote to match the shipped 4.4.x model.
+
+### What changed in the doc
+- **§2 cohorts cascade** — "auditor-elected recon adjustment" replaces "auditor-excluded ledger" (better mental model); financing-interest example added to Input A.
+- **§2 callout — ITC ledger picker** — completely rewritten for the focused / expanded two-mode picker, Schedule III subhead defaults, and the "Show all BS-side ledgers" toggle.  Drops the obsolete name/group/voucher-usage cascade narrative.
+- **§4.2 walkthrough — Special Ledgers** — describes the new 6-column virtualised LedgerTable, sticky filter row, sortable headers, gear-icon column picker, and the focused ↔ expanded toggle.  Drops the chip / "Used in vouchers only" / group-bulk-select language (replaced by per-column filters).
+- **§4.3 walkthrough — Recon Adjustments** (renamed from "Exclusions") — explicit ↓ SUBTRACT vs ↑ ADD-BACK badge legend; capex flagged as `Not pre-ticked by design`; auto-pre-tick vs. never-auto split spelled out.
+- **§4.5 review** — recon dropdown override now described as live (no re-generate needed) — refers to the 4.4.2 fix.
+- **§6.1 Capex** — completely rewritten ("voucher debits already in Col 2 — opt in to add-back only for working-paper transparency").
+- **§6.4 Sch III** — slate ↓ SUBTRACT badge mention; ICAI Para 79.2 reference.
+- **§6.5 Depreciation** — references the live recon override path for typo'd ledgers (e.g. "Depriciation").
+- **§6.6 Interest** — split into financing (Col 3 / Input A) vs penal (Col 8 money) per Schedule III + Notif 12/2017-CT entry 27 + ICAI GN Para 79.13.
+- **Glossary** — added `Recon role` and `ITC subhead defaults` entries.
+- Version bumped `v1.0` → `v1.1`, reading time 8 → 9 min.
+
+### Verified live
+GET `/api/docs/clause-44` — 14 new key phrases ("Recon Adjustments", "↓ SUBTRACT", "↑ ADD-BACK", "Show all BS-side", "Recon role", "ITC subhead defaults", "Notif 12/2017-CT", etc.) all present.  Page renders with both badge styles, version markers `v4.4` + `v1.1` shown.  Existing PDF download endpoint (`/api/docs/clause-44.pdf`) untouched and continues to render the updated content.
+
 ## Release 4.4.5 · Capex no longer auto-pre-ticked + Recon roles surfaced (2026-02-06 PM)
 
 User flag: capex (Fixed Assets + Intangibles) was auto-pre-ticked on the Exclusion step alongside Sch III items, and the Step 3 copy said "Excluded ledgers are removed from Clause 44 totals" — which read as if the system was telling the auditor to *remove* capex from Col 2.  Mechanically the recon was using these picks correctly (capex got bucketed under `capex_addback` — an addition, not subtraction), but the UX implied the opposite.

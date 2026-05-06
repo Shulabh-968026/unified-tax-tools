@@ -56,8 +56,8 @@ MODULES: List[Dict[str, str]] = [
         "tagline": "Classify every books-of-account expense into the four GST cohorts "
                    "demanded by Clause 44 and ship a working-paper your reviewer will "
                    "sign without questions.",
-        "version": "v1.0",
-        "reading_time_min": 8,
+        "version": "v1.1",
+        "reading_time_min": 9,
     },
 ]
 MODULE_BY_KEY = {m["key"]: m for m in MODULES}
