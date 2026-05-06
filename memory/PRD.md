@@ -1,5 +1,21 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.5.1 · firm_id normalisation patch (2026-02-08)
+
+Follow-up to Release 4.5.  The initial collapse migration keyed the canonical
+group on raw `firm_id`, so legacy pre-4.5 rows with missing `firm_id` failed
+to collapse with their post-4.5 siblings carrying `firm_id='firm_mss_001'`.
+Example: Clause 44 for ABC Textile Mills (cli_ad137f29aebb) FY 2023-24 still
+showed 2 runs.
+
+**Fix:** `backend/scripts/collapse_runs_firm_id_patch_20260208.py` —
+re-collapses using a normalised key (missing firm_id → `firm_mss_001`) and
+then normalises firm_id on all remaining active rows.  Idempotent and safe
+to re-run.
+
+Ran against prod DB — 1 clause44 stray archived, `firm_id` normalised on
+2 BC + 2 FA + 3 GST + 13 FS + 4 MSME active rows.
+
 ## Release 4.5 · Multi-run collapse → single working document + generation history (2026-02-07)
 
 Major architectural shift agreed with MSS: every (firm_id, client_id, period, division, module)
