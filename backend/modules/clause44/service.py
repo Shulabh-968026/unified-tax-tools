@@ -6,11 +6,49 @@ import openpyxl
 from fastapi import HTTPException
 
 GST_KEYWORDS = ("gst", "input", "cgst", "sgst", "igst")
-EXCLUSION_HINT_KEYWORDS = (
-    "deprec", "salary", "salaries", "wages", "interest", "pf ", "epf",
-    "esi", "provident", "bonus", "gratuity", "income tax", "tds",
-    "drawing", "capital", "depreciation",
+
+# Release 4.4.4 — Penal / statutory interest is a Sch III no-supply
+# (Col 8 exclusion).  Pure financing interest / discount on loans /
+# deposits / advances is an *exempt* supply (Col 3 / Input A) per
+# Schedule III + GST Exemption Notification 12/2017-CT entry 27, NOT
+# an exclusion.  We split the universe accordingly.
+_PENAL_INTEREST_PATTERNS = (
+    "interest on income tax", "interest on advance tax",
+    "interest on tds", "interest on tcs",
+    "interest on gst", "interest on cgst", "interest on sgst",
+    "interest on igst", "interest on professional tax",
+    "interest on service tax", "interest u/s ",
+    "penal interest", "penalty", "late fee", "late fees",
+    "interest on late",
 )
+
+EXCLUSION_HINT_KEYWORDS = (
+    "deprec", "salary", "salaries", "wages", "pf ", "epf",
+    "esi", "provident", "bonus", "gratuity", "income tax", "tds",
+    "drawing", "depreciation",
+    # `capital` was too greedy ("Working Capital Loan", "Capital Goods
+    # Repairs") — narrowed to proprietor-style capital accounts only.
+    "capital a/c", "capital account",
+    *_PENAL_INTEREST_PATTERNS,
+)
+
+
+def _is_interest_or_discount_on_loans(name: str) -> bool:
+    """True when the ledger name reads like financing interest / discount
+    on loans / deposits / advances (i.e. exempt supply per Sch III).
+    Excludes penal-interest patterns explicitly so Income-Tax / TDS /
+    GST penalties don't leak into Input A.
+    """
+    n = (name or "").lower()
+    if any(p in n for p in _PENAL_INTEREST_PATTERNS):
+        return False
+    if "interest" in n:
+        return True
+    # Discount-on-loans patterns (bill-discounting, LC-discounting, etc.).
+    return any(k in n for k in (
+        "bill discount", "discount on bill", "discount on loan",
+        "lc discount", "discount on advance",
+    ))
 
 # ─────────────────────────────────────────────────────────────────────────
 # ICAI 5-line recon auto-categoriser (Para 79.4).  Each excluded ledger
@@ -556,17 +594,22 @@ def _norm(s: str) -> str:
 
 def _is_exempt_hint(name: str) -> bool:
     """Best-guess pre-tick for the Exempt Purchases pool — flags ledgers
-    whose name strongly suggests an exempt-supply purchase (alcohol,
-    petroleum, life-insurance premium etc.).  Conservative; auditor must
-    still confirm.  When in doubt we return False — exempt purchases are
-    a deliberate auditor opt-in by design.
+    whose name strongly suggests an exempt-supply purchase: petroleum,
+    alcohol, tobacco, life-insurance premium, **plus financing
+    interest / discount on loans / deposits / advances** (exempt supply
+    per GST Notification 12/2017-CT entry 27 — see ICAI Para 79.13).
+
+    Penal interest on tax dues is excluded explicitly via
+    `_is_interest_or_discount_on_loans`.
     """
     n = (name or "").lower()
     EXEMPT_HINTS = (
         "petrol", "diesel", "alcoh", "liquor", "spirit", "tobacco",
         "life insurance", "insurance premium",
     )
-    return any(h in n for h in EXEMPT_HINTS)
+    if any(h in n for h in EXEMPT_HINTS):
+        return True
+    return _is_interest_or_discount_on_loans(name)
 
 
 def compute_pools(

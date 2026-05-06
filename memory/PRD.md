@@ -1,5 +1,36 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.4.4 · Interest / Discount on Loans = Exempt Supply (Col 3 / Input A) (2026-02-06 PM)
+
+User flag: literature review confirmed that interest / discount on **loans / deposits / advances** is an **exempt supply** under GST (Schedule III + Notification 12/2017-CT entry 27 + ICAI GN Para 79.13), not an exclusion.  Engine was previously flagging every `Interest on …` ledger as Exclusion via the bare `interest` keyword in `EXCLUSION_HINT_KEYWORDS`.
+
+### Fix
+- Removed bare `interest` from exclusion auto-tick keyword list.
+- Added new constant `_PENAL_INTEREST_PATTERNS` covering the genuine Sch III penal cases (`interest on income tax`, `interest on tds`, `interest on tcs`, `interest on gst`, `interest on advance tax`, `interest u/s `, `penal interest`, `penalty`, `late fee`, etc.) — these continue to auto-tick as Exclusion + bucket under "Transactions in money / securities".
+- Added helper `_is_interest_or_discount_on_loans(name)` — true for `interest …` and `bill/loan/lc discount …` patterns that are NOT penal.
+- `_is_exempt_hint` now auto-ticks financing-interest + loan-discount ledgers in **Input A (Exempt Purchases / Col 3)**.
+- Tightened `capital` keyword (was greedy: matched "Working Capital Loan", "Capital Goods Repairs") → narrowed to `capital a/c` / `capital account` only.
+
+### Behaviour matrix (verified)
+| Ledger | Exclusion auto-tick | Exempt auto-tick | Correct ICAI placement |
+|---|---|---|---|
+| Interest on Term Loan | — | ✓ | Col 3 (exempt supply) |
+| Bank Interest Paid | — | ✓ | Col 3 |
+| Interest on Working Capital Loan | — | ✓ | Col 3 |
+| Bill Discounting Charges | — | ✓ | Col 3 |
+| Interest on Income Tax | ✓ | — | Col 8 (penal — Sch III) |
+| Interest on TDS | ✓ | — | Col 8 |
+| Interest on GST Late Payment | ✓ | — | Col 8 |
+| Late Fee on Returns | ✓ | — | Col 8 |
+| Capital A/c (proprietor) | ✓ | — | Col 8 |
+| Working Capital Loan | — | — | Auditor-driven (no auto-tick) |
+
+### Tests · 35 / 35 (6 new + 29 regression, zero failures)
+- `tests/test_clause44_release4_4_4_interest.py` — 6 tests covering financing vs penal classification, loan-discount detection, capital-keyword tightening, helper isolation, end-to-end pool-level seeding via `compute_pools`.
+
+### Existing runs
+Prior runs have `Interest on …` ledgers persisted in `exclusion_selection` from the old keyword.  We do NOT overwrite — the saved selection represents the auditor's prior decision and the recon dropdown override (Release 4.4.2) is the clean path to reclassify.  New runs / re-uploads from this release onward auto-tick correctly.
+
 ## Release 4.4.2 · Live recon rebucket on category override (2026-02-06 PM)
 
 User reported a typo'd ledger ("Depriciation") was sitting in **Other exclusions** because the keyword auto-categoriser keys off correct spellings.  The dropdown override was being persisted but the line wasn't moving between buckets in the on-screen recon table — and the Excel export used a stale `recon` payload until the next full Generate.
