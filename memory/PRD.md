@@ -1,5 +1,99 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.5 · Multi-run collapse → single working document + generation history (2026-02-07)
+
+Major architectural shift agreed with MSS: every (firm_id, client_id, period, division, module)
+tuple now maps to ONE canonical working document.  The "Past Runs" pattern is replaced by
+"single working doc + append-only generations log".
+
+### What shipped
+1. **DB migration** (`backend/scripts/collapse_runs_20260207.py`) — already executed against prod DB.
+   Deduped `runs`, `bc_runs`, `fa_runs`, `gst_recon_runs`, `fs_runs`, `msme_sessions`; archived
+   losers with `archived=True, collapsed_into=<winner_id>`; ensured per-collection compound unique
+   index `canonical_run_v45` on `(firm_id, client_id, period_field, [division_id])` with
+   `partialFilterExpression={archived: False}`; back-filled synthesised `run_generations` rows for
+   the historical winners so the History drawer has a baseline.
+2. **POST /runs (every module)** is now an **upsert** — looks up existing canonical doc by
+   `(client_id, period, archived: False)` and returns it; otherwise inserts a new one.
+3. **GET /runs (every module)** filters out `archived: true` rows so legacy collapsed docs are
+   invisible in lists.
+4. **GET /runs/{id} (every module)** silently redirects stale collapsed IDs to the canonical
+   winner; if the winner has been hard-deleted (orphaned pointer) returns 404 instead of leaking
+   the archived doc.
+5. **`run_generations` collection** — append-only log of every Generate / Compute / Send action.
+   Schema: `gen_id, run_id, module, client_id, period, division_id, generated_by_email,
+   generated_at, pinned_files_snapshot, summary_snapshot[, synthesised]`.
+6. **`GET /runs/{id}/generations`** — new endpoint on every module returning newest-first list
+   for the History drawer.
+7. **Append on Generate** — wired into `clause44.render`, `bc.bulk_send`, `fa.compute`,
+   `fs.ingest_statement`, `gst.compute_summary`, `msme43bh.compute_session`.
+8. **Frontend `<GenerationsDrawer />`** — single shared drawer (`/components/GenerationsDrawer.jsx`)
+   used by all 6 modules.  Renders newest-first with module-specific summary cards.
+9. **History buttons** added to every module's working-doc page:
+   - Clause 44 (`Clause44Run.jsx`) — `data-testid="clause44-open-history"`
+   - Balance Confirmation (`Landing.jsx`) — `data-testid="bc-open-history"`
+   - Fixed Assets (`Landing.jsx`) — `data-testid="fa-open-history"`
+   - Fin Statement (`RunPage.jsx`) — `data-testid="fs-open-history"`
+   - GST Recon (`Landing.jsx`) — `data-testid="gst-open-history"`
+   - MSME 43BH (`SessionDashboard.jsx`) — `data-testid="msme-open-history"`
+
+### Files touched
+**Backend (new):**
+- `modules/library/generations.py` — shared `append_generation` / `list_generations` helpers.
+- `tests/test_release_4_5_collapse_live.py` — 7 live HTTP tests.
+- `tests/test_release_4_5_collapse_extras.py` — 19 live HTTP tests (testing-agent shipped).
+
+**Backend (modified):**
+- `modules/clause44/controller.py` — fixed undefined `lib_svc` bug (line ~242) + 404 on orphaned
+  collapsed_into pointer.
+- `modules/balance_confirmation/controller.py` — new `/runs/{rid}/generations` endpoint;
+  `bulk_send` appends a row; orphaned-pointer 404.
+- `modules/fixed_assets/controller.py` — new `/runs/{rid}/generations` endpoint;
+  `compute_run_endpoint` appends a row; orphaned-pointer 404.
+- `modules/fin_statement/controller.py` — new `/runs/{rid}/generations` endpoint;
+  `ingest_statement` appends a row; orphaned-pointer 404.
+- `modules/gst_recon/controller.py` — new `/runs/{rid}/generations` endpoint;
+  `compute_summary` appends a row; orphaned-pointer 404.
+- `modules/msme43bh/controller.py` — new `/sessions/{sid}/generations` endpoint;
+  `compute_session` appends a row.
+- `modules/msme43bh/dao.py` — `list_sessions` filters `archived: $ne True`; `find_session`
+  returns None on orphaned-pointer.
+
+**Frontend (new):**
+- `components/GenerationsDrawer.jsx` — reusable History drawer (~170 LOC).
+
+**Frontend (modified):**
+- `pages/clause44/Clause44Run.jsx` — History pill in sticky bar.
+- `pages/balance_confirmation/Landing.jsx` — History button in header.
+- `pages/fixed_assets/Landing.jsx` — History button in header.
+- `pages/fin_statement/RunPage.jsx` — History button next to Re-ingest.
+- `pages/gst_recon/Landing.jsx` — History button next to Past Runs.
+- `pages/msme43bh/SessionDashboard.jsx` — History button next to Run Computation.
+
+### Tests · 26 / 26 (all green)
+Backend live HTTP suite verifies:
+- Upsert idempotency on POST /runs across all 5 module endpoints.
+- Archived-row filtering on GET /runs across all 6.
+- Generations envelope shape (`{run_id, generations:[...]}`) on all 6.
+- Stale-collapsed-id redirect for MSME + Clause 44.
+- Generation row presence on a canonical MSME session post-migration backfill.
+
+### Verified live by testing-agent
+- 6/6 module History drawers open correctly with proper title and rows / empty state.
+- No console errors on any landing page after the changes.
+- POST /api/balance-confirmation/runs is idempotent.
+- DB migration left no orphan duplicates; current dup-group counts: 0 across all collections.
+
+### Deferred to Release 4.6+ (P1)
+- Replace "Past Runs" tables on each module landing with a "Working Document" card
+  (currently the tables show 1 row per (client, fy) by virtue of the migration — UX is correct
+  but not fully reskinned).
+- Balance Confirmation Action-Log production wiring + offline confirmation-request PDFs.
+- Fixed Assets Phase 2 — Companies Act / Schedule II depreciation.
+- FA Register auto-template generator (from prior-year ITR JSON).
+- Replicate Readme to remaining 4 modules.
+- Financial Statement Designer Drop 3 — Excel exports.
+
 ## Release 4.4.6 · Clause 44 Readme refresh — aligned to 4.4.x logic (2026-02-06 PM)
 
 The in-app Clause 44 Readme (HTML + PDF download at `/api/docs/clause-44`) was last written for v1.0 (Release 3.x logic).  Re-wrote to match the shipped 4.4.x model.

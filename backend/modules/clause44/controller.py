@@ -94,6 +94,8 @@ async def _fetch_run(run_id: str) -> Dict[str, Any]:
         winner = await db.runs.find_one({"run_id": run["collapsed_into"]}, {"_id": 0})
         if winner:
             return winner
+        # Orphaned pointer — treat as not found.
+        raise HTTPException(status_code=404, detail="Run not found")
     return run
 
 

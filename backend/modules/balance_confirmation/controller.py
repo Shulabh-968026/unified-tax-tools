@@ -175,6 +175,8 @@ async def get_run(
         if winner:
             doc = winner
             rid = winner["id"]
+        else:
+            raise HTTPException(404, "Run not found")
     # Attach library outdated/missing status — drives the morphing
     # "Rerun on Latest Data" button on the BC run shell.
     try:

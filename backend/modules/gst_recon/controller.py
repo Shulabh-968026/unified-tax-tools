@@ -209,6 +209,8 @@ async def get_run(
         if winner:
             doc = winner
             rid = winner["id"]
+        else:
+            raise HTTPException(404, "Run not found")
     try:
         firm_id = doc.get("firm_id") or user.get("firm_id") or DEFAULT_FIRM_ID
         doc["library_status"] = await lib_svc.compute_module_status(

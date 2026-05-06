@@ -20,6 +20,8 @@ async def find_session(sid: str) -> Optional[Dict[str, Any]]:
         winner = await SESSIONS.find_one({"id": doc["collapsed_into"]}, {"_id": 0})
         if winner:
             return winner
+        # Orphaned pointer — treat as not found.
+        return None
     return doc
 
 
