@@ -405,6 +405,7 @@ async def compute_client_status(
             "ext": ft["ext"],
             "description": ft["description"],
             "has_template": ft["key"] in FILE_TYPES_WITH_TEMPLATES,
+            "default_attribution": ft.get("default_attribution", "current_division"),
             "uploaded": bool(cur),
             "file_id": cur["file_id"] if cur else None,
             "version_no": cur["version_no"] if cur else 0,
@@ -412,6 +413,7 @@ async def compute_client_status(
             "uploaded_by_email": cur["uploaded_by_email"] if cur else None,
             "filename_original": cur["filename_original"] if cur else None,
             "size_bytes": cur["size_bytes"] if cur else 0,
+            "division_ids": (cur or {}).get("division_ids") or [],
         })
 
     # Module rollup — read the latest run/session for each module and compute status.

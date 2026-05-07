@@ -232,6 +232,7 @@ export default function ClientUtilities() {
                   utility={u}
                   onOpen={onOpen}
                   libraryStatus={u.module_key ? libByModule[u.module_key] : null}
+                  scope={isMultiDiv(divisions) ? scope : null}
                 />
               ))}
             </div>

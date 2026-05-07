@@ -17,9 +17,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import {
   CheckCircle, Circle, WarningCircle, ArrowClockwise, UploadSimple,
-  DownloadSimple, Trash, Folder, Lightning, FileArrowDown,
+  DownloadSimple, Trash, Folder, Lightning, FileArrowDown, Stack, CaretDown,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import {
@@ -48,7 +49,12 @@ export default function ClientLibraryPanel({
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState(null);
   const [showSecondary, setShowSecondary] = useState(true);
+  // Per-row attribution overrides (only relevant for multi-div clients).
+  // Map { fileType -> string[] | null }.  null = "use default for the
+  // catalog entry's `default_attribution`".
+  const [attrByKey, setAttrByKey] = useState({});
   const fileInputs = useRef({});
+  const isMulti = divisions.length > 1;
 
   const refresh = async () => {
     setLoading(true);
@@ -74,11 +80,35 @@ export default function ClientLibraryPanel({
     e.target.value = "";  // reset for re-upload of same name
   };
 
+  // Resolve the effective attribution for a given file row.
+  // - Single-div clients: empty array (server defaults to legacy `division`).
+  // - Multi-div: per-row override if set, else the catalog's
+  //   `default_attribution` rule.
+  const resolveAttribution = (file) => {
+    if (!isMulti) return [];
+    const override = attrByKey[file.key];
+    if (Array.isArray(override)) return override;
+    const mode = file.default_attribution || "current_division";
+    if (mode === "all_divisions") return divisions.map((d) => d.division_id);
+    if (mode === "current_division") return division ? [division] : [];
+    return [];  // pick_divisions — auditor must pick
+  };
+
   const onUpload = async (file, fileType) => {
+    const fileRow = (status?.files || []).find((f) => f.key === fileType);
+    const divisionIds = fileRow ? resolveAttribution(fileRow) : [];
+    // Multi-div clients with `pick_divisions` files must explicitly pick.
+    if (isMulti && (fileRow?.default_attribution === "pick_divisions") && divisionIds.length === 0) {
+      toast.error("Please pick at least one division before uploading this file.");
+      return;
+    }
     setBusyKey(fileType);
     try {
       await uploadLibraryFile({
-        file, clientId, period, division: division || null, fileType,
+        file, clientId, period,
+        division: division || null,
+        divisionIds: isMulti ? divisionIds : null,
+        fileType,
       });
       toast.success(`${fileType.replace(/_/g, " ")} uploaded`);
       refresh();
@@ -211,6 +241,11 @@ export default function ClientLibraryPanel({
             clientId={clientId}
             period={period}
             division={division}
+            divisions={divisions}
+            isMulti={isMulti}
+            attrByKey={attrByKey}
+            setAttrByKey={setAttrByKey}
+            resolveAttribution={resolveAttribution}
           />
           <button
             onClick={() => setShowSecondary((v) => !v)}
@@ -230,6 +265,11 @@ export default function ClientLibraryPanel({
               clientId={clientId}
               period={period}
               division={division}
+              divisions={divisions}
+              isMulti={isMulti}
+              attrByKey={attrByKey}
+              setAttrByKey={setAttrByKey}
+              resolveAttribution={resolveAttribution}
             />
           )}
           {outputs.length > 0 && (
@@ -247,6 +287,11 @@ export default function ClientLibraryPanel({
                 clientId={clientId}
                 period={period}
                 division={division}
+                divisions={divisions}
+                isMulti={isMulti}
+                attrByKey={attrByKey}
+                setAttrByKey={setAttrByKey}
+                resolveAttribution={resolveAttribution}
               />
             </div>
           )}
@@ -257,7 +302,7 @@ export default function ClientLibraryPanel({
   );
 }
 
-function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete, clientId, period, division }) {
+function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete, clientId, period, division, divisions, isMulti, attrByKey, setAttrByKey, resolveAttribution }) {
   return (
     <div>
       {label && (
@@ -278,6 +323,11 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
             clientId={clientId}
             period={period}
             division={division}
+            divisions={divisions}
+            isMulti={isMulti}
+            attrByKey={attrByKey}
+            setAttrByKey={setAttrByKey}
+            resolveAttribution={resolveAttribution}
           />
         ))}
       </ul>
@@ -285,7 +335,7 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
   );
 }
 
-function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division }) {
+function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division, divisions, isMulti, attrByKey, setAttrByKey, resolveAttribution }) {
   const isUploaded = file.uploaded;
   const isOutput = file.kind === "output";
   const templateUrl = file.has_template
@@ -345,6 +395,16 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {!isOutput && isMulti && (
+          <AttributionControl
+            file={file}
+            divisions={divisions}
+            division={division}
+            value={attrByKey[file.key]}
+            resolved={resolveAttribution(file)}
+            onChange={(next) => setAttrByKey((m) => ({ ...m, [file.key]: next }))}
+          />
+        )}
         {!isOutput && (
           <input
             ref={inputRef}
@@ -411,3 +471,105 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
 
 // Re-export the small helpers if a parent wants them.
 export { WarningCircle };
+
+/**
+ * AttributionControl — small popover trigger shown on every Library
+ * row for multi-division clients.  Lets the auditor scope the upload
+ * to one or more specific divisions, all divisions, or just the
+ * currently-selected division.  The default selection follows the
+ * file_type's `default_attribution` rule from the catalog.
+ */
+function AttributionControl({ file, divisions, division, value, resolved, onChange }) {
+  const allIds = divisions.map((d) => d.division_id);
+  const sel = Array.isArray(value) ? value : resolved;
+  const isAll = sel.length === allIds.length && allIds.length > 0;
+
+  // Persisted attribution from server (existing uploads).  Show as a
+  // muted hint so auditor knows what's currently saved.
+  const persisted = file.division_ids || [];
+
+  const label = (() => {
+    if (sel.length === 0) return "Pick divisions…";
+    if (isAll) return "All divisions";
+    if (sel.length === 1) {
+      const d = divisions.find((x) => x.division_id === sel[0]);
+      return d?.name || "1 division";
+    }
+    return `${sel.length} divisions`;
+  })();
+
+  const toggle = (id) => {
+    const cur = new Set(sel);
+    if (cur.has(id)) cur.delete(id);
+    else cur.add(id);
+    onChange(Array.from(cur).sort());
+  };
+
+  const tone =
+    sel.length === 0
+      ? "bg-rose-50 text-rose-900 border-rose-200"
+      : isAll
+      ? "bg-emerald-50 text-emerald-900 border-emerald-200"
+      : "bg-slate-50 text-slate-800 border-slate-200";
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          data-testid={`library-attribution-${file.key}`}
+          className={`h-8 inline-flex items-center gap-1 px-2 border rounded-sm font-mono text-[10.5px] uppercase tracking-[0.12em] hover:opacity-90 ${tone}`}
+          title={`Attribution for ${file.label}`}
+          type="button"
+        >
+          <Stack size={11}/>
+          <span className="max-w-[110px] truncate">{label}</span>
+          <CaretDown size={9}/>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-0">
+        <div className="px-3 py-2 border-b border-[#E5E5E0] bg-[#FAFAF7]">
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8A8A83]">
+            Attribute to divisions
+          </div>
+          <div className="text-[11.5px] text-[#52524E] mt-0.5 leading-snug">
+            Default for this file: <span className="font-mono">{(file.default_attribution || "current_division").replace("_", " ")}</span>
+          </div>
+        </div>
+        <div className="max-h-64 overflow-auto">
+          <button
+            type="button"
+            data-testid={`library-attribution-${file.key}-all`}
+            onClick={() => onChange(isAll ? [] : allIds)}
+            className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[#F3F4F1] flex items-center gap-2 border-b border-[#E5E5E0]"
+          >
+            <span className={`w-3 h-3 border ${isAll ? "bg-[#0F172A] border-[#0F172A]" : "border-[#D4D4D0]"}`}/>
+            <span className="font-medium">All divisions</span>
+          </button>
+          {divisions.map((d) => {
+            const checked = sel.includes(d.division_id);
+            return (
+              <button
+                type="button"
+                key={d.division_id}
+                data-testid={`library-attribution-${file.key}-div-${d.division_id}`}
+                onClick={() => toggle(d.division_id)}
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[#F3F4F1] flex items-center gap-2"
+              >
+                <span className={`w-3 h-3 border ${checked ? "bg-[#0F172A] border-[#0F172A]" : "border-[#D4D4D0]"}`}/>
+                <span className="flex-1 truncate">{d.name}</span>
+                {division === d.division_id && (
+                  <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#8A8A83]">current</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {persisted.length > 0 && (
+          <div className="px-3 py-2 border-t border-[#E5E5E0] bg-[#FAFAF7] font-mono text-[10px] tracking-[0.06em] text-[#8A8A83]">
+            Saved: {persisted.length === allIds.length ? "All divisions" : `${persisted.length} division${persisted.length === 1 ? "" : "s"}`}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}

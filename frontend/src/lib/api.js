@@ -70,12 +70,15 @@ export const getLibraryStatus = (clientId, period, division = null) =>
   http.get(`/library/clients/${clientId}/status`, { params: { period, division } }).then((r) => r.data);
 export const listLibraryFiles = (clientId, period, includeDeleted = false) =>
   http.get(`/library/clients/${clientId}/files`, { params: { period, include_deleted: includeDeleted } }).then((r) => r.data);
-export const uploadLibraryFile = ({ file, clientId, period, division = null, fileType, onProgress }) => {
+export const uploadLibraryFile = ({ file, clientId, period, division = null, divisionIds = null, fileType, onProgress }) => {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("client_id", clientId);
   fd.append("period", period);
   if (division) fd.append("division", division);
+  if (Array.isArray(divisionIds) && divisionIds.length > 0) {
+    fd.append("division_ids", divisionIds.join(","));
+  }
   fd.append("file_type", fileType);
   return http.post("/library/upload", fd, {
     headers: { "Content-Type": "multipart/form-data" },
