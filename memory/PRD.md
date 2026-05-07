@@ -1,5 +1,51 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-B · Multi-Division Phase B — Frontend scope + attribution UI (2026-05-07 PM)
+
+Phase B of the multi-division re-architecture (locked plan in PRD: 3 phases A → B → C).
+This phase ships the page-level Scope selector, tile awareness, and per-row Library attribution.
+
+### What shipped
+1. **Page-level Scope selector** on `/dashboard/clients/:id` (multi-div clients only).
+   - Optgroups: Divisions / GSTIN Groups (when present) / Consolidation (all divisions).
+   - URL persistence via `?scope=div_<id> | gstin_<id>` (consolidation = no param).
+   - Single-div clients see no Scope UI — only the FY selector.
+2. **Tile greying via module grain** — `lib/scope.js::MODULE_GRAIN` registry:
+   - clause44, msme43bh, balance_confirmation: division + consolidation (gstin-group rolls up via consolidation).
+   - gst_recon: gstin_group only.
+   - fixed_assets, fin_statement: consolidation only.
+   - Incompatible tiles render a "Wrong Scope" badge and are disabled with a one-line hint.
+3. **Per-row Attribution popover** on `<ClientLibraryPanel/>` (multi-div clients only).
+   - Defaults sourced from catalog `default_attribution`: `current_division` (slate), `all_divisions` (emerald), `pick_divisions` (rose).
+   - Auditor can override per-row: All divisions toggle + per-division checkboxes.
+   - Multi-div + `pick_divisions` files require explicit selection before upload (toast block otherwise).
+4. **Backend status payload** now exposes `default_attribution` + persisted `division_ids` per file row.
+5. **`uploadLibraryFile` API helper** accepts optional `divisionIds` array (joined comma-separated → `division_ids` form field; backend Phase A already accepts).
+
+### Tests · 7 / 7 passed (testing_agent_v3_fork iteration 27)
+- Multi-div header (FY + Scope selectors with optgroups) ✅
+- Consolidation scope → GST Recon greys + disables ✅
+- Division scope → Fixed Assets, FS, GST grey ✅
+- URL persistence across reload ✅
+- Single-div hides scope selector + attribution chips ✅
+- 13/13 file rows show attribution chip with correct tone ✅
+- Popover open + toggle updates chip label & tone ✅
+
+### Files touched
+**Frontend (modified):**
+- `pages/ClientUtilities.jsx` — passes `scope` prop to `<UtilityCard/>`.
+- `lib/api.js` — `uploadLibraryFile` accepts `divisionIds`.
+- `components/ClientLibraryPanel.jsx` — per-row `<AttributionControl/>` popover, `attrByKey` state, `resolveAttribution` helper, gating by `isMulti`.
+
+**Backend (modified):**
+- `modules/library/service.py` — status payload exposes `default_attribution` + `division_ids` per file.
+
+### Deferred to Phase C (next batch)
+- Per-module run records: `scope_kind`, `division_ids[]`, `scope_label` on every runs collection (clause44, BC, FA, GST, FS, MSME).
+- POST /runs upsert key now includes scope (today: client+period only).
+- "Generate Consolidated" report logic (per-division tabs + Totals tab).
+- GST Recon adapting to operate on GSTIN-group runs (FY × GSTIN as the canonical key).
+
 ## Release 4.7-A · Multi-Division Phase A — Foundation (2026-05-07)
 
 Phase A of the multi-division re-architecture (locked plan in PRD: 3 phases A → B → C).
