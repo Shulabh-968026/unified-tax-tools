@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, ArrowRight, BarChart3, Archive, Loader2, FileSpreadsheet, FileJson,
 } from "lucide-react";
@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { api, http } from "@/lib/msme-api";
 import AppShell from "@/components/AppShell";
+import { readScopeFromUrl, scopeRequestPayload } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
 
 // Generate FY options: current FY back to FY 2018-19
 function buildFYOptions() {
@@ -49,6 +51,8 @@ function formatTs(iso) {
 export default function Msme43bhLanding() {
   const { clientId: cid } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const urlScope = readScopeFromUrl(location.search);
   const fyOptions = useMemo(buildFYOptions, []);
 
   const [client, setClient] = useState(null);
@@ -83,8 +87,9 @@ export default function Msme43bhLanding() {
         client_id: cid,
         name: `Tax Audit ${fy}`,
         fy: fy,
+        ...scopeRequestPayload(urlScope),
       });
-      navigate(`/dashboard/clients/${cid}/utilities/msme-43bh/sessions/${data.id}`);
+      navigate(`/dashboard/clients/${cid}/utilities/msme-43bh/sessions/${data.id}${location.search || ""}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to start run");
     } finally {
@@ -232,8 +237,9 @@ export default function Msme43bhLanding() {
                         data-testid={`run-row-${r.id}`}
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="text-sm text-gray-900 truncate flex items-center gap-2">
+                          <div className="text-sm text-gray-900 truncate flex items-center gap-2 flex-wrap">
                             <span className="font-medium">{r.scope || "Single scope"}</span>
+                            <ScopeChip run={r} isMulti={(r.scope_label && r.scope_label !== "Consolidation")} />
                             <span className="text-gray-300">·</span>
                             <span className="text-gray-700 font-mono text-xs flex items-center gap-1">
                               {r.source_filename ? (

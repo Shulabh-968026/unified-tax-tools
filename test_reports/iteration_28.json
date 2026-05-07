@@ -1,0 +1,45 @@
+{
+  "summary": "Phase C.2 (Multi-Division frontend wiring + Consolidation View scaffold) verified end-to-end. 7/9 backend smoke tests pass (2 failures are in MSME — confirmed schema bug). All 7 frontend UI tests pass: ConsolidationStrip renders correctly on multi-div BC/FA Landing under consolidation scope, hides under division scope, hides on single-div clients; per-division cards (Tiriuppur+Mumbai) render with correct status/Open links; disabled 'Generate Consolidated' CTA carries Phase C.4 tooltip; ScopeChip renders inline on Past Runs rows with slate tone for division scope. ClientUtilities.onOpen() correctly forwards fy+scope as URL params (omits when equal to defaults — intentional URL hygiene).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/msme/sessions, POST /api/msme/sessions",
+        "issue": "MSME session_summary() builds scope_kind/scope_label/scope_key/division_ids/gstin_group_id correctly, but FastAPI's response_model=SessionOut strips them out because /app/backend/modules/msme43bh/schemas.py::SessionOut Pydantic model does NOT declare these fields. Fix: add the 5 fields to SessionOut. This breaks the testing requirement 'MSME session_summary backend payload now exposes scope_kind/...' and means ScopeChip on MSME Past Sessions list will never render.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ClientUtilities header", "issues": ["Pre-existing React hydration warning '<span> cannot be a child of <option>' (visual-edit instrumentation injects span wrappers; not from app code — flagged in iteration_27 too, safe to ignore)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_c2_smoke.py",
+    "/app/test_reports/pytest/phase_c2_smoke.xml"
+  ],
+  "action_items": [
+    "Add scope_kind, scope_label, scope_key, division_ids, gstin_group_id fields to /app/backend/modules/msme43bh/schemas.py::SessionOut Pydantic model so FastAPI response_model preserves them. Without this fix, MSME's Past Sessions list cannot render ScopeChips and the per-row scope is invisible to the UI."
+  ],
+  "critical_code_review_comments": [
+    "ClientUtilities.onOpen() correctly omits fy/scope when equal to defaults (DEFAULT_FY = 2025-26, scope=consolidation) — sane URL hygiene; readScopeFromUrl() falls back to those defaults so the UX is identical.",
+    "ConsolidationStrip correctly gates visibility on `scope.scopeKind=='consolidation' && divisions.length>=2` — strip hidden on single-div + on division/gstin scopes, exactly per spec.",
+    "ScopeChip tone mapping verified visually: division→slate (confirmed: Tiriuppur Division row shows slate), consolidation→emerald, gstin_group→violet; null scope_label → no chip (correctly handles single-div consolidation rows).",
+    "Phase C.1 backend acceptance still works on BC, fixed-assets, gst-recon, fin-statement, msme — all return scope_kind on POST except MSME which is gated by the schema bug above.",
+    "Library status endpoint /api/library/clients/{client_id}/status?period=… still carries default_attribution + division_ids per row — Phase B regression smoke green.",
+    "BC POST /runs upsert is idempotent on (client_id, fy, scope_key) — verified: re-POST same division payload returns same id; consolidation+division produce DIFFERENT docs per spec."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_c2_smoke.py (created)"
+  ],
+  "success_rate": {"backend": "78% (7/9 — 2 MSME failures are 1 schema bug)", "frontend": "100% (7/7 UI assertions pass)"},
+  "test_credentials": "session_token=qa_test_session_token_20260206_dev (admin, qa-bot@transformautomations.com)",
+  "seed_data_creation": "Created 1 BC division-scope run on cli_c5d02541264c FY=2099-00 to verify ScopeChip render — deleted at teardown. Backend smoke fixture cleans up TEST_FY=2099-00 rows automatically.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase C.2 frontend is fully working. Only outstanding issue is the MSME SessionOut Pydantic schema missing 5 scope_* fields — straightforward 5-line fix in /app/backend/modules/msme43bh/schemas.py. After fix, re-run /app/backend/tests/test_phase_c2_smoke.py — TestOtherModulesScopeAcceptance::test_msme_sessions and TestMsmeScopeFieldsExposed::test_msme_list_exposes_scope_fields should both turn green. Frontend tests can be re-run with the same fixtures (a single division-scope BC run on 2099-00 was used for ScopeChip verification).",
+  "rca of the issue": "MSME response missing scope_* fields: service.py session_summary() returns the dict with all 5 scope fields populated correctly, BUT controller.py declares `response_model=SessionOut` on POST/GET /sessions endpoints and SessionOut (in schemas.py) doesn't include scope_kind/scope_label/scope_key/division_ids/gstin_group_id, so Pydantic silently filters them out before serialising. Reproduction: POST /api/msme/sessions {client_id:cli_c5d02541264c, fy:2099-00, scope_kind:consolidation} → response has 16 keys, no scope_kind. Mitigation: add the 5 fields (`scope_kind: Optional[str] = None`, `scope_label: Optional[str] = None`, `scope_key: Optional[str] = None`, `division_ids: Optional[List[str]] = []`, `gstin_group_id: Optional[str] = None`) to SessionOut in /app/backend/modules/msme43bh/schemas.py."
+}

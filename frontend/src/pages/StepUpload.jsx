@@ -54,7 +54,7 @@ function Dropzone({ accept, label, sublabel, file, onFile, testid, icon: Icon })
   );
 }
 
-export default function StepUpload({ clientId, period, divisionId, onUploaded }) {
+export default function StepUpload({ clientId, period, divisionId, scopeKind, onUploaded }) {
   const [json, setJson] = useState(null);
   const [xlsx, setXlsx] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -78,6 +78,7 @@ export default function StepUpload({ clientId, period, divisionId, onUploaded })
         clientId,
         period,
         divisionId,
+        scopeKind,
         onProgress: (e) => { if (e.total) setPct(Math.round((e.loaded * 100) / e.total)); },
       });
       toast.success("Files parsed", { description: `${res.vouchers_count} vouchers, ${res.ledgers_count} ledgers` });

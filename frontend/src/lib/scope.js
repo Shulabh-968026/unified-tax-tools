@@ -87,3 +87,71 @@ export function incompatScopeHint(moduleKey, scope) {
 export function isMultiDiv(divisions) {
   return Array.isArray(divisions) && divisions.length >= 2;
 }
+
+/**
+ * Read scope+fy from the current URL search params.  Used by every
+ * module's Landing page so a single-source-of-truth scope flows from
+ * `ClientUtilities` page → module without prop-drilling.
+ *
+ * Returns ``{ fy, scopeKind, divisionIds, gstinGroupId, scopeKey,
+ * scopeLabel }`` — values usable directly in a POST /runs payload.  The
+ * defaults are FY=DEFAULT_FY and scope=consolidation (matches the
+ * backend's resolve_scope fallback).
+ */
+export function readScopeFromUrl(search) {
+  const sp = typeof search === "string"
+    ? new URLSearchParams(search.startsWith("?") ? search.slice(1) : search)
+    : (search || new URLSearchParams());
+  const fy = sp.get("fy") || "";
+  const enc = sp.get("scope") || "consolidation";
+  if (enc === "consolidation") {
+    return {
+      fy, scopeKind: "consolidation", divisionIds: [],
+      gstinGroupId: null, scopeKey: "consolidation",
+      scopeLabel: "Consolidation",
+    };
+  }
+  if (enc.startsWith("div_")) {
+    const id = enc.slice(4);
+    return {
+      fy, scopeKind: "division", divisionIds: [id],
+      gstinGroupId: null, scopeKey: `div_${id}`,
+      scopeLabel: "",
+    };
+  }
+  if (enc.startsWith("gstin_")) {
+    const id = enc.slice(6);
+    return {
+      fy, scopeKind: "gstin_group", divisionIds: [],
+      gstinGroupId: id, scopeKey: `gstin_${id}`,
+      scopeLabel: "",
+    };
+  }
+  return {
+    fy, scopeKind: "consolidation", divisionIds: [],
+    gstinGroupId: null, scopeKey: "consolidation",
+    scopeLabel: "Consolidation",
+  };
+}
+
+/**
+ * Build the scope payload object to send on POST /runs requests.  Only
+ * includes keys the backend expects, and drops nulls/undefined so the
+ * existing single-scope callers (no params) get default behaviour.
+ */
+export function scopeRequestPayload(scope) {
+  if (!scope) return {};
+  const out = {};
+  if (scope.scopeKind && scope.scopeKind !== "consolidation") {
+    out.scope_kind = scope.scopeKind;
+  } else if (scope.scopeKind === "consolidation") {
+    out.scope_kind = "consolidation";
+  }
+  if (Array.isArray(scope.divisionIds) && scope.divisionIds.length > 0) {
+    out.division_ids = scope.divisionIds;
+  }
+  if (scope.gstinGroupId) {
+    out.gstin_group_id = scope.gstinGroupId;
+  }
+  return out;
+}

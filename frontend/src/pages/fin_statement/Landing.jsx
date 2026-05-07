@@ -8,13 +8,15 @@
  * exported as a designer PDF.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Loader2, Plus, Trash2, ChartLine, Upload, FileText, Calendar,
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
 import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
+import { readScopeFromUrl, scopeRequestPayload } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
 
 function fyDates(fy) {
   // "2024-25" → { start: "2024-04-01", end: "2025-03-31" }
@@ -29,6 +31,8 @@ function fyDates(fy) {
 export default function FsDesignerLanding() {
   const { clientId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const urlScope = readScopeFromUrl(location.search);
   const [client, setClient] = useState(null);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -123,7 +127,10 @@ export default function FsDesignerLanding() {
                 >
                   <ChartLine size={14} className="text-sky-700 shrink-0"/>
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-[13.5px] truncate">{r.name}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-[13.5px] truncate">{r.name}</span>
+                      <ScopeChip run={r} isMulti={(r.scope_label && r.scope_label !== "Consolidation")} />
+                    </div>
                     <div className="text-[11px] text-slate-500 font-mono mt-0.5">
                       FY {r.fy} · {r.fy_start} → {r.fy_end}
                       {r.books_loaded && <> · {r.ledger_count} ledgers · {r.voucher_count} vouchers</>}
@@ -161,11 +168,12 @@ export default function FsDesignerLanding() {
             try {
               const { data } = await http.post("/fin-statement/runs", {
                 client_id: clientId, ...payload,
+                ...scopeRequestPayload(urlScope),
               });
-              toast.success("Run created");
+              toast.success(`Run created${data.scope_label ? " · " + data.scope_label : ""}`);
               setModalOpen(false);
               navigate(
-                `/dashboard/clients/${clientId}/utilities/fin-statement/runs/${data.id}`,
+                `/dashboard/clients/${clientId}/utilities/fin-statement/runs/${data.id}${location.search || ""}`,
               );
             } catch (e) {
               toast.error(e?.response?.data?.detail || "Create failed");

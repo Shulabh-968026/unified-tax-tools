@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import AppShell, { PageHeader } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,19 +14,25 @@ import { toast } from "sonner";
 import StepUpload from "@/pages/StepUpload";
 import { BookOpen } from "lucide-react";
 import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
+import { readScopeFromUrl } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
 
 const PERIOD_PRESETS = FY_OPTIONS;
 
 export default function ClientHome() {
   const { clientId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const urlScope = readScopeFromUrl(location.search);
   const [client, setClient] = useState(null);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [period, setPeriod] = useState(DEFAULT_FY);
+  const [period, setPeriod] = useState(urlScope.fy || DEFAULT_FY);
   const [customPeriod, setCustomPeriod] = useState("");
-  const [divisionId, setDivisionId] = useState("");
+  const [divisionId, setDivisionId] = useState(
+    urlScope.scopeKind === "division" ? (urlScope.divisionIds[0] || "") : "",
+  );
   const [showAddDiv, setShowAddDiv] = useState(false);
   const [newDiv, setNewDiv] = useState("");
 
@@ -201,8 +207,11 @@ export default function ClientHome() {
                     {list.map((r) => (
                       <li key={r.run_id} className="px-4 py-3 border-b border-[#E5E5E0] last:border-b-0 flex items-center gap-3 hover:bg-[#F9F9F8]" data-testid={`run-${r.run_id}`}>
                         <div className="flex-1 min-w-0">
-                          <div className="text-[14px] font-medium truncate">
-                            {r.division_name || "Single scope"} <span className="text-[#8A8A83]">·</span> <span className="font-normal text-[#52524E]">{r.company_name}</span>
+                          <div className="text-[14px] font-medium truncate flex items-center gap-2 flex-wrap">
+                            <span>{r.division_name || "Single scope"}</span>
+                            <ScopeChip run={r} isMulti={isMulti} />
+                            <span className="text-[#8A8A83]">·</span>
+                            <span className="font-normal text-[#52524E]">{r.company_name}</span>
                           </div>
                           <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-[#8A8A83] mt-0.5">
                             {r.generated && r.generated_by_name ? (
@@ -270,6 +279,7 @@ export default function ClientHome() {
             clientId={clientId}
             period={effectivePeriod}
             divisionId={isMulti ? divisionId : null}
+            scopeKind={urlScope.scopeKind === "consolidation" && isMulti && !divisionId ? "consolidation" : null}
             onUploaded={(runId) => {
               setShowUpload(false);
               navigate(`/dashboard/runs/${runId}`);

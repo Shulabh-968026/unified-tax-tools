@@ -1,10 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useLocation, Link } from "react-router-dom";
 import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculator, Plus, Trash2, History, Download, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
 import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
+import { readScopeFromUrl, scopeRequestPayload } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
 
 const BUCKETS = [
   { id: "gstr1",   label: "GSTR-1",    expected: 12 },
@@ -34,8 +36,10 @@ const formatRunDate = (iso) => {
 
 export default function GstReconLanding() {
   const { clientId: cid } = useParams();
+  const location = useLocation();
+  const urlScope = readScopeFromUrl(location.search);
   const [runId, setRunId] = useState(null);
-  const [fy, setFy] = useState(DEFAULT_FY);
+  const [fy, setFy] = useState(urlScope.fy || DEFAULT_FY);
   const [files, setFiles] = useState([]);
   const [buckets, setBuckets] = useState({});
   const [months, setMonths] = useState([]);
@@ -100,7 +104,10 @@ export default function GstReconLanding() {
 
   const ensureRun = async () => {
     if (runId) return runId;
-    const { data } = await http.post("/gst-recon/runs", { client_id: cid, fy });
+    const { data } = await http.post("/gst-recon/runs", {
+      client_id: cid, fy,
+      ...scopeRequestPayload(urlScope),
+    });
     setRunId(data.id);
     setMonths(data.months);
     refreshPastRuns();
@@ -905,9 +912,10 @@ function PastRunsPanel({ runs, activeId, onResume, onDelete, onNew }) {
               data-testid={`past-run-${r.id}`}
             >
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <div className="font-medium text-sm text-gray-900">{r.name || `Run ${r.id.slice(0, 8)}`}</div>
                   <span className="text-[10px] font-mono uppercase tracking-wider bg-gray-100 text-gray-700 px-2 py-0.5 rounded-sm">FY {r.fy}</span>
+                  <ScopeChip run={r} isMulti={(r.scope_label && r.scope_label !== "Consolidation")} />
                   {isActive && <span className="text-[10px] font-mono uppercase tracking-wider bg-blue-100 text-blue-800 px-2 py-0.5 rounded-sm">Active</span>}
                   <StatusPill status={r.status}/>
                 </div>

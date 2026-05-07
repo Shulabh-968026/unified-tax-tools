@@ -299,4 +299,11 @@ def session_summary(doc: Dict[str, Any]) -> Dict[str, Any]:
         "yearend_count": len(doc.get("yearend_bills") or []),
         "profile_count": len(doc.get("profiles") or []),
         "payment_count": len(doc.get("payments") or []),
+        # Phase C.2 — surface the multi-division scope on every summary
+        # so the Past Sessions list can render a ScopeChip.
+        "scope_kind":     doc.get("scope_kind"),
+        "scope_label":    doc.get("scope_label"),
+        "scope_key":      doc.get("scope_key"),
+        "division_ids":   doc.get("division_ids") or [],
+        "gstin_group_id": doc.get("gstin_group_id"),
     }

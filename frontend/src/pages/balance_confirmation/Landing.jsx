@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, FileText, FolderUp, Loader2, Plus, Trash2, Download, Upload, Mail, FileEdit, ShieldCheck, X, Search, Send, Bell, Activity, LayoutDashboard, Table2, Printer } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -7,6 +7,9 @@ import SummaryDashboard from "./SummaryDashboard";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
 import { UniversalRecipientsTrigger } from "./UniversalRecipientsPopover";
 import { DEFAULT_FY } from "@/lib/fy";
+import { readScopeFromUrl, scopeRequestPayload } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
+import ConsolidationStrip from "@/components/ConsolidationStrip";
 
 /* ---------- Helpers ---------- */
 const inr = (v) => {
@@ -47,6 +50,11 @@ const STATUS_CHIP = {
 export default function BalanceConfirmationLanding() {
   const { clientId, rid } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Phase C.2 — pull scope+fy off the URL so a Consolidation vs Division
+  // page-level pick from /dashboard/clients/:id flows through to the
+  // working doc this module creates.
+  const urlScope = readScopeFromUrl(location.search);
 
   const [runs, setRuns] = useState([]);
   const [run, setRun] = useState(null);
@@ -72,6 +80,14 @@ export default function BalanceConfirmationLanding() {
   const [skipZeros, setSkipZeros] = useState(true);
   const [runView, setRunView] = useState("dashboard"); // dashboard | workbench
   const dropRef = useRef(null);
+  // Phase C.2 — divisions list for ConsolidationStrip.
+  const [divisions, setDivisions] = useState([]);
+  useEffect(() => {
+    if (!clientId) return;
+    http.get(`/clients/${clientId}`)
+      .then(({ data }) => setDivisions(data?.divisions || []))
+      .catch(() => setDivisions([]));
+  }, [clientId]);
 
   /* Load past runs + (optionally) hydrate run if URL has :rid */
   useEffect(() => {
@@ -99,13 +115,16 @@ export default function BalanceConfirmationLanding() {
 
   /* ---------- Run create / resume / delete ---------- */
   const createRun = async () => {
-    const fy = window.prompt("Enter financial year (e.g. 2025-26):", DEFAULT_FY);
+    const fy = window.prompt("Enter financial year (e.g. 2025-26):", urlScope.fy || DEFAULT_FY);
     if (!fy) return;
     setBusy(true);
     try {
-      const { data } = await http.post(`/balance-confirmation/runs`, { client_id: clientId, fy });
-      toast.success(`Run created · FY ${data.fy}`);
-      navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation/runs/${data.id}`);
+      const { data } = await http.post(`/balance-confirmation/runs`, {
+        client_id: clientId, fy,
+        ...scopeRequestPayload(urlScope),
+      });
+      toast.success(`Run created · FY ${data.fy}${data.scope_label ? " · " + data.scope_label : ""}`);
+      navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation/runs/${data.id}${location.search || ""}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not create run");
     } finally { setBusy(false); }
@@ -307,6 +326,16 @@ export default function BalanceConfirmationLanding() {
         </div>
 
         <div className="space-y-6">
+          {/* Phase C.2 — Consolidation View scaffold (multi-div + scope=consolidation) */}
+          <ConsolidationStrip
+            clientId={clientId}
+            fy={urlScope.fy || DEFAULT_FY}
+            divisions={divisions}
+            scope={urlScope}
+            listPath="/balance-confirmation/runs"
+            runHrefBase={`/dashboard/clients/${clientId}/utilities/balance-confirmation/runs`}
+            runIdField="id"
+          />
           {/* ---------- Past Runs (full-width table at top) ---------- */}
           <PastRunsTable
             runs={runs}
@@ -578,9 +607,10 @@ function PastRunsTable({ runs, activeRid, onOpen, onDelete }) {
                     onClick={() => onOpen(r)}
                     data-testid={`bc-run-${r.id}`}>
                   <td className="px-4 py-2 border-b border-gray-100 truncate">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {active && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0" aria-hidden/>}
                       <span className={`font-medium truncate ${active ? "text-emerald-800" : "text-gray-900"}`}>{r.name}</span>
+                      <ScopeChip run={r} isMulti={(r.scope_label && r.scope_label !== "Consolidation")} />
                     </div>
                   </td>
                   <td className="px-4 py-2 border-b border-gray-100 font-mono text-[11.5px] text-gray-600">{r.fy}</td>

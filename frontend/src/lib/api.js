@@ -39,13 +39,20 @@ export const exportConsolidatedUrl = (clientId, period) =>
 export const listRuns = (params = {}) =>
   http.get("/runs", { params: { archived: false, ...params } }).then((r) => r.data);
 
-export const uploadRun = ({ jsonFile, xlsxFile, clientId, period, divisionId, onProgress }) => {
+export const uploadRun = ({ jsonFile, xlsxFile, clientId, period, divisionId, scopeKind, divisionIds, gstinGroupId, onProgress }) => {
   const fd = new FormData();
   fd.append("accounting_json", jsonFile);
   fd.append("ledger_xlsx", xlsxFile);
   fd.append("client_id", clientId);
   fd.append("period", period);
   if (divisionId) fd.append("division_id", divisionId);
+  // Phase C.1 — optional scope passthrough (backend defaults to
+  // consolidation when absent).
+  if (scopeKind) fd.append("scope_kind", scopeKind);
+  if (Array.isArray(divisionIds) && divisionIds.length > 0) {
+    fd.append("division_ids", divisionIds.join(","));
+  }
+  if (gstinGroupId) fd.append("gstin_group_id", gstinGroupId);
   return http.post("/runs", fd, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: onProgress,

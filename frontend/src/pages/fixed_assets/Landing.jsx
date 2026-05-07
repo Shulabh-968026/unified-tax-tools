@@ -7,7 +7,7 @@
  *   • Auditor changes the dropdown directly to override the auto-suggestion
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, FolderUp, Loader2, Plus, Trash2, Wrench, Search, BookOpen, FileText, ArrowDown, Calculator, LayoutGrid, History } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
@@ -17,6 +17,9 @@ import ComputeTab from "@/pages/fixed_assets/ComputeTab";
 import SummaryTab from "@/pages/fixed_assets/SummaryTab";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
 import { DEFAULT_FY } from "@/lib/fy";
+import { readScopeFromUrl, scopeRequestPayload } from "@/lib/scope";
+import ScopeChip from "@/components/ScopeChip";
+import ConsolidationStrip from "@/components/ConsolidationStrip";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -28,6 +31,8 @@ const inr = (v) => {
 export default function FixedAssetsLanding() {
   const { clientId, rid } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const urlScope = readScopeFromUrl(location.search);
 
   const [runs, setRuns] = useState([]);
   const [run, setRun] = useState(null);
@@ -41,6 +46,14 @@ export default function FixedAssetsLanding() {
   const [auditFilter, setAuditFilter] = useState(null); // optional audit-flag filter passed to AdditionsTab
   const [showHistory, setShowHistory] = useState(false);
   const dropRef = useRef(null);
+  // Phase C.2 — divisions list for ConsolidationStrip.
+  const [divisions, setDivisions] = useState([]);
+  useEffect(() => {
+    if (!clientId) return;
+    http.get(`/clients/${clientId}`)
+      .then(({ data }) => setDivisions(data?.divisions || []))
+      .catch(() => setDivisions([]));
+  }, [clientId]);
 
   // Cross-tab navigation helper invoked by Summary's audit-flag cards.
   const goToFilteredAdditions = (flagKey) => {
@@ -104,14 +117,17 @@ export default function FixedAssetsLanding() {
 
   /* --- Run create / delete --- */
   const createRun = async () => {
-    const fy = window.prompt("Enter Financial Year (e.g., 2025-26):", DEFAULT_FY);
+    const fy = window.prompt("Enter Financial Year (e.g., 2025-26):", urlScope.fy || DEFAULT_FY);
     if (!fy) return;
     setBusy(true);
     try {
-      const { data } = await http.post(`/fixed-assets/runs`, { client_id: clientId, fy });
+      const { data } = await http.post(`/fixed-assets/runs`, {
+        client_id: clientId, fy,
+        ...scopeRequestPayload(urlScope),
+      });
       setRuns(rs => [data, ...rs]);
-      toast.success(`Run created · FY ${data.fy}`);
-      navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets/runs/${data.id}`);
+      toast.success(`Run created · FY ${data.fy}${data.scope_label ? " · " + data.scope_label : ""}`);
+      navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets/runs/${data.id}${location.search || ""}`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Could not create run");
     } finally { setBusy(false); }
@@ -213,7 +229,18 @@ export default function FixedAssetsLanding() {
               <p className="text-sm text-[#52524E] mt-1">Click <strong>New Run</strong> to start the FY's depreciation working.</p>
             </div>
           ) : (
-            <div className="bg-white border border-[#E5E5E0] divide-y divide-[#EDEDE7]">
+            <>
+              {/* Phase C.2 — Consolidation View scaffold */}
+              <ConsolidationStrip
+                clientId={clientId}
+                fy={urlScope.fy || DEFAULT_FY}
+                divisions={divisions}
+                scope={urlScope}
+                listPath="/fixed-assets/runs"
+                runHrefBase={`/dashboard/clients/${clientId}/utilities/fixed-assets/runs`}
+                runIdField="id"
+              />
+              <div className="bg-white border border-[#E5E5E0] divide-y divide-[#EDEDE7]">
               {runs.map(r => (
                 <div key={r.id} className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-[#F9F9F8]">
                   <Link
@@ -221,13 +248,14 @@ export default function FixedAssetsLanding() {
                     data-testid={`fa-run-${r.id}`}
                     className="flex-1 min-w-0"
                   >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                       <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-slate-700">FY {r.fy}</span>
                       {r.rolled_from_run_id && (
                         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5">
                           Rolled forward
                         </span>
                       )}
+                      <ScopeChip run={r} isMulti={(r.scope_label && r.scope_label !== "Consolidation")} />
                       <span className="font-heading text-base truncate">{r.name || "Untitled"}</span>
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
@@ -247,6 +275,7 @@ export default function FixedAssetsLanding() {
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
       </div>

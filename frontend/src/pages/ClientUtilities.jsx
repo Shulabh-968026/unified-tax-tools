@@ -77,18 +77,25 @@ export default function ClientUtilities() {
   };
 
   const onOpen = (u) => {
+    // Forward FY + scope to the module so it can pick up the same
+    // working period + scope without re-reading client/state.
+    const qs = new URLSearchParams();
+    if (fy && fy !== DEFAULT_FY) qs.set("fy", fy);
+    const enc = encodeScope(scope);
+    if (enc && enc !== "consolidation") qs.set("scope", enc);
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
     if (u.id === "clause-44") {
-      navigate(`/dashboard/clients/${clientId}/utilities/clause-44`);
+      navigate(`/dashboard/clients/${clientId}/utilities/clause-44${tail}`);
     } else if (u.id === "msme-43bh") {
-      navigate(`/dashboard/clients/${clientId}/utilities/msme-43bh`);
+      navigate(`/dashboard/clients/${clientId}/utilities/msme-43bh${tail}`);
     } else if (u.id === "gst-turnover-recon") {
-      navigate(`/dashboard/clients/${clientId}/utilities/gst-recon`);
+      navigate(`/dashboard/clients/${clientId}/utilities/gst-recon${tail}`);
     } else if (u.id === "balance-confirmation") {
-      navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation`);
+      navigate(`/dashboard/clients/${clientId}/utilities/balance-confirmation${tail}`);
     } else if (u.id === "fixed-assets") {
-      navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets`);
+      navigate(`/dashboard/clients/${clientId}/utilities/fixed-assets${tail}`);
     } else if (u.id === "fin-statement") {
-      navigate(`/dashboard/clients/${clientId}/utilities/fin-statement`);
+      navigate(`/dashboard/clients/${clientId}/utilities/fin-statement${tail}`);
     }
   };
 
