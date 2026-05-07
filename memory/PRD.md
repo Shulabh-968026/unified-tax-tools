@@ -1,5 +1,53 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-C.2 · Multi-Division Phase C.2 — Frontend wiring + Consolidation View scaffold (2026-05-07 PM)
+
+User-visible Phase C tier — wires the page-level Scope selector through every module, surfaces scope on past-runs lists, and ships a read-only "Consolidation View" scaffold above multi-div runs lists.
+
+### What shipped
+1. **URL-forwarded scope+fy** — `ClientUtilities.onOpen()` now appends `?fy=…&scope=…` when not at defaults; every module's Landing reads them via `readScopeFromUrl()` and passes `scopeRequestPayload(urlScope)` to its POST /runs (or POST /sessions for MSME, multipart for Clause 44).  Default-elision keeps URLs clean.
+2. **`<ScopeChip />`** — small toned pill (slate=division, emerald=consolidation, violet=gstin_group) rendered on every module's past-runs row when `scope_label` is present.  Auto-hides on single-div consolidation rows so the UI stays clean for single-entity clients.
+3. **`<ConsolidationStrip />`** — Phase C.2 scaffold above past-runs lists when `scope=consolidation` on a multi-div client:
+   - Reads existing per-division working docs via the module's GET /runs list.
+   - Renders one card per division showing run status (Not started / draft / ingested / summarised) + Open link to that division's working doc.
+   - Disabled "Generate Consolidated" CTA — placeholder for Phase C.4 with an explicit tooltip.
+   - Wired into BC + FA Landings (most multi-div-likely modules); same component drops into other Landings later via the same listPath / runHrefBase props.
+4. **MSME `SessionOut` schema** patched to passthrough `scope_kind/scope_label/scope_key/division_ids/gstin_group_id` — without this the frontend ScopeChip on MSME Past Sessions would never render.
+5. **`uploadRun()` API helper** — Clause 44's multipart upload now optionally sends `scope_kind` / `division_ids` / `gstin_group_id` form fields.
+
+### Tests · 33 / 33 ✅
+- 7 frontend UI tests (`testing_agent_v3_fork` iteration_28):
+  - URL forwarding from ClientUtilities → BC ✅
+  - ConsolidationStrip on multi-div + consolidation scope ✅ (per-div cards + disabled CTA)
+  - Strip hides on division scope ✅
+  - Strip hides on single-div clients ✅
+  - ScopeChip renders inline with correct tone ✅
+  - Disabled "Generate Consolidated" tooltip ✅
+  - Scope payload reaches backend on every module's POST ✅
+- 26 backend regression tests — Phase C.1 (9) + Phase A (11) + Release 4.5 (6) — all green.
+
+### Files touched
+**Frontend (new):**
+- `components/ScopeChip.jsx`
+- `components/ConsolidationStrip.jsx`
+
+**Frontend (modified):**
+- `lib/scope.js` — `readScopeFromUrl()` + `scopeRequestPayload()`.
+- `lib/api.js` — `uploadRun()` accepts optional scope params.
+- `pages/ClientUtilities.jsx` — `onOpen()` URL forwarding.
+- `pages/balance_confirmation/Landing.jsx` · `pages/fixed_assets/Landing.jsx` — scope + ConsolidationStrip + ScopeChip.
+- `pages/gst_recon/Landing.jsx` · `pages/fin_statement/Landing.jsx` · `pages/msme43bh/Landing.jsx` — scope wired into POST + ScopeChip on past runs.
+- `pages/ClientHome.jsx` (Clause 44) — scope read from URL, prefills divisionId + scopeKind.
+- `pages/StepUpload.jsx` — accepts `scopeKind` prop.
+
+**Backend (modified):**
+- `modules/msme43bh/schemas.py` — `SessionOut` passthrough of scope_*.
+- `modules/msme43bh/service.py` — `session_summary()` exposes scope_*.
+
+### Deferred to Phase C.3 / C.4
+- C.3 — GST Recon's working doc shifts from `(client, FY)` → `(client, FY, gstin_group_id)`; ingest validates GSTIN match against the group; UI lets auditor pick a GSTIN group in the working-period bar.
+- C.4 — wire the "Generate Consolidated" CTA → backend orchestrator that composes per-division working docs into one Consolidated report (per-division tabs + Totals tab) for Clause 44 / BC / MSME.
+
 ## Release 4.7-C.1 · Multi-Division Phase C.1 — Schema + scope-aware upserts (2026-05-07 PM)
 
 Foundational backend lift for per-module run scoping. **Strictly additive

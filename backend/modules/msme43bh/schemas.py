@@ -34,6 +34,13 @@ class SessionOut(BaseModel):
     yearend_count: int = 0
     profile_count: int = 0
     payment_count: int = 0
+    # Phase C.2 — multi-division scope passthrough so the frontend
+    # ScopeChip on Past Sessions can render.
+    scope_kind: Optional[str] = None
+    scope_label: Optional[str] = None
+    scope_key: Optional[str] = None
+    division_ids: Optional[List[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class ProfileRow(BaseModel):
