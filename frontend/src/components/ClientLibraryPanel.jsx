@@ -157,44 +157,42 @@ export default function ClientLibraryPanel({
         </div>
       </div>
 
-      {/* Period + Division selectors */}
-      <div className="px-5 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">For</span>
-        {periodLocked ? (
-          // Period is dictated by the page-level FY selector — show as a
-          // read-only chip so the user knows where to change it.
-          <span
-            data-testid="library-period-locked"
-            className="h-8 inline-flex items-center px-3 rounded-sm border border-[#D4D4D0] bg-[#F8F8F5] text-xs font-mono text-[#0F172A]"
-            title="Period is set by the page-level Working Period selector at the top of this page."
-          >
-            FY {period}
-          </span>
-        ) : (
-          <Select value={period} onValueChange={setPeriod}>
-            <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
-            <SelectContent>
-              {PERIOD_PRESETS.map((p) => (
-                <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        {divisions.length > 1 && (
-          <>
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">·</span>
-            <Select value={division || "all"} onValueChange={(v) => setDivision(v === "all" ? "" : v)}>
-              <SelectTrigger data-testid="library-division-select" className="h-8 w-[180px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all" data-testid="library-division-all">All divisions</SelectItem>
-                {divisions.map((d) => (
-                  <SelectItem key={d.division_id} value={d.division_id} data-testid={`library-division-${d.division_id}`}>{d.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </>
-        )}
-      </div>
+      {/* Period + Division selectors.  The whole row is hidden when the
+          period is locked from the page-level Working Period selector AND
+          there's no division choice to offer (i.e., single-entity client) —
+          showing "For FY 2025-26" twice on the same screen is just noise. */}
+      {(!periodLocked || divisions.length > 1) && (
+        <div className="px-5 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
+          {!periodLocked && (
+            <>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">For</span>
+              <Select value={period} onValueChange={setPeriod}>
+                <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
+                <SelectContent>
+                  {PERIOD_PRESETS.map((p) => (
+                    <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
+          {divisions.length > 1 && (
+            <>
+              {!periodLocked && <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">·</span>}
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">Division</span>
+              <Select value={division || "all"} onValueChange={(v) => setDivision(v === "all" ? "" : v)}>
+                <SelectTrigger data-testid="library-division-select" className="h-8 w-[180px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" data-testid="library-division-all">All divisions</SelectItem>
+                  {divisions.map((d) => (
+                    <SelectItem key={d.division_id} value={d.division_id} data-testid={`library-division-${d.division_id}`}>{d.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
+        </div>
+      )}
 
       {/* File chips */}
       {loading && !status ? (
