@@ -1,5 +1,6 @@
-import { ArrowRight, Lock, FileText, Scales, Buildings, FileMagnifyingGlass, Wrench, Handshake, CurrencyCircleDollar, ArrowsLeftRight, ChartLine } from "@phosphor-icons/react";
+import { ArrowRight, Lock, FileText, Scales, Buildings, FileMagnifyingGlass, Wrench, Handshake, CurrencyCircleDollar, ArrowsLeftRight, ChartLine, Prohibit } from "@phosphor-icons/react";
 import { ACCENTS } from "@/lib/colors";
+import { moduleSupportsScope, incompatScopeHint } from "@/lib/scope";
 
 // id matches a route under /dashboard/clients/:clientId/utilities/<id>
 // `module_key` matches the backend's MODULE_DEPENDENCIES key in
@@ -16,11 +17,16 @@ export const UTILITIES = [
   { id: "gst-refund-31",      module_key: null,                   title: "GST Refund — 3CD Clause 31", description: "Disclosure of refunds claimed and received under GST.", icon: CurrencyCircleDollar, status: "soon", accent: "fuchsia" },
 ];
 
-export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
+export function UtilityCard({ utility, onOpen, libraryStatus = null, scope = null }) {
   const Icon = utility.icon;
   const active = utility.status === "active";
   const inProgress = utility.status === "in_progress";
   const a = ACCENTS[utility.accent] || ACCENTS.slate;
+  // Phase B — module/scope compatibility.  When the auditor has picked
+  // a scope that this module's grain doesn't support, the tile goes
+  // grey with a one-line hint.  Compatible tiles render normally.
+  const scopeOk = !scope || moduleSupportsScope(utility.module_key, scope);
+  const scopeHint = scopeOk ? "" : incompatScopeHint(utility.module_key, scope);
   // Library-driven 4-state catalog status:
   //   data_missing       (red)    — no primary deps uploaded
   //   partial_data_ready (amber)  — some but not all deps uploaded
@@ -78,18 +84,28 @@ export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
   return (
     <button
       data-testid={`utility-card-${utility.id}`}
-      disabled={!active}
-      onClick={() => active && onOpen(utility)}
+      disabled={!active || !scopeOk}
+      onClick={() => active && scopeOk && onOpen(utility)}
       className={`group relative text-left bg-white p-5 transition-all ${
-        active ? "hover:bg-[#F9F9F8] cursor-pointer hover:-translate-y-[1px]" : "cursor-not-allowed opacity-[0.78]"
+        active && scopeOk ? "hover:bg-[#F9F9F8] cursor-pointer hover:-translate-y-[1px]" :
+        active && !scopeOk ? "cursor-not-allowed opacity-[0.55]" :
+        "cursor-not-allowed opacity-[0.78]"
       }`}
     >
       <div className="flex items-start justify-between gap-4">
-        <div className={`w-10 h-10 grid place-items-center border ${active || inProgress ? `${a.bg} ${a.border} ${a.text}` : "border-[#D4D4D0] text-[#52524E]"}`}>
-          <Icon size={18} weight={active || inProgress ? "duotone" : "regular"}/>
+        <div className={`w-10 h-10 grid place-items-center border ${active && scopeOk || inProgress ? `${a.bg} ${a.border} ${a.text}` : "border-[#D4D4D0] text-[#52524E]"}`}>
+          <Icon size={18} weight={active && scopeOk || inProgress ? "duotone" : "regular"}/>
         </div>
         <div className="flex flex-col items-end gap-1">
-          {active ? (
+          {!scopeOk && active ? (
+            <span
+              data-testid={`utility-card-${utility.id}-incompat`}
+              className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#8A8A83] bg-[#F3F4F1] border border-[#E5E5E0] px-1.5 py-0.5 rounded-sm inline-flex items-center gap-1"
+              title={scopeHint}
+            >
+              <Prohibit size={9} weight="bold"/> Wrong Scope
+            </span>
+          ) : active ? (
             <span className={`font-mono text-[10px] uppercase tracking-[0.18em] ${a.text} ${a.chip} ${a.border} border px-1.5 py-0.5 rounded-sm`}>Live</span>
           ) : inProgress ? (
             <span className={`font-mono text-[10px] uppercase tracking-[0.18em] ${a.text} ${a.chip} ${a.border} border px-1.5 py-0.5 rounded-sm inline-flex items-center gap-1`}>
@@ -100,14 +116,16 @@ export function UtilityCard({ utility, onOpen, libraryStatus = null }) {
               <Lock size={9} weight="fill"/> Coming Soon
             </span>
           )}
-          {dataChip}
+          {scopeOk && dataChip}
         </div>
       </div>
       <div className="mt-5 font-heading text-[17px] tracking-tight leading-tight">{utility.title}</div>
       <p className="mt-1.5 text-[12.5px] text-[#52524E] leading-relaxed">{utility.description}</p>
-      <div className={`mt-5 inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.12em] ${active ? a.text : inProgress ? a.text : "text-[#8A8A83]"}`}>
-        {active ? (
+      <div className={`mt-5 inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.12em] ${active && scopeOk ? a.text : inProgress ? a.text : "text-[#8A8A83]"}`}>
+        {active && scopeOk ? (
           <>Open utility <ArrowRight size={11} weight="bold" className="transition-transform group-hover:translate-x-0.5"/></>
+        ) : active && !scopeOk ? (
+          <>{scopeHint}</>
         ) : inProgress ? (
           <>Being built — available soon</>
         ) : (

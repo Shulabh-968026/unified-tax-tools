@@ -4,11 +4,12 @@ import AppShell, { PageHeader } from "@/components/AppShell";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ArrowLeft, Stack, Buildings, Folder, AppWindow, CalendarBlank } from "@phosphor-icons/react";
-import { getClient } from "@/lib/api";
+import { getClient, http } from "@/lib/api";
 import { UTILITIES, UtilityCard } from "@/lib/utilities";
 import { toast } from "sonner";
 import ClientLibraryPanel from "@/components/ClientLibraryPanel";
 import { FY_OPTIONS, DEFAULT_FY, isValidFy } from "@/lib/fy";
+import { encodeScope, decodeScope, isMultiDiv } from "@/lib/scope";
 
 export default function ClientUtilities() {
   const { clientId } = useParams();
@@ -36,6 +37,31 @@ export default function ClientUtilities() {
     if (!v || v === DEFAULT_FY) next.delete("fy"); else next.set("fy", v);
     setSearchParams(next, { replace: true });
   };
+
+  // Phase B — Scope persistence (`?scope=consolidation | div_xxx | gstin_xxx`).
+  // Default scope is "consolidation" for multi-div clients, ignored for
+  // single-div (where there's only one effective scope).
+  const [gstinGroups, setGstinGroups] = useState([]);
+  const divisions = client?.divisions || [];
+  const scope = decodeScope(
+    searchParams.get("scope"),
+    { divisions, gstinGroups },
+  ) || { kind: "consolidation", id: null, label: "Consolidation" };
+  const setScope = (s) => {
+    const next = new URLSearchParams(searchParams);
+    const enc = encodeScope(s);
+    if (!enc || enc === "consolidation") next.delete("scope"); else next.set("scope", enc);
+    setSearchParams(next, { replace: true });
+  };
+  // Load GSTIN groups (only for multi-div clients).
+  useEffect(() => {
+    if (!clientId || !isMultiDiv(divisions)) { setGstinGroups([]); return; }
+    let cancelled = false;
+    http.get(`/library/clients/${clientId}/gstin-groups`)
+      .then(({ data }) => { if (!cancelled) setGstinGroups(data?.groups || []); })
+      .catch(() => { if (!cancelled) setGstinGroups([]); });
+    return () => { cancelled = true; };
+  }, [clientId, divisions.length]);  // eslint-disable-line
 
   useEffect(() => {
     (async () => {
@@ -114,6 +140,49 @@ export default function ClientUtilities() {
               <option key={opt} value={opt}>FY {opt}</option>
             ))}
           </select>
+          {isMultiDiv(divisions) && (
+            <>
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83] inline-flex items-center gap-1.5 ml-2">
+                Scope
+              </span>
+              <select
+                value={encodeScope(scope) || "consolidation"}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "consolidation") setScope({ kind: "consolidation" });
+                  else if (v.startsWith("div_")) {
+                    const id = v.slice(4);
+                    const d = divisions.find((x) => x.division_id === id);
+                    if (d) setScope({ kind: "division", id, label: d.name, divisions: [id] });
+                  } else if (v.startsWith("gstin_")) {
+                    const id = v.slice(6);
+                    const g = gstinGroups.find((x) => x.group_id === id);
+                    if (g) setScope({ kind: "gstin_group", id, label: g.label, gstin: g.gstin || "", divisions: g.division_ids });
+                  }
+                }}
+                data-testid="client-scope-select"
+                className="font-mono text-[12px] tracking-wide border border-[#E5E5E0] bg-white rounded-sm px-3 py-1.5 hover:border-[#0F172A] focus:outline-none focus:border-[#0F172A]"
+              >
+                <optgroup label="Divisions">
+                  {divisions.map((d) => (
+                    <option key={d.division_id} value={`div_${d.division_id}`} data-testid={`scope-opt-div-${d.division_id}`}>
+                      {d.name}
+                    </option>
+                  ))}
+                </optgroup>
+                {gstinGroups.length > 0 && (
+                  <optgroup label="GSTIN Groups">
+                    {gstinGroups.map((g) => (
+                      <option key={g.group_id} value={`gstin_${g.group_id}`} data-testid={`scope-opt-gstin-${g.group_id}`}>
+                        {g.label}{g.gstin ? ` (${g.gstin})` : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <option value="consolidation" data-testid="scope-opt-consolidation">Consolidation (all divisions)</option>
+              </select>
+            </>
+          )}
           <span className="text-[11px] text-[#8A8A83] font-mono">
             — Default: most recently concluded FY ({DEFAULT_FY}). All utilities &amp; the Library on this page reflect this period.
           </span>
