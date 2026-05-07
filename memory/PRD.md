@@ -1,5 +1,42 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-A · Multi-Division Phase A — Foundation (2026-05-07)
+
+Phase A of the multi-division re-architecture (locked plan in PRD: 3 phases A → B → C).
+This phase ships purely **additive** changes — no existing query paths altered.
+
+### What shipped
+1. **`library/catalog.py`** — every file_type now declares `default_attribution`:
+   - `current_division` — books_json, ledger_mapping_xlsx, party_master_xlsx, msme43bh_creditor_report_xlsx
+   - `all_divisions` — itr_prior_json, form_3cd_prior_json, form_26as_json, ais_json, tis_json, fa_register_xlsx, it_depreciation_opening_wdv_xlsx
+   - `pick_divisions` — gstr_1_json, gstr_3b_json
+   - Helper: `attribution_for(file_type)` + `ATTRIBUTION_MODES` constant.
+2. **New `gstin_groups` collection** (and 4 CRUD endpoints):
+   - `GET    /api/library/clients/{client_id}/gstin-groups`
+   - `POST   /api/library/clients/{client_id}/gstin-groups`
+   - `PATCH  /api/library/clients/{client_id}/gstin-groups/{group_id}`
+   - `DELETE /api/library/clients/{client_id}/gstin-groups/{group_id}`
+   - Validates: required label, valid 15-char GSTIN regex (optional), all `division_ids` exist on client doc, label uniqueness per client, ≥1 division.
+3. **`POST /api/library/upload`** accepts new `division_ids` form field (comma- or pipe-separated). The list is normalised (deduped + sorted) and persisted on `client_files.division_ids` *alongside* the legacy `division` field — no read paths changed yet (Phase B will cut over).
+4. **New `<GstinGroupsManager />` React component** at the bottom of every Library panel for multi-division clients. Inline create/edit/delete with chip-based division picker. Hidden for single-division clients.
+
+### Tests · 52 / 52 ✅
+- 10 new live HTTP tests (`tests/test_phase_a_gstin_groups.py`) — full CRUD coverage, all validation paths, catalog field assertion.
+- 42 prior tests still green (R4.5 + R4.6 + R4.6.1).
+
+### Verified via Playwright
+- GSTIN Groups manager renders correctly on multi-div client (GMS Processors P Limited)
+- Hidden on single-div client (ABC Textile Mills) — `count() === 0` ✅
+- Create flow works end-to-end — group appears in list with division chips + GSTIN badge
+
+### Deferred to Phase B / C (next batches)
+- Page-level Scope selector (Divisions / GSTIN Groups / Consolidation) on `ClientUtilities`
+- Tile greying based on selected scope + module grain
+- Multi-select division attribution chip popover on every Library upload (UI side; backend already accepts it)
+- Per-module run records carrying `scope_kind` + `division_ids` + `scope_label`
+- Consolidation report generation (per-division tabs + Totals tab)
+- GST Recon adapting to operate on GSTIN-group runs
+
 ## Release 4.6.2 · Working Period selector + FY 2025-26 (2026-05-07)
 
 ### What shipped

@@ -34,6 +34,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Books of Accounts (Tally JSON)",
         "ext": [".json"],
         "kind": "primary",
+        "default_attribution": "current_division",
         "description": "Daybook + ledgers + groups + parties exported from Tally for the FY.",
     },
     {
@@ -41,6 +42,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Ledger Mapping (BS/PL classification)",
         "ext": [".xlsx"],
         "kind": "primary",
+        "default_attribution": "current_division",
         "description": "Per-ledger BS-or-P&L tag, subhead, group parent, head, closing balance.",
     },
     {
@@ -48,6 +50,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Form 3CD — Prior Year",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "Last year's filed 3CD JSON (used for comparatives).",
     },
     {
@@ -55,6 +58,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Income Tax Return — Prior Year",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "Last year's filed ITR JSON.",
     },
     {
@@ -62,6 +66,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Form 26AS",
         "ext": [".json", ".pdf"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "TDS credits, advance tax, refunds — for AIS/TIS recon.",
     },
     {
@@ -69,6 +74,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "AIS — Annual Information Statement",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "AIS pulled from the income-tax portal.",
     },
     {
@@ -76,6 +82,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "TIS — Taxpayer Information Summary",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "TIS pulled from the income-tax portal.",
     },
     {
@@ -83,6 +90,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "GSTR-1 (consolidated)",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "pick_divisions",
         "description": "Outward supplies as filed for the FY (all months merged).",
     },
     {
@@ -90,6 +98,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "GSTR-3B (consolidated)",
         "ext": [".json"],
         "kind": "secondary",
+        "default_attribution": "pick_divisions",
         "description": "Self-assessed liability + ITC as filed for the FY.",
     },
     {
@@ -97,6 +106,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Fixed Assets Register (Prior Year closing)",
         "ext": [".xlsx"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "Opening WDV per block, useful-life overrides, asset-class tags.",
     },
     {
@@ -104,6 +114,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "IT Depreciation — Opening WDV",
         "ext": [".xlsx"],
         "kind": "secondary",
+        "default_attribution": "all_divisions",
         "description": "Per-block opening WDV (sub-block resolution) for IT Depreciation working.  Auto-generated template covers every active legal-master block.",
     },
     {
@@ -111,6 +122,7 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "Party Master",
         "ext": [".xlsx"],
         "kind": "secondary",
+        "default_attribution": "current_division",
         "description": "Vendor / customer master with email, GSTIN, MSME flag.",
     },
     {
@@ -118,12 +130,22 @@ FILE_TYPE_CATALOG: list[dict] = [
         "label": "AssureAI MSME 43B(h) Creditor Report",
         "ext": [".xlsx"],
         "kind": "secondary",
+        "default_attribution": "current_division",
         "description": "Creditor-level disallowance computation produced by the 43B(h) Disallowance module — auto-saved here on each compute.  Auditors can also drop in an externally-prepared version.",
     },
 ]
 
 FILE_TYPE_KEYS = {ft["key"] for ft in FILE_TYPE_CATALOG}
 FILE_TYPE_BY_KEY = {ft["key"]: ft for ft in FILE_TYPE_CATALOG}
+
+# Multi-division attribution modes — see Phase A docs.
+ATTRIBUTION_MODES = {"current_division", "all_divisions", "pick_divisions"}
+
+def attribution_for(file_type: str) -> str:
+    """Return the catalog default attribution mode for a file_type.
+    Defaults to ``current_division`` if the entry pre-dates Phase A
+    (defensive — should not happen)."""
+    return FILE_TYPE_BY_KEY.get(file_type, {}).get("default_attribution", "current_division")
 
 # File-types that the engine can pre-populate from data already in the
 # Library.  See `modules.library.templates` for generators.

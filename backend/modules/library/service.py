@@ -62,14 +62,25 @@ async def create_file_version(
     parse_status: str = "skipped",
     parse_summary: dict | None = None,
     parse_errors: list[str] | None = None,
+    division_ids: list[str] | None = None,
 ) -> dict:
     """Persist a new version of `file_type` for the given key.
 
     Same checksum as the current version → returns the existing row
     untouched (idempotent re-upload of unchanged file).
+
+    Phase A multi-division: ``division_ids`` (list[str]) is persisted
+    alongside the legacy single ``division`` field.  Empty list = file
+    applies to *all* divisions of the client (engagement-wide).
     """
     if file_type not in FILE_TYPE_KEYS:
         raise ValueError(f"Unknown file_type '{file_type}'")
+
+    # Normalise: dedupe + sort.
+    div_ids = sorted(set((d or "").strip() for d in (division_ids or []) if (d or "").strip()))
+    # If only legacy `division` was passed, mirror it into the new list.
+    if not div_ids and division:
+        div_ids = [division.strip()]
 
     checksum = sha256_hex(content)
 
@@ -117,6 +128,13 @@ async def create_file_version(
         "uploaded_by_email": uploaded_by_email,
         "replaces_file_id": current["file_id"] if current else None,
         "is_current": True,
+
+        # Phase A · multi-division — list of division_ids the file
+        # applies to.  Empty list = "applies to all divisions"
+        # (engagement-wide).  Reads continue to use the legacy
+        # `division` field for backward compat; modules will cut over
+        # to `division_ids` in Phase B/C.
+        "division_ids": div_ids,
 
         "parse_status": parse_status,
         "parse_summary": parse_summary or {},

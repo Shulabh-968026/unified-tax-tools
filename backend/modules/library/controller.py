@@ -79,6 +79,7 @@ async def upload(
     client_id: str = Form(...),
     period: str = Form(...),
     division: Optional[str] = Form(default=None),
+    division_ids: Optional[str] = Form(default=None),
     file_type: str = Form(...),
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
@@ -87,6 +88,12 @@ async def upload(
 
     Returns the persisted file row.  If the upload's checksum matches the
     current version, returns the existing row (idempotent).
+
+    Phase A · multi-division: ``division_ids`` is a comma-separated list
+    of division ids the file applies to.  Persisted as a list on the
+    file row alongside the legacy single ``division`` field (the legacy
+    field carries the first id when the list is single-element, else
+    null — letting existing single-tenant queries work unchanged).
     """
     user = await get_current_user(request, session_token, authorization)
     firm_id = _firm_id_for(user)
@@ -95,6 +102,13 @@ async def upload(
     cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
     if not cli:
         raise HTTPException(404, "Client not found")
+
+    # Normalise division_ids — accept comma- or pipe-separated string.
+    div_ids: list[str] = []
+    if division_ids:
+        div_ids = sorted({d.strip() for d in division_ids.replace("|", ",").split(",") if d.strip()})
+    if not div_ids and division:
+        div_ids = [division.strip()]
 
     # Multi-division clients require an explicit division (matches the
     # Clause 44 upload path's contract).
@@ -127,6 +141,7 @@ async def upload(
         filename_original=file.filename or "unnamed",
         content=content,
         uploaded_by_email=user.get("email") or "",
+        division_ids=div_ids,
     )
     return {"file": row}
 

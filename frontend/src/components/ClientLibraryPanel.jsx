@@ -28,6 +28,7 @@ import {
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
+import GstinGroupsManager from "@/components/GstinGroupsManager";
 
 const PERIOD_PRESETS = FY_OPTIONS;
 
@@ -251,6 +252,7 @@ export default function ClientLibraryPanel({
           )}
         </div>
       )}
+      <GstinGroupsManager clientId={clientId} divisions={divisions} />
     </section>
   );
 }
