@@ -4,6 +4,7 @@ import { FileText, CheckCircle2, XCircle, FolderUp, Loader2, ArrowLeft, Calculat
 import { toast } from "sonner";
 import { http } from "@/lib/api";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
+import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
 
 const BUCKETS = [
   { id: "gstr1",   label: "GSTR-1",    expected: 12 },
@@ -34,7 +35,7 @@ const formatRunDate = (iso) => {
 export default function GstReconLanding() {
   const { clientId: cid } = useParams();
   const [runId, setRunId] = useState(null);
-  const [fy, setFy] = useState("2024-25");
+  const [fy, setFy] = useState(DEFAULT_FY);
   const [files, setFiles] = useState([]);
   const [buckets, setBuckets] = useState({});
   const [months, setMonths] = useState([]);
@@ -80,7 +81,7 @@ export default function GstReconLanding() {
   };
 
   const newRun = () => {
-    setRunId(null); setFy("2024-25"); setFiles([]); setBuckets({}); setMonths([]);
+    setRunId(null); setFy(DEFAULT_FY); setFiles([]); setBuckets({}); setMonths([]);
     setHasBooks(false); setHasMapping(false); setValidation(null); setSummary(null); setUnmapped([]);
     setShowPast(false);
   };
@@ -255,7 +256,7 @@ export default function GstReconLanding() {
               className="border border-gray-300 rounded-sm h-9 px-3 text-sm font-mono bg-white"
               data-testid="gst-recon-fy-select"
             >
-              {["2022-23","2023-24","2024-25","2025-26"].map(y => <option key={y} value={y}>{y}</option>)}
+              {FY_OPTIONS.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
         </div>

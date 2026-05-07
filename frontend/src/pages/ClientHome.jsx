@@ -13,8 +13,9 @@ import { formatDate, formatDateTime } from "@/lib/format";
 import { toast } from "sonner";
 import StepUpload from "@/pages/StepUpload";
 import { BookOpen } from "lucide-react";
+import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
 
-const PERIOD_PRESETS = ["2024-25", "2023-24", "2022-23", "2021-22", "2020-21"];
+const PERIOD_PRESETS = FY_OPTIONS;
 
 export default function ClientHome() {
   const { clientId } = useParams();
@@ -23,7 +24,7 @@ export default function ClientHome() {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [period, setPeriod] = useState(PERIOD_PRESETS[1]);
+  const [period, setPeriod] = useState(DEFAULT_FY);
   const [customPeriod, setCustomPeriod] = useState("");
   const [divisionId, setDivisionId] = useState("");
   const [showAddDiv, setShowAddDiv] = useState(false);

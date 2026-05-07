@@ -14,8 +14,7 @@ import {
 } from "lucide-react";
 import { http } from "@/lib/api";
 import { toast } from "sonner";
-
-const FY_OPTIONS = ["2024-25", "2023-24", "2022-23", "2021-22", "2020-21"];
+import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
 
 function fyDates(fy) {
   // "2024-25" → { start: "2024-04-01", end: "2025-03-31" }
@@ -192,7 +191,7 @@ function StatusPill({ status }) {
 }
 
 function NewRunModal({ clientName, onClose, onCreate }) {
-  const [fy, setFy] = useState("2024-25");
+  const [fy, setFy] = useState(DEFAULT_FY);
   const [name, setName] = useState(clientName || "");
   const [busy, setBusy] = useState(false);
 

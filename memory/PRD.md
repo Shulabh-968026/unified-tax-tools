@@ -1,5 +1,52 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.6.2 · Working Period selector + FY 2025-26 (2026-05-07)
+
+### What shipped
+1. **New canonical FY helper** — `frontend/src/lib/fy.js`
+   - `currentAuditFy(today)` — returns the most-recently-concluded FY (today's
+     audit-current FY = "2025-26"; will auto-flip to "2026-27" on 1-Apr-2027).
+   - `fyOptions(today)` — newest-first list with 1 lookahead FY for pre-staging.
+   - `isValidFy(s)`, `parseFy(s)` — strict validator + canonical date-range
+     parser.
+   - 8/8 Jest unit tests passing.
+
+2. **Working Period selector on `/dashboard/clients/:id`** — the team's main
+   landing page.  Replaces the previous silent default behaviour.
+   - Sticky bar above the Utilities Catalog / Data Library tabs.
+   - Default is the most recently concluded audit FY.
+   - Selection persists via `?fy=` URL param (deep-linkable, refresh-safe).
+   - Library panel below mounts with `periodLocked` so the page-level FY is
+     the single source of truth.
+
+3. **Library panel period field locked when invoked from page-level selector**
+   - Shows a small read-only chip "FY 2025-26" instead of its own dropdown.
+   - Standalone usage (if any future caller) still gets the editable dropdown.
+
+4. **All FY dropdowns across the app now reference `lib/fy.js`**
+   - `pages/ClientHome.jsx` — `PERIOD_PRESETS` consolidated.
+   - `pages/fin_statement/Landing.jsx` — `FY_OPTIONS` consolidated.
+   - `pages/gst_recon/Landing.jsx` — was hard-coded `["2022-23","2023-24","2024-25","2025-26"]`,
+     now sourced from helper (auto-includes 2026-27 etc.).
+   - `pages/balance_confirmation/Landing.jsx` — `window.prompt` default
+     bumped to `DEFAULT_FY`.
+   - `pages/fixed_assets/Landing.jsx` — same.
+   - `pages/msme43bh/Landing.jsx` — already auto-derived; left untouched.
+
+5. **Backend** — no changes needed.  All FY parsers
+   (`gst_recon/validation.py`, `fixed_assets/service.py`,
+   `balance_confirmation/service.py`) are regex-based and already accept any
+   `YYYY-YY` string including 2025-26 and 2026-27.  Verified via repl smoke
+   test.
+
+### Verified via Playwright
+- Navigated to `/dashboard/clients/cli_ad137f29aebb`
+- FY selector default reads `2025-26` (today is 7-May-2026, FY just closed)
+- All 7 options visible: 2026-27 → 2020-21 (newest first)
+- Changing selector to `2024-25` rewrites URL to `?fy=2024-25`
+- Catalog tile chips correctly recompute Library status for the new FY
+- No console errors
+
 ## Release 4.6.1 · BC Refinement Batch 2 (2026-02-08 evening)
 
 ### R3 — Universal CC/BCC persistence + multiple addresses

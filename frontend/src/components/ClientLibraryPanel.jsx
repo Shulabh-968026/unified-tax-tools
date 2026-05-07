@@ -27,15 +27,21 @@ import {
   downloadLibraryFileUrl, downloadLibraryTemplateUrl,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { FY_OPTIONS, DEFAULT_FY } from "@/lib/fy";
 
-const PERIOD_PRESETS = ["2024-25", "2023-24", "2022-23", "2021-22", "2020-21"];
+const PERIOD_PRESETS = FY_OPTIONS;
 
 export default function ClientLibraryPanel({
   clientId, divisions = [],
-  initialPeriod = "2023-24",
+  initialPeriod = DEFAULT_FY,
+  periodLocked = false,
   onChange,
 }) {
   const [period, setPeriod] = useState(initialPeriod);
+  // Keep local state in sync when the parent rewires the period
+  // (e.g. ClientUtilities FY selector).  Without this effect, the panel
+  // would freeze on whatever it picked up at first mount.
+  useEffect(() => { setPeriod(initialPeriod); }, [initialPeriod]);
   const [division, setDivision] = useState(divisions[0]?.division_id || "");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -154,14 +160,26 @@ export default function ClientLibraryPanel({
       {/* Period + Division selectors */}
       <div className="px-5 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">For</span>
-        <Select value={period} onValueChange={setPeriod}>
-          <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
-          <SelectContent>
-            {PERIOD_PRESETS.map((p) => (
-              <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {periodLocked ? (
+          // Period is dictated by the page-level FY selector — show as a
+          // read-only chip so the user knows where to change it.
+          <span
+            data-testid="library-period-locked"
+            className="h-8 inline-flex items-center px-3 rounded-sm border border-[#D4D4D0] bg-[#F8F8F5] text-xs font-mono text-[#0F172A]"
+            title="Period is set by the page-level Working Period selector at the top of this page."
+          >
+            FY {period}
+          </span>
+        ) : (
+          <Select value={period} onValueChange={setPeriod}>
+            <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
+            <SelectContent>
+              {PERIOD_PRESETS.map((p) => (
+                <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         {divisions.length > 1 && (
           <>
             <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">·</span>

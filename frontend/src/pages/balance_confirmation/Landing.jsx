@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import SummaryDashboard from "./SummaryDashboard";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
 import { UniversalRecipientsTrigger } from "./UniversalRecipientsPopover";
+import { DEFAULT_FY } from "@/lib/fy";
 
 /* ---------- Helpers ---------- */
 const inr = (v) => {
@@ -98,7 +99,7 @@ export default function BalanceConfirmationLanding() {
 
   /* ---------- Run create / resume / delete ---------- */
   const createRun = async () => {
-    const fy = window.prompt("Enter financial year (e.g. 2024-25):", "2024-25");
+    const fy = window.prompt("Enter financial year (e.g. 2025-26):", DEFAULT_FY);
     if (!fy) return;
     setBusy(true);
     try {

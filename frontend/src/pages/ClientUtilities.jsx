@@ -3,11 +3,12 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppShell, { PageHeader } from "@/components/AppShell";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { ArrowLeft, Stack, Buildings, Folder, AppWindow } from "@phosphor-icons/react";
+import { ArrowLeft, Stack, Buildings, Folder, AppWindow, CalendarBlank } from "@phosphor-icons/react";
 import { getClient } from "@/lib/api";
 import { UTILITIES, UtilityCard } from "@/lib/utilities";
 import { toast } from "sonner";
 import ClientLibraryPanel from "@/components/ClientLibraryPanel";
+import { FY_OPTIONS, DEFAULT_FY, isValidFy } from "@/lib/fy";
 
 export default function ClientUtilities() {
   const { clientId } = useParams();
@@ -21,6 +22,18 @@ export default function ClientUtilities() {
   const setTab = (v) => {
     const next = new URLSearchParams(searchParams);
     if (v === "utilities") next.delete("tab"); else next.set("tab", v);
+    setSearchParams(next, { replace: true });
+  };
+
+  // FY persistence — `?fy=2025-26` is respected; otherwise we default to
+  // the most-recently-concluded audit FY (see @/lib/fy).  Changing the
+  // selector rewrites the URL so the Library panel + utility tiles
+  // recompute from the same period.
+  const urlFy = searchParams.get("fy");
+  const fy = urlFy && isValidFy(urlFy) ? urlFy : DEFAULT_FY;
+  const setFy = (v) => {
+    const next = new URLSearchParams(searchParams);
+    if (!v || v === DEFAULT_FY) next.delete("fy"); else next.set("fy", v);
     setSearchParams(next, { replace: true });
   };
 
@@ -82,6 +95,30 @@ export default function ClientUtilities() {
       />
 
       <div className="px-6 md:px-10 py-8 pb-40 max-w-[1200px]">
+        {/* FY selector — single source of truth for the page.  Both Library
+            panels (visible + hidden) and any utility status chip read off this. */}
+        <div
+          className="mb-6 flex items-center gap-3 flex-wrap"
+          data-testid="client-fy-bar"
+        >
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83] inline-flex items-center gap-1.5">
+            <CalendarBlank size={12}/> Working Period
+          </span>
+          <select
+            value={fy}
+            onChange={(e) => setFy(e.target.value)}
+            data-testid="client-fy-select"
+            className="font-mono text-[12px] tracking-wide border border-[#E5E5E0] bg-white rounded-sm px-3 py-1.5 hover:border-[#0F172A] focus:outline-none focus:border-[#0F172A]"
+          >
+            {FY_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>FY {opt}</option>
+            ))}
+          </select>
+          <span className="text-[11px] text-[#8A8A83] font-mono">
+            — Default: most recently concluded FY ({DEFAULT_FY}). All utilities &amp; the Library on this page reflect this period.
+          </span>
+        </div>
+
         <Tabs value={tab} onValueChange={setTab} className="w-full">
           <TabsList
             data-testid="client-tabs"
@@ -142,6 +179,8 @@ export default function ClientUtilities() {
             <ClientLibraryPanel
               clientId={clientId}
               divisions={client.divisions || []}
+              initialPeriod={fy}
+              periodLocked
               onChange={onLibraryChange}
             />
           </TabsContent>
@@ -155,6 +194,8 @@ export default function ClientUtilities() {
             <ClientLibraryPanel
               clientId={clientId}
               divisions={client.divisions || []}
+              initialPeriod={fy}
+              periodLocked
               onChange={onLibraryChange}
             />
           </div>

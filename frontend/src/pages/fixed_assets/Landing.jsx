@@ -16,6 +16,7 @@ import CreditsTab from "@/pages/fixed_assets/CreditsTab";
 import ComputeTab from "@/pages/fixed_assets/ComputeTab";
 import SummaryTab from "@/pages/fixed_assets/SummaryTab";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
+import { DEFAULT_FY } from "@/lib/fy";
 
 const inr = (v) => {
   const n = Number(v || 0);
@@ -103,7 +104,7 @@ export default function FixedAssetsLanding() {
 
   /* --- Run create / delete --- */
   const createRun = async () => {
-    const fy = window.prompt("Enter Financial Year (e.g., 2024-25):", "2024-25");
+    const fy = window.prompt("Enter Financial Year (e.g., 2025-26):", DEFAULT_FY);
     if (!fy) return;
     setBusy(true);
     try {
