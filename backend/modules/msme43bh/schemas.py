@@ -11,6 +11,10 @@ class SessionCreate(BaseModel):
     name: Optional[str] = None
     fy: Optional[str] = None
     client_id: Optional[str] = None
+    # Phase C.1 — scope (defaults to consolidation when absent).
+    scope_kind: Optional[str] = None
+    division_ids: Optional[List[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class SessionOut(BaseModel):

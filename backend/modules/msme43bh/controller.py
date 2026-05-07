@@ -26,6 +26,8 @@ from modules.msme43bh.service import (
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
 from modules.library.generations import append_generation, list_generations
+from modules.library.scope import resolve_scope_for_request
+from core.db import db
 
 router = APIRouter(prefix="/msme")
 logger = logging.getLogger("msme43bh")
@@ -45,9 +47,17 @@ async def create_session(
     user = await _auth(request, session_token, authorization)
     if not payload.client_id:
         raise HTTPException(400, "client_id is required")
-    # Release 4.5 — upsert canonical working session per (client_id, fy)
+    # Phase C.1 — resolve scope (defaults to consolidation when absent).
+    scope = await resolve_scope_for_request(
+        db, client_id=payload.client_id,
+        scope_kind=payload.scope_kind,
+        division_ids=payload.division_ids,
+        gstin_group_id=payload.gstin_group_id,
+    )
+    # Release 4.5 — upsert canonical working session per (client_id, fy, scope_key)
     existing = await dao.SESSIONS.find_one(
-        {"client_id": payload.client_id, "fy": payload.fy or "", "archived": False},
+        {"client_id": payload.client_id, "fy": payload.fy or "",
+         "scope_key": scope["scope_key"], "archived": False},
         {"_id": 0},
     )
     if existing:
@@ -70,6 +80,12 @@ async def create_session(
         "profiles": [],
         "payments": [],
         "results": None,
+        # Phase C.1 — scope fields.
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
     }
     await dao.insert_session(doc)
     return session_summary(doc)

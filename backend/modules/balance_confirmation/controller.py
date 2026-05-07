@@ -64,6 +64,7 @@ from modules.balance_confirmation.service import (
     summarise_ledgers,
 )
 from modules.balance_confirmation.templates import all_defaults
+from modules.library.scope import resolve_scope_for_request
 
 router = APIRouter(prefix="/balance-confirmation")
 log = logging.getLogger("balance_confirmation")
@@ -103,9 +104,18 @@ async def create_run(
     # Best-effort default for as_at_date
     as_at = (payload.as_at_date or "").strip() or fy_end_date(payload.fy)
 
-    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    # Phase C.1 — resolve scope (defaults to consolidation when absent).
+    scope = await resolve_scope_for_request(
+        db, client_id=payload.client_id,
+        scope_kind=payload.scope_kind,
+        division_ids=payload.division_ids,
+        gstin_group_id=payload.gstin_group_id,
+    )
+
+    # Release 4.5 — upsert canonical working doc per (client_id, fy, scope_key)
     existing = await RUNS.find_one(
-        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"client_id": payload.client_id, "fy": payload.fy,
+         "scope_key": scope["scope_key"], "archived": False},
         {"_id": 0, "id": 1},
     )
     if existing:
@@ -138,6 +148,12 @@ async def create_run(
         "created_by_user_id": user["user_id"],
         "created_by_name": user.get("name") or "",
         "created_by_email": user.get("email") or "",
+        # Phase C.1 — scope fields (always present on new docs).
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
     }
     await RUNS.insert_one(doc)
     doc.pop("_id", None)

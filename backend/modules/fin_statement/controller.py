@@ -22,6 +22,7 @@ from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
 from modules.library.generations import append_generation, list_generations
+from modules.library.scope import resolve_scope_for_request
 from modules.fin_statement.normalizer import normalize_final_statement
 from modules.fin_statement.pdf_renderer import render_pdf
 
@@ -42,6 +43,10 @@ class FsRunCreate(BaseModel):
     fy_start:  str
     fy_end:    str
     name:      Optional[str] = None
+    # Phase C.1 — scope (defaults to consolidation when absent).
+    scope_kind: Optional[str] = None
+    division_ids: Optional[list[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class FsRunOut(BaseModel):
@@ -83,9 +88,18 @@ async def create_run(
     if not client:
         raise HTTPException(404, "Client not found")
 
-    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    # Phase C.1 — resolve scope (defaults to consolidation when absent).
+    scope = await resolve_scope_for_request(
+        db, client_id=payload.client_id,
+        scope_kind=payload.scope_kind,
+        division_ids=payload.division_ids,
+        gstin_group_id=payload.gstin_group_id,
+    )
+
+    # Release 4.5 — upsert canonical working doc per (client_id, fy, scope_key)
     existing = await RUNS.find_one(
-        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"client_id": payload.client_id, "fy": payload.fy,
+         "scope_key": scope["scope_key"], "archived": False},
         {"_id": 0},
     )
     if existing:
@@ -107,6 +121,12 @@ async def create_run(
         "books_loaded":  False,
         "note_count":    0,
         "detail_count":  0,
+        # Phase C.1 — scope fields.
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
     }
     await RUNS.insert_one(run)
     run.pop("_id", None)

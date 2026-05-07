@@ -21,6 +21,11 @@ class RunCreate(BaseModel):
     fy: str
     name: Optional[str] = ""
     as_at_date: Optional[str] = ""  # YYYY-MM-DD; defaults to FY end on server
+    # Phase C.1 — multi-division scope (optional; defaults to consolidation
+    # when absent for backward compat with single-scope callers).
+    scope_kind: Optional[str] = None        # "consolidation" | "division" | "gstin_group"
+    division_ids: Optional[List[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class RunOut(BaseModel):

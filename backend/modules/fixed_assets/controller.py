@@ -24,6 +24,7 @@ from modules.auth.controller import get_current_user
 from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
 from modules.library.generations import append_generation, list_generations
+from modules.library.scope import resolve_scope_for_request
 from modules.fixed_assets.additions_xlsx import (
     block_drift,
     build_additions_workbook,
@@ -141,9 +142,18 @@ async def create_run(
     fy_start, fy_end = fy_dates(payload.fy)
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Release 4.5 — upsert canonical working doc per (client_id, fy)
+    # Phase C.1 — resolve scope (defaults to consolidation when absent).
+    scope = await resolve_scope_for_request(
+        db, client_id=payload.client_id,
+        scope_kind=payload.scope_kind,
+        division_ids=payload.division_ids,
+        gstin_group_id=payload.gstin_group_id,
+    )
+
+    # Release 4.5 — upsert canonical working doc per (client_id, fy, scope_key)
     existing = await RUNS.find_one(
-        {"client_id": payload.client_id, "fy": payload.fy, "archived": False},
+        {"client_id": payload.client_id, "fy": payload.fy,
+         "scope_key": scope["scope_key"], "archived": False},
         {"_id": 0},
     )
     if existing:
@@ -154,7 +164,7 @@ async def create_run(
 
     # Multi-FY continuity — if a prior run exists for this client, link it
     prior = await RUNS.find_one(
-        {"client_id": payload.client_id},
+        {"client_id": payload.client_id, "scope_key": scope["scope_key"]},
         {"_id": 0, "id": 1, "fy_end": 1},
         sort=[("fy_end", -1)],
     )
@@ -177,6 +187,12 @@ async def create_run(
         "created_by_email":  user.get("email") or "",
         "created_by_name":   user.get("name") or "",
         "rolled_from_run_id": rolled_from,
+        # Phase C.1 — scope fields.
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
     }
     await RUNS.insert_one(doc)
     doc.pop("_id", None)

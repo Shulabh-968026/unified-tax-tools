@@ -17,6 +17,7 @@ from modules.clause44.service import (
     is_valid_period,
 )
 from modules.clause44.exports import build_export_response
+from modules.library.scope import resolve_scope_for_request, parse_division_ids_form
 
 router = APIRouter()
 
@@ -169,6 +170,10 @@ async def upload_run(
     client_id: str = Form(...),
     period: str = Form(...),
     division_id: Optional[str] = Form(default=None),
+    # Phase C.1 — scope (optional; defaults to consolidation when absent).
+    scope_kind: Optional[str] = Form(default=None),
+    division_ids: Optional[str] = Form(default=None),
+    gstin_group_id: Optional[str] = Form(default=None),
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
@@ -179,14 +184,26 @@ async def upload_run(
         raise HTTPException(status_code=404, detail="Client not found")
     division_name = None
     if cli.get("type") == "multi":
-        if not division_id:
-            raise HTTPException(status_code=400, detail="division_id required for multi-division client")
-        match = next((d for d in (cli.get("divisions") or []) if d.get("division_id") == division_id), None)
-        if not match:
-            raise HTTPException(status_code=404, detail="Division not found in client")
-        division_name = match["name"]
+        if not division_id and not scope_kind:
+            raise HTTPException(status_code=400, detail="division_id or scope required for multi-division client")
+        if division_id:
+            match = next((d for d in (cli.get("divisions") or []) if d.get("division_id") == division_id), None)
+            if not match:
+                raise HTTPException(status_code=404, detail="Division not found in client")
+            division_name = match["name"]
     else:
         division_id = None
+
+    # Phase C.1 — resolve scope (defaults to consolidation when neither
+    # scope nor division_id provided; legacy callers with division_id
+    # auto-promote to scope_kind="division").
+    scope = await resolve_scope_for_request(
+        db, client_id=client_id,
+        scope_kind=scope_kind,
+        division_ids=parse_division_ids_form(division_ids),
+        gstin_group_id=gstin_group_id,
+        legacy_division_id=division_id,
+    )
 
     period = (period or "").strip()
     if not is_valid_period(period):
@@ -239,7 +256,7 @@ async def upload_run(
             "module": "clause44",
             "client_id": client_id,
             "period": period,
-            "division_id": division_id,
+            "scope_key": scope["scope_key"],
             "archived": False,
         },
         {"_id": 0, "run_id": 1, "pinned_files": 1},
@@ -322,6 +339,12 @@ async def upload_run(
         "generated": False,
         "pinned_files": pinned_files,                  # NEW · {file_type → file_id}
         "firm_id": firm_id,                            # NEW · forward-looking tenant key
+        # Phase C.1 — scope fields.
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
     }
     # Upsert: replace any existing canonical working doc; preserve audit
     # fields if we're updating an existing one.  Selections / generated

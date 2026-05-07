@@ -1,5 +1,66 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-C.1 · Multi-Division Phase C.1 — Schema + scope-aware upserts (2026-05-07 PM)
+
+Foundational backend lift for per-module run scoping. **Strictly additive
++ back-compat**: existing single-scope callers (no scope params) continue
+to work — they default to ``scope_kind="consolidation"``.
+
+### What shipped
+1. **`modules/library/scope.py`** — single source of truth for scope semantics:
+   - ``compute_scope_key(scope_kind, division_ids, gstin_group_id)`` → deterministic
+     index string (``"consolidation"`` | ``"div_<id>"`` | ``"divs_<id1>_<id2>"`` | ``"gstin_<id>"``).
+   - ``resolve_scope(client_doc, scope_kind, division_ids, gstin_group_id, legacy_division_id)``
+     → canonical scope payload (kind / ids / label / key / gstin_group_id).
+   - ``resolve_scope_for_request(db, client_id, ...)`` async wrapper used by every controller.
+2. **Migration script** `backend/scripts/scope_backfill_phase_c1_20260507.py`:
+   - Backfilled 59 active rows across 6 collections (runs, bc_runs, fa_runs,
+     gst_recon_runs, fs_runs, msme_sessions) with `scope_kind`/`division_ids`/
+     `scope_label`/`scope_key`.
+   - Dropped legacy `canonical_run_v45` index, created scope-aware
+     `canonical_run_v45_scoped` on `(firm_id, client_id, period_field, scope_key, archived)`.
+   - Idempotent; verified via dry-run + re-run (skipped 59 on second run).
+3. **All 6 module POST /runs endpoints** now:
+   - Accept optional `scope_kind`, `division_ids`, `gstin_group_id` params
+     (Pydantic body fields for BC/FA/GST/FS/MSME, Form fields for Clause 44).
+   - Resolve scope server-side (defaults to consolidation when absent).
+   - Use `scope_key` in the upsert lookup → one canonical doc per
+     `(client, period, scope_key)`.
+   - Persist `scope_kind`/`division_ids`/`scope_label`/`scope_key`/`gstin_group_id`
+     on the working doc.
+
+### Tests · 32 / 32 ✅
+- 9 new live tests (`tests/test_phase_c1_scope_runs.py`):
+  - BC default-consolidation persists scope ✅
+  - BC division-scoped run is distinct from consolidation ✅
+  - BC idempotent per scope ✅
+  - FA default consolidation ✅
+  - FA division-scope distinct doc ✅
+  - GST default consolidation ✅
+  - GST idempotent per scope ✅
+  - FS default consolidation ✅
+  - MSME default consolidation ✅
+- 23 prior regression tests (`test_release_4_5_collapse_live` · `test_phase_a_gstin_groups` · `test_bc_release_4_6_universal_recipients`) — all green.
+
+### Files touched
+**Backend (new):**
+- `modules/library/scope.py` — shared scope helpers + async resolver.
+- `scripts/scope_backfill_phase_c1_20260507.py` — migration + index rebuild.
+- `tests/test_phase_c1_scope_runs.py` — 9 live HTTP tests.
+
+**Backend (modified):**
+- `modules/balance_confirmation/schemas.py` · `modules/balance_confirmation/controller.py`
+- `modules/fixed_assets/schemas.py` · `modules/fixed_assets/controller.py`
+- `modules/gst_recon/schemas.py` · `modules/gst_recon/controller.py`
+- `modules/fin_statement/controller.py`
+- `modules/msme43bh/schemas.py` · `modules/msme43bh/controller.py`
+- `modules/clause44/controller.py`
+
+### Deferred to Phase C.2 / C.3
+- C.2 — Frontend wiring: pass page-level scope from `ClientUtilities` into every module's POST /runs.
+- C.2 — "Generate Consolidated" UX in clause44 / BC / MSME (per-division tabs + Totals tab).
+- C.3 — GST Recon working doc shifts from `(client, FY)` → `(client, FY, gstin_group_id)`; ingest validates GSTIN match against the group.
+
 ## Release 4.7-B · Multi-Division Phase B — Frontend scope + attribution UI (2026-05-07 PM)
 
 Phase B of the multi-division re-architecture (locked plan in PRD: 3 phases A → B → C).

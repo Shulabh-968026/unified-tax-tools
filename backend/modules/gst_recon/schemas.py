@@ -8,6 +8,10 @@ class RunCreate(BaseModel):
     client_id: str
     fy: str  # e.g. "2024-25"
     name: Optional[str] = None
+    # Phase C.1 — scope (defaults to consolidation when absent).
+    scope_kind: Optional[str] = None
+    division_ids: Optional[List[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class FileBucketItem(BaseModel):

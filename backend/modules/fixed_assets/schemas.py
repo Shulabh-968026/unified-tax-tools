@@ -12,6 +12,10 @@ class FaRunCreate(BaseModel):
     name: Optional[str] = ""
     fy_start: Optional[str] = ""  # YYYY-MM-DD; auto-derived from FY when missing
     fy_end: Optional[str] = ""    # YYYY-MM-DD
+    # Phase C.1 — scope (defaults to consolidation when absent).
+    scope_kind: Optional[str] = None
+    division_ids: Optional[List[str]] = None
+    gstin_group_id: Optional[str] = None
 
 
 class FaRunOut(BaseModel):
