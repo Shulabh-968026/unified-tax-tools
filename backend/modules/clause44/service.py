@@ -256,10 +256,11 @@ _INPUT_SYNONYMS_NAME = ("itc", "cenvat", "input tax credit")
 # Release 4.4.6 — Voucher-usage NEGATIVE list.  These patterns identify
 # BS-side ledgers that *do* touch purchase vouchers (TDS withheld on
 # contractor / professional bills, TCS collected on sales, advance-tax
-# clearings, bank-charge GST, statutory provisions) but are NOT input
-# tax credit.  When a ledger matches one of these, the voucher-usage
-# upgrade `other → input` is suppressed so it stays at `kind="other"`
-# and is never auto-pre-ticked.
+# clearings, bank-charge GST, statutory provisions, capital purchases
+# against PPE / CWIP, supplier advances, cash-credit draws against
+# borrowings) but are NOT input tax credit.  When a ledger matches one
+# of these, the voucher-usage upgrade `other → input` is suppressed so
+# it stays at `kind="other"` and is never auto-pre-ticked.
 #
 # The block applies ONLY to the usage upgrade — name-based "input" /
 # "output" detection still wins.  So a ledger called `Input TDS Cr`
@@ -275,29 +276,57 @@ _USAGE_BLOCK_GROUP_PATTERNS = (
     "advance taxes", "advance tax",
     "provisions",
 )
+# Release 4.4.7 — Head-level whitelist.  Per the auditor-curated
+# Schedule III taxonomy, ITC ledgers can ONLY sit under
+# `Other Current Assets` (where Input GST credits live) or
+# `Other Current Liabilities` (where Output GST liability lives).
+# Any BS-side ledger with a head OUTSIDE this whitelist (PPE, CWIP,
+# Loans & Advances, Borrowings, Trade Receivables/Payables, Cash,
+# Investments, Inventories, Equity, etc.) gets the usage upgrade
+# blocked unconditionally.  Genuine ITC ledgers under the whitelisted
+# heads continue to flow through both name- and usage-based detection.
+_ITC_ELIGIBLE_HEADS = (
+    "other current assets",
+    "other current liabilities",
+)
 
 
-def _is_blocked_from_usage_upgrade(name: str, group_parent: str) -> bool:
+def _is_blocked_from_usage_upgrade(name: str, group_parent: str, head: str = "") -> bool:
     """True when a ledger should NOT be upgraded to ``input`` via voucher-
     usage inference even if it appears on ≥ N purchase vouchers.
 
-    Implements the auditor-curated negative list (Bucket A from the
-    Mapping Snapshot review): TDS / TCS / Advance-Tax / Bank-charge GST
-    / penal-interest ledgers naturally touch purchase vouchers but are
-    statutory deductions, not ITC.
+    Implements two complementary auditor-curated rules (Buckets A + B
+    from successive Mapping Snapshot reviews):
 
-    Detection layers:
-      1. Name contains a TDS / TCS / advance-tax / penal-interest token.
-      2. Name matches the bank-charge-GST shape: contains "bank" AND
-         (one of "gst", "charge", "charges").
-      3. Group parent is a withholding-tax / bank / provisions bucket.
+      1. **Head whitelist** (Release 4.4.7):  if the ledger's *head* is
+         set and is NOT one of the two ITC-eligible heads
+         (`Other Current Assets`, `Other Current Liabilities`), block
+         the upgrade.  Catches Fixed Assets / CWIP / Loans & Advances /
+         Borrowings / Cash / Investments / Inventories / Equity rows
+         that touch purchase vouchers but can never be ITC.
+
+      2. **Name + group negative list** (Release 4.4.6):  for ledgers
+         that DO sit under an eligible head, block specific patterns:
+         TDS / TCS / advance-tax / penal-interest by name; bank-charge
+         GST by name shape; bank / advance-tax / provisions by group
+         parent.
+
+    The block applies ONLY when `name_kind == "other"` upstream — name-
+    side `Input ...` ledgers bypass the block via that gate.
     """
+    h = (head or "").strip().lower()
+    # Layer 1 — head whitelist (only when head is populated).
+    if h and h not in _ITC_ELIGIBLE_HEADS:
+        return True
     n = (name or "").lower()
     g = (group_parent or "").lower()
+    # Layer 2 — name token list.
     if any(p in n for p in _USAGE_BLOCK_NAME_PATTERNS):
         return True
+    # Bank-charge GST shape — `Bank GST`, `Bank Charges GST`, etc.
     if "bank" in n and any(k in n for k in ("gst", "charge", "charges")):
         return True
+    # Layer 3 — group parent negative list.
     if any(p in g for p in _USAGE_BLOCK_GROUP_PATTERNS):
         return True
     return False
@@ -558,9 +587,13 @@ def compute_suggestions(
         kind_source = c["kind_source"]
         # Release 4.4.6 — block usage upgrade for TDS / TCS / advance-tax
         # / bank-charge GST patterns (auditor-curated negative list).
+        # Release 4.4.7 — also block when the head is outside the ITC-
+        # eligible whitelist (PPE / CWIP / Loans / Borrowings / Cash etc.).
         usage_blocked = (
             c["name_kind"] == "other"
-            and _is_blocked_from_usage_upgrade(c["name"], c["groupParent"])
+            and _is_blocked_from_usage_upgrade(
+                c["name"], c["groupParent"], c.get("head", ""),
+            )
         )
         if kind == "other" and usage_kind in ("input", "output") and not usage_blocked:
             kind = usage_kind
@@ -759,9 +792,13 @@ def compute_pools(
         # contractor bills, etc.) but they aren't ITC.  Name-side input
         # signals still win, so a ledger explicitly named "Input ..."
         # is unaffected.
+        # Release 4.4.7 — also block when the head is outside the ITC-
+        # eligible whitelist (PPE / CWIP / Loans / Borrowings / Cash etc.).
         usage_blocked = (
             name_kind == "other"
-            and _is_blocked_from_usage_upgrade(r["name"], r["group_parent"])
+            and _is_blocked_from_usage_upgrade(
+                r["name"], r["group_parent"], r.get("head", ""),
+            )
         )
         if kind == "other" and usage_kind in ("input", "output") and not usage_blocked:
             kind, ksource = usage_kind, "usage"

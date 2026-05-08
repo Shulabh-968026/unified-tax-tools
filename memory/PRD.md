@@ -1,5 +1,40 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 ITC Auto-Selection — Head-level whitelist (Release 4.4.7, 2026-02-09)
+
+**User feedback (continued)**: After Release 4.4.6 shipped, user reviewed a fresh Mapping Snapshot and reported 26 *more* wrong-tick ledgers — Plant & Machinery, Office Equipments, Buildings, Computers, Capital Work-in-Progress, vendor advances (Advance for Materials), Other Loans & Advances, and Cash Credit (Axis CC, Yes Bank CC). All shared `kind = input` / `kind_source = usage` / `in_default_view = No` / `Auto-Suggested = No` but `Currently Selected = Yes` (stale ticks).
+
+**Root cause**: Release 4.4.6's negative list targeted only TDS / TCS / Advance-Tax / Bank-charge GST patterns. It did not block the voucher-usage upgrade for Fixed Assets / CWIP / Loans & Advances / Borrowings ledgers, all of which legitimately touch purchase vouchers (capital purchases hit PPE; supplier advances hit Loans & Advances; cash credit hits Borrowings). The voucher walker counted them and upgraded them to `kind=input`, which prevented Fix 2's frontend cleanup (`c.kind !== "input"`) from dropping them.
+
+### What shipped — Fix 3 (head-level whitelist)
+
+**Backend** (`modules/clause44/service.py`):
+- New constant `_ITC_ELIGIBLE_HEADS = {"other current assets", "other current liabilities"}` — the only two Schedule III heads where ITC ledgers can sit per the auditor-curated taxonomy.
+- Extended `_is_blocked_from_usage_upgrade(name, group_parent, head="")` — adds a head whitelist check at the top: if `head` is set and not in the eligible set, block the usage upgrade unconditionally.
+- Existing TDS/TCS/Bank-GST name & group rules preserved (handle the in-eligible-head bucket: e.g. TDS Payable sits under `Other Current Liabilities`).
+- Both `_enrich_itc` (compute_pools, current 3-pool model) and legacy `compute_suggestions` updated to pass `head` through.
+
+**Frontend**: no change — Fix 2 cleanup already drops rows where `kind !== "input"`. After Fix 3, blocked rows have `kind = "other"`, so cleanup catches them on next page load.
+
+### Verified
+- 11 new offline unit tests in `tests/test_clause44_itc_negative_list.py` (28 total in file, all green):
+  - Head-block: PPE / CWIP / Short Term Loans / Short Term Borrowings.
+  - Eligible-head pass-through: `Other Current Assets`, `Other Current Liabilities`.
+  - End-to-end: 21-row screenshot replay → all 21 get `kind = "other"`, none auto-pre-ticked.
+  - Regression guard: bespoke `Tax-Cr-Misc-A2` under `Other Current Assets` with whitelisted subhead → still upgrades to input via usage and pre-ticks (no regression on real ITC).
+- Existing 47-test suite green; pre-existing live-test failures unchanged.
+
+### How to verify in live data
+1. Open the Tiruppur Clause 44 run again.
+2. Cleanup toast fires once on load — drops 26 stale ticks: *"ITC selection cleaned up — Dropped 26 stale tick(s)…"*.
+3. Click `Mapping Snapshot` → re-download → all 26 PPE/CWIP/Loans/Borrowings ledgers now show `Currently Selected = No`, `kind = other`, `kind_source = ""`.
+
+### Files touched
+**Backend:** `modules/clause44/service.py` (added `_ITC_ELIGIBLE_HEADS`; extended `_is_blocked_from_usage_upgrade` signature with `head` param; threaded `head` through `_enrich_itc` and `compute_suggestions`).
+
+**Tests:** `tests/test_clause44_itc_negative_list.py` (extended from 12 → 23 tests; full file now 28 incl. the original 5 tests).
+
+
 ## Bugfix · Clause 44 ITC Auto-Selection — TDS/TCS False Positives (Release 4.4.6, 2026-02-09)
 
 **User feedback** (after reviewing Mapping Snapshot for client GMS Processors): 9 wrong auto-selections in the ITC pool — TCS Receivable, TDS Form 16A-26AS, six TDS Payable variants, and Bank GST. All shared `Kind Source = "usage"`.

@@ -188,3 +188,205 @@ def test_compute_pools_blocks_full_user_reported_negative_list():
     assert wrongly_pretticked == [], (
         f"These ledgers are still wrongly pre-ticked: {wrongly_pretticked}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Release 4.4.7 — Head whitelist tests
+# ─────────────────────────────────────────────────────────────────────────
+def test_block_helper_blocks_property_plant_equipment_head():
+    # Plant / Buildings / Office Equipments / Machinery / Computers all
+    # have head = `Property, Plant and Equipment` — block fires on head
+    # alone regardless of name / group.
+    assert _is_blocked_from_usage_upgrade(
+        "Plant & Machinery @ 18%", "Plant & Machineries", "Property, Plant and Equipment",
+    ) is True
+    assert _is_blocked_from_usage_upgrade(
+        "Office Equipments @ 18%", "Office Equipments", "Property, Plant and Equipment",
+    ) is True
+    assert _is_blocked_from_usage_upgrade(
+        "Factory Building @ 18%", "Factory Buildings", "Property, Plant and Equipment",
+    ) is True
+
+
+def test_block_helper_blocks_capital_wip_head():
+    assert _is_blocked_from_usage_upgrade(
+        "Plant & Machinery @ 18% - Work-in-Progress",
+        "Plant & Machinery - Under work",
+        "Capital Work-in-progress",
+    ) is True
+
+
+def test_block_helper_blocks_short_term_loans_head():
+    # Vendor advances + Loans & Advances both sit under
+    # `Short Term Loans and Advances`.
+    assert _is_blocked_from_usage_upgrade(
+        "A.J.Filament House - Tirupur", "Sundry Crs - Yarn & Fabric",
+        "Short Term Loans and Advances",
+    ) is True
+    assert _is_blocked_from_usage_upgrade(
+        "Crispy Knits - Tirupur", "Sundry Crs - Garment & Fabric",
+        "Short Term Loans and Advances",
+    ) is True
+
+
+def test_block_helper_blocks_short_term_borrowings_head():
+    # Cash Credit accounts sit under `Short Term Borrowings`.
+    assert _is_blocked_from_usage_upgrade(
+        "Axis CC A/c No.923030069522010", "Cash Credit from Banks",
+        "Short Term Borrowings",
+    ) is True
+
+
+def test_block_helper_allows_eligible_other_current_assets_head():
+    """Sanity — head whitelist must not regress real ITC ledgers."""
+    # `Other Current Assets` is an eligible head.  With name_kind = other
+    # and no name/group block patterns, the helper returns False so the
+    # usage upgrade can fire.
+    assert _is_blocked_from_usage_upgrade(
+        "Tax-Cr-Misc-A2", "GST Receivable", "Other Current Assets",
+    ) is False
+
+
+def test_block_helper_allows_eligible_other_current_liabilities_head():
+    assert _is_blocked_from_usage_upgrade(
+        "Custom Output Tag", "GST Liability", "Other Current Liabilities",
+    ) is False
+
+
+def test_compute_pools_blocks_ppe_ledger_from_usage_upgrade():
+    name = "Plant & Machinery @ 18%"
+    ledgers_xlsx = {
+        name: _bs_ledger_xlsx(
+            name, "Plant and Machinery", "Plant & Machineries",
+            head="Property, Plant and Equipment",
+        ),
+    }
+    vouchers = _make_purchase_vouchers([name], n=8)
+    pools = compute_pools(ledgers_xlsx, [], vouchers)
+    rows = {r["name"]: r for r in pools["itc_ledgers_all_bs"]}
+    r = rows[name]
+    assert r["kind"] == "other", f"PPE ledger upgraded to input despite block: {r}"
+    assert r["kind_source"] != "usage"
+    assert r["suggested"] is False
+
+
+def test_compute_pools_blocks_vendor_advance_from_usage_upgrade():
+    name = "A.J.Filament House - Tirupur"
+    ledgers_xlsx = {
+        name: _bs_ledger_xlsx(
+            name, "Advance for Materials", "Sundry Crs - Yarn & Fabric",
+            head="Short Term Loans and Advances",
+        ),
+    }
+    vouchers = _make_purchase_vouchers([name], n=5)
+    pools = compute_pools(ledgers_xlsx, [], vouchers)
+    rows = {r["name"]: r for r in pools["itc_ledgers_all_bs"]}
+    r = rows[name]
+    assert r["kind"] == "other"
+    assert r["suggested"] is False
+
+
+def test_compute_pools_blocks_cash_credit_from_usage_upgrade():
+    name = "Axis CC A/c No.923030069522010"
+    ledgers_xlsx = {
+        name: _bs_ledger_xlsx(
+            name, "Open Cash Credit from Banks", "Cash Credit from Banks",
+            head="Short Term Borrowings",
+        ),
+    }
+    vouchers = _make_purchase_vouchers([name], n=118)
+    pools = compute_pools(ledgers_xlsx, [], vouchers)
+    rows = {r["name"]: r for r in pools["itc_ledgers_all_bs"]}
+    r = rows[name]
+    assert r["kind"] == "other"
+    assert r["suggested"] is False
+
+
+def test_compute_pools_blocks_full_screenshot_negative_list():
+    """End-to-end check replaying every Wrong row from the 2026-02-09
+    screenshot — 26 ledgers covering PPE / CWIP / Loans / Borrowings."""
+    cases = [
+        # (name, subhead, group_parent, head)
+        ("A.J.Filament House - Tirupur", "Advance for Materials",
+         "Sundry Crs -Yarn & Fabric", "Short Term Loans and Advances"),
+        ("Arun Electronics - Delhi", "Advance for Materials",
+         "Sundry Crs - Garments Access", "Short Term Loans and Advances"),
+        ("Axis CC A/c No.923030069522010", "Open Cash Credit from Banks",
+         "Cash Credit from Banks", "Short Term Borrowings"),
+        ("Computers & Spares @ 18%", "Computers", "Computers",
+         "Property, Plant and Equipment"),
+        ("Crispy Knits - Tirupur", "Other Loans and Advances",
+         "Sundry Crs - Garment & Fabric", "Short Term Loans and Advances"),
+        ("Factory Building @ 18%", "Buildings", "Factory Buildings",
+         "Property, Plant and Equipment"),
+        ("Ganesa Textile Mills - Tirupur", "Other Loans and Advances",
+         "Sundry Crs - Electricity", "Short Term Loans and Advances"),
+        ("Karuthan Trading - Tirupur", "Advance for Materials",
+         "Sundry Crs - Repair & Mainten", "Short Term Loans and Advances"),
+        ("Machinery Spares & Parts @ 18%", "Plant and Machinery",
+         "Plant & Machineries", "Property, Plant and Equipment"),
+        ("Machinery Spares - Import", "Plant and Machinery",
+         "Plant & Machineries", "Property, Plant and Equipment"),
+        ("Office Equipments @ 18%", "Office Equipments", "Office Equipments",
+         "Property, Plant and Equipment"),
+        ("Office Equipments @ 28%", "Office Equipments", "Office Equipments",
+         "Property, Plant and Equipment"),
+        ("Plant & Machinery @ 18%", "Plant and Machinery", "Plant & Machineries",
+         "Property, Plant and Equipment"),
+        ("Plant & Machinery @ 18% - Work-in-Progress", "Capital work-in-Progress",
+         "Plant & Machinery - Under work", "Capital Work-in-progress"),
+        ("RCS Construction - Tirupur", "Advance for Capital Assets",
+         "Sundry Crs - Building Work", "Short Term Loans and Advances"),
+        ("SBI General Insurance Co Ltd", "Other Loans and Advances",
+         "Sundry Crs - Insurance", "Short Term Loans and Advances"),
+        ("Sri Ram Printerss - Tirupur", "Advance for Materials",
+         "Sundry Crs - Garments Access", "Short Term Loans and Advances"),
+        ("TamilNadu Generation and Distribution Corp", "Other Loans and Advances",
+         "Sundry Crs - Electricity", "Short Term Loans and Advances"),
+        ("Venus Print Tech India - Tirupur", "Advance for Materials",
+         "Sundry Crs - Garments Access", "Short Term Loans and Advances"),
+        ("Victus Dyeings (Knitting Division) - Tirupur", "Other Loans and Advances",
+         "Sundry Crs - Knitting", "Short Term Loans and Advances"),
+        ("Yes Bank CC A/c No.041984600001535", "Open Cash Credit from Banks",
+         "Cash Credit from Banks", "Short Term Borrowings"),
+    ]
+    ledgers_xlsx = {
+        n: _bs_ledger_xlsx(n, sh, gp, head=hd) for n, sh, gp, hd in cases
+    }
+    vouchers = _make_purchase_vouchers([n for n, _, _, _ in cases], n=10)
+
+    pools = compute_pools(ledgers_xlsx, [], vouchers)
+    rows = {r["name"]: r for r in pools["itc_ledgers_all_bs"]}
+
+    # Every row should be classified as 'other' (block fires on head).
+    upgraded_to_input = [n for n in rows if rows[n]["kind"] == "input"]
+    assert upgraded_to_input == [], (
+        f"These ledgers were still upgraded to input despite head block: {upgraded_to_input}"
+    )
+    # And none should be auto-pre-ticked.
+    pretticked = [n for n in rows if rows[n]["suggested"]]
+    assert pretticked == [], (
+        f"These ledgers are still wrongly pre-ticked: {pretticked}"
+    )
+
+
+def test_compute_pools_does_not_regress_genuine_itc_in_eligible_head():
+    """A bespoke-named ITC ledger under `Other Current Assets` (eligible
+    head) with vouchers should still be upgraded to input via usage."""
+    name = "Tax-Cr-Misc-A2"  # bespoke name — no input/output token
+    ledgers_xlsx = {
+        name: _bs_ledger_xlsx(
+            name, "Balance with Revenue Authorities", "GST Recoverable",
+            head="Other Current Assets",
+        ),
+    }
+    vouchers = _make_purchase_vouchers([name], n=10)
+    pools = compute_pools(ledgers_xlsx, [], vouchers)
+    rows = {r["name"]: r for r in pools["itc_ledgers_all_bs"]}
+    r = rows[name]
+    # Head is eligible → no head-block.  Group/name don't match negative
+    # list either → usage upgrade fires.
+    assert r["kind"] == "input"
+    assert r["kind_source"] == "usage"
+    assert r["in_default_view"] is True       # subhead is whitelisted
+    assert r["suggested"] is True             # in default view + input + usage
