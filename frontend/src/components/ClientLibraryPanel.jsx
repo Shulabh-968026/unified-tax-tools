@@ -373,13 +373,34 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
     : null;
   // Phase D — gate.allowed=false → row stays visible but greyed/disabled.
   const masked = !gate.allowed;
-  // Static badge label for the row (no dropdown; purely informational).
+  // Static badge label for the row.
+  // Phase D fix (2026-05-08) — when a file IS uploaded, the badge must
+  // reflect the file's ACTUAL persisted ``division_ids`` (read from the
+  // server), not the auditor's currently-selected page scope.  Otherwise
+  // a Tiruppur-only upload would mislabel as "Mumbai Division" the
+  // moment the auditor flips scope to Mumbai.
   const scopeBadge = (() => {
     if (!isMulti || isOutput) return null;
+    const persisted = Array.isArray(file.division_ids) ? file.division_ids : [];
+    const allDivIds = divisions.map((d) => d.division_id);
+    const isAllDivs = persisted.length > 0 && allDivIds.every((id) => persisted.includes(id));
+
+    if (isUploaded) {
+      if (isAllDivs) return { tone: "emerald", label: "All divisions" };
+      if (persisted.length === 1) {
+        const d = divisions.find((x) => x.division_id === persisted[0]);
+        return { tone: "slate", label: d?.name || "Division" };
+      }
+      if (persisted.length > 1) return { tone: "slate", label: `${persisted.length} divisions` };
+      // Legacy upload (no division_ids) — fall through to attribution-default
+      // badge so the row still labels itself.
+    }
+
+    // Not uploaded yet (or legacy file with no division_ids) — show what
+    // scope this file belongs to so the auditor knows whether they need
+    // to switch.
     const attr = file.default_attribution || "current_division";
     if (attr === "current_division") {
-      // Show the actual division name when the auditor IS in division
-      // scope; else label generically as "Per-division".
       if (pageScopeKind === "division") {
         const d = divisions.find((x) => x.division_id === (division || ""));
         return { tone: "slate", label: d?.name || "Division" };

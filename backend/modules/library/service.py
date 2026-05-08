@@ -385,14 +385,63 @@ async def compute_client_status(
 ) -> dict:
     """Summarise the engagement: per-file-type chip data + per-module
     outdated/missing flags.  Drives the ClientHome Library panel and the
-    9-tile catalog badges in one round-trip."""
+    9-tile catalog badges in one round-trip.
+
+    Phase D fix (2026-05-08) — properly filter ``client_files`` by the
+    caller's scope so files uploaded under one division don't bleed into
+    another division's view:
+
+      * ``division`` non-empty → scope is a single division.  Show files
+        attributed to that division (``division`` ∈ ``division_ids``)
+        plus pre-Phase-B legacy uploads where ``division_ids`` is
+        empty/missing AND the legacy ``division`` field matches.
+      * ``division`` empty + multi-div client → scope is Consolidation.
+        Show files attributed to ALL the client's divisions (true
+        consolidation uploads) plus legacy uploads with no division
+        binding.
+      * Single-entity client → no division filtering (everything is
+        engagement-wide by definition).
+    """
+
+    cli = await db.clients.find_one(
+        {"client_id": client_id},
+        {"_id": 0, "client_id": 1, "type": 1, "divisions": 1},
+    ) or {}
+    is_multi = bool((cli.get("divisions") or [])) and cli.get("type") == "multi"
+    all_div_ids = [
+        d.get("division_id") for d in (cli.get("divisions") or [])
+        if d.get("division_id")
+    ]
+
+    base_q = {
+        "firm_id": firm_id, "client_id": client_id, "period": period,
+        "is_current": True, "soft_deleted_at": None,
+    }
+    file_query = dict(base_q)
+
+    if is_multi:
+        if division:
+            # Per-division view: this division's files + legacy uploads.
+            file_query["$or"] = [
+                {"division_ids": division},
+                {"division_ids": {"$in": [None, []]}, "division": division},
+                {"division_ids": {"$exists": False}, "division": division},
+            ]
+        else:
+            # Consolidation view (multi-div, no division supplied):
+            # files attributed to ALL divisions are true engagement-wide
+            # uploads.  Legacy uploads with no division-binding stay
+            # visible too (back-compat for pre-Phase-B data).
+            consol_or = [
+                {"division_ids": {"$in": [None, []]}, "division": {"$in": [None, ""]}},
+                {"division_ids": {"$exists": False}, "division": {"$in": [None, ""]}},
+            ]
+            if all_div_ids:
+                consol_or.append({"division_ids": {"$all": all_div_ids}})
+            file_query["$or"] = consol_or
 
     # File-type rollup — for each catalog entry, the current version (or null).
-    files = await db.client_files.find(
-        {"firm_id": firm_id, "client_id": client_id, "period": period,
-         "is_current": True, "soft_deleted_at": None},
-        {"_id": 0},
-    ).to_list(length=200)
+    files = await db.client_files.find(file_query, {"_id": 0}).to_list(length=200)
     by_type = {f["file_type"]: f for f in files}
     file_chips = []
     from modules.library.catalog import FILE_TYPES_WITH_TEMPLATES

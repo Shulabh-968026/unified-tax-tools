@@ -1,5 +1,23 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Library cross-division bleed (2026-05-08, post-Release 4.7-D)
+
+**Bug**: After uploading Books JSON + Ledger Mapping under Tiruppur Division, switching scope to Mumbai Division still showed both files as "uploaded" with a `REPLACE` button — they'd appeared to bleed across divisions.
+
+**Root cause**: `compute_client_status()` in `modules/library/service.py` queried `client_files` filtering only by `firm_id/client_id/period/is_current/soft_deleted_at` — the `division` parameter was accepted by the function signature but never actually used in the query.  Plus the frontend badge displayed the page-level scope's division name even when a file was uploaded under a different division.
+
+**Fix**:
+1. **Backend** — `compute_client_status` now applies a scope-aware `$or` filter to `client_files`:
+   - **division=non-empty** → `division ∈ division_ids` OR legacy uploads where `division_ids` is empty/missing AND legacy `division` field matches.
+   - **division=empty + multi-div** (Consolidation view) → `division_ids` covers ALL the client's divisions (true engagement-wide upload) OR legacy uploads with no division-binding.
+   - **single-entity client** → no division filtering (back-compat).
+2. **Frontend** — `ClientLibraryPanel`'s `scopeBadge` now reflects the file's persisted `division_ids` when uploaded (e.g. file uploaded under Tiruppur shows `TIRIUPPUR DIVISION` even when the auditor flips scope to Mumbai). Falls back to the page-level scope guidance only when a row is empty.
+
+**Verified**:
+- Live curl: under Tiruppur scope `books_json.uploaded=True division_ids=['div_2fe…']`; under Mumbai scope `books_json.uploaded=False`; under Consolidation `books_json.uploaded=False`.
+- Frontend smoke: Mumbai scope shows `UPLOAD` button with "REQUIRED" tag on books + ledger; Tiruppur scope shows `REPLACE` with `TIRIUPPUR DI…` badge.
+- 47/47 backend regression tests still green.
+
 ## Release 4.7-D · Library Scope Unification (2026-05-08)
 
 User feedback after Phase C ship: the page-level Scope selector + the per-Library Division dropdown + per-row Attribution popover were three controls fighting for the same job. Collapse to one source of truth — the page-level Scope.
