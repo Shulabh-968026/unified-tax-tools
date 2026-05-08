@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Cookie, Header, Query
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Cookie, Header, Query, Body
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
@@ -128,9 +128,48 @@ DEFAULT_DISCLAIMER = (
 )
 
 
+async def _ensure_run_data(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Phase D · lazy-load helper.
+
+    Some runs are stored without their heavy ``accounting`` + ``ledgers_xlsx``
+    payloads inline (Phase D's POST /runs/from-library — necessary because
+    a 16 MB books JSON inflates a single Mongo doc past the 16 MB BSON
+    limit when serialised together with metadata).
+
+    This helper transparently re-hydrates those fields from the pinned
+    Library files so the rest of the controller can keep treating the
+    run as a self-contained dict.  Legacy runs (with inline blobs) are
+    returned untouched.
+    """
+    has_acc = bool(run.get("accounting"))
+    has_led = bool(run.get("ledgers_xlsx"))
+    if has_acc and has_led:
+        return run
+    pf = run.get("pinned_files") or {}
+    if not pf:
+        return run
+    from modules.library import service as lib_svc
+    if not has_acc and pf.get("books_json"):
+        try:
+            data = await lib_svc.read_file_bytes(pf["books_json"])
+            run["accounting"] = json.loads(data.decode("utf-8"))
+        except Exception:
+            run["accounting"] = run.get("accounting") or {}
+    if not has_led and pf.get("ledger_mapping_xlsx"):
+        try:
+            data = await lib_svc.read_file_bytes(pf["ledger_mapping_xlsx"])
+            run["ledgers_xlsx"] = parse_ledger_xlsx(data)
+        except Exception:
+            run["ledgers_xlsx"] = run.get("ledgers_xlsx") or {}
+    return run
+
+
 def _run_classification(run: Dict[str, Any]) -> Dict[str, Any]:
     """Re-run the Clause 44 engine against a run's persisted selections
     (used for both initial generate and silent re-classification on GET).
+
+    The caller is responsible for ensuring the run dict already carries
+    populated ``accounting`` + ``ledgers_xlsx`` (see ``_ensure_run_data``).
     """
     accounting = run.get("accounting", {}) or {}
     ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
@@ -332,8 +371,6 @@ async def upload_run(
         "json_filename": accounting_json.filename,
         "xlsx_filename": ledger_xlsx.filename,
         "company_name": company_name,
-        "accounting": accounting,
-        "ledgers_xlsx": ledgers_xlsx,
         "itc_candidates": suggestions["itc_candidates"],
         "pl_ledgers": suggestions["pl_ledgers"],
         "generated": False,
@@ -346,6 +383,24 @@ async def upload_run(
         "scope_key":      scope["scope_key"],
         "gstin_group_id": scope["gstin_group_id"],
     }
+    # Phase D — keep the doc lean if the books JSON would push us past
+    # Mongo's 16 MB BSON ceiling.  ``_ensure_run_data`` re-hydrates from
+    # the pinned Library file on demand.
+    json_size = (json_bytes := getattr(accounting_json, "_size_bytes", None))  # noqa
+    json_size = json_size or 0
+    if json_size == 0:
+        try:
+            json_size = len(json.dumps(accounting).encode("utf-8"))
+        except Exception:
+            json_size = 0
+    if json_size > 12 * 1024 * 1024:
+        doc["lazy_books"] = True
+        doc["accounting"] = {}
+        doc["ledgers_xlsx"] = {}
+    else:
+        doc["lazy_books"] = False
+        doc["accounting"] = accounting
+        doc["ledgers_xlsx"] = ledgers_xlsx
     # Upsert: replace any existing canonical working doc; preserve audit
     # fields if we're updating an existing one.  Selections / generated
     # flag are intentionally reset because the books were re-uploaded.
@@ -364,6 +419,201 @@ async def upload_run(
         "ledgers_count": len(accounting.get("ledgers", [])),
         "itc_candidates": suggestions["itc_candidates"],
         "pl_ledgers": suggestions["pl_ledgers"],
+    }
+
+
+@router.post("/runs/from-library")
+async def create_run_from_library(
+    request: Request,
+    payload: Dict[str, Any] = Body(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase D refinement (2026-05-08) — create (or upsert) a Clause 44
+    run using files ALREADY pinned in the Client Library.  Eliminates
+    the duplicate "Upload Books" prompt when ``books_json`` and
+    ``ledger_mapping_xlsx`` are already present in the Library for the
+    target ``(client, period, scope)``.
+
+    Body:
+      ``client_id``: str
+      ``period``:    str
+      ``scope_kind``:    Optional[str]   ("division" | "consolidation" | "gstin_group")
+      ``division_ids``:  Optional[list[str]]
+      ``gstin_group_id``: Optional[str]
+      ``division_id``:   Optional[str]   (legacy convenience)
+
+    Returns the run summary in the same shape as POST /runs.
+    """
+    user = await get_current_user(request, session_token, authorization)
+
+    client_id = (payload.get("client_id") or "").strip()
+    period    = (payload.get("period") or "").strip()
+    if not client_id or not period:
+        raise HTTPException(400, "client_id and period are required")
+    if not is_valid_period(period):
+        raise HTTPException(400, "Invalid period format. Use formats like '2023-24'.")
+
+    cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
+    if not cli:
+        raise HTTPException(404, "Client not found")
+
+    # Resolve scope.  For multi-div clients, we need either a scope or
+    # a legacy division_id; for single-entity, we accept either.
+    division_id = (payload.get("division_id") or "").strip() or None
+    division_name = None
+    if cli.get("type") == "multi" and division_id:
+        match = next((d for d in (cli.get("divisions") or []) if d.get("division_id") == division_id), None)
+        if not match:
+            raise HTTPException(404, "Division not found in client")
+        division_name = match["name"]
+    scope = await resolve_scope_for_request(
+        db, client_id=client_id,
+        scope_kind=payload.get("scope_kind"),
+        division_ids=payload.get("division_ids"),
+        gstin_group_id=payload.get("gstin_group_id"),
+        legacy_division_id=division_id,
+    )
+    if scope["scope_kind"] == "division" and not division_id and scope["division_ids"]:
+        division_id = scope["division_ids"][0]
+        match = next((d for d in (cli.get("divisions") or []) if d.get("division_id") == division_id), None)
+        division_name = match["name"] if match else None
+
+    # ── Library pull ────────────────────────────────────────────────────
+    from modules.library import service as lib_svc
+    from modules.library.controller import DEFAULT_FIRM_ID
+    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+
+    books_doc = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=client_id, period=period,
+        division=division_id, file_type="books_json",
+    )
+    xlsx_doc = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=client_id, period=period,
+        division=division_id, file_type="ledger_mapping_xlsx",
+    )
+    missing = [k for k, v in (("books_json", books_doc), ("ledger_mapping_xlsx", xlsx_doc)) if not v]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Required Library files are not uploaded for this scope: "
+                + ", ".join(missing)
+                + ". Upload them in the Data Library first, or use the legacy upload flow."
+            ),
+        )
+
+    accounting_json_bytes = await lib_svc.read_file_bytes(books_doc["file_id"])
+    ledger_xlsx_bytes     = await lib_svc.read_file_bytes(xlsx_doc["file_id"])
+
+    try:
+        accounting = json.loads(accounting_json_bytes.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"Invalid books JSON in Library: {e}")
+
+    books_company = _extract_company_name(accounting)
+    if books_company and not _company_names_match(cli.get("name", ""), books_company):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The pinned books JSON in the Library belongs to "
+                f"\u201c{books_company}\u201d, but this file is for "
+                f"\u201c{cli.get('name')}\u201d. Re-pin the correct file in the Library."
+            ),
+        )
+
+    try:
+        ledgers_xlsx = parse_ledger_xlsx(ledger_xlsx_bytes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse ledger mapping in Library: {e}")
+
+    suggestions = compute_suggestions(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
+
+    # ── Single-working-doc upsert (Release 4.5) ─────────────────────────
+    existing = await db.runs.find_one(
+        {
+            "module": "clause44",
+            "client_id": client_id,
+            "period": period,
+            "scope_key": scope["scope_key"],
+            "archived": False,
+        },
+        {"_id": 0, "run_id": 1, "pinned_files": 1},
+    )
+    if existing:
+        run_id = existing["run_id"]
+        for fid in (existing.get("pinned_files") or {}).values():
+            if fid:
+                try:
+                    await lib_svc.unpin_file_from_run(fid, run_id)
+                except Exception:
+                    pass
+    else:
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+    company_name = books_company or books_doc.get("filename_original") or "books.json"
+
+    pinned_files = {
+        "books_json": books_doc["file_id"],
+        "ledger_mapping_xlsx": xlsx_doc["file_id"],
+    }
+    await lib_svc.pin_file_to_run(books_doc["file_id"], run_id)
+    await lib_svc.pin_file_to_run(xlsx_doc["file_id"], run_id)
+
+    doc = {
+        "run_id": run_id,
+        "module": "clause44",
+        "user_id": user["user_id"],
+        "created_by_user_id": user["user_id"],
+        "created_by_name": user.get("name") or user.get("email"),
+        "created_by_email": user.get("email"),
+        "client_id": client_id,
+        "client_name": cli.get("name"),
+        "client_file_number": cli.get("file_number"),
+        "client_type": cli.get("type"),
+        "period": period,
+        "division_id": division_id,
+        "division_name": division_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "archived": False,
+        "json_filename": books_doc.get("filename_original") or "books.json",
+        "xlsx_filename": xlsx_doc.get("filename_original") or "ledger_mapping.xlsx",
+        "company_name": company_name,
+        # Phase D — keep the run doc lean (BSON 16 MB ceiling).  The
+        # heavy ``accounting`` and ``ledgers_xlsx`` payloads stay in the
+        # pinned Library files and are re-hydrated on demand by
+        # ``_ensure_run_data``.
+        "lazy_books": True,
+        "itc_candidates": suggestions["itc_candidates"],
+        "pl_ledgers": suggestions["pl_ledgers"],
+        "generated": False,
+        "pinned_files": pinned_files,
+        "firm_id": firm_id,
+        "scope_kind":     scope["scope_kind"],
+        "division_ids":   scope["division_ids"],
+        "scope_label":    scope["scope_label"],
+        "scope_key":      scope["scope_key"],
+        "gstin_group_id": scope["gstin_group_id"],
+    }
+    await db.runs.replace_one({"run_id": run_id}, doc, upsert=True)
+
+    return {
+        "run_id": run_id,
+        "client_id": client_id,
+        "period": period,
+        "division_id": division_id,
+        "division_name": division_name,
+        "company_name": company_name,
+        "vouchers_count": len(accounting.get("vouchers", [])),
+        "ledgers_count": len(accounting.get("ledgers", [])),
+        "itc_candidates": suggestions["itc_candidates"],
+        "pl_ledgers": suggestions["pl_ledgers"],
+        "from_library": True,
     }
 
 
@@ -399,6 +649,8 @@ async def get_run(
 ):
     await get_current_user(request, session_token, authorization)
     run = await _fetch_run(run_id)
+    # Phase D — re-hydrate lazy run data from pinned Library files when needed.
+    run = await _ensure_run_data(run)
     # Recompute ITC / P&L suggestions on every GET so runs uploaded before a
     # classifier-policy change pick up the new behaviour without re-upload.
     ledgers_xlsx = run.get("ledgers_xlsx", {}) or {}
@@ -507,6 +759,9 @@ async def generate_run(
 ):
     user = await get_current_user(request, session_token, authorization)
     run = await _fetch_run(run_id)
+    # Phase D — re-hydrate lazy run data so `_run_classification` has
+    # the books / ledger maps it needs.
+    run = await _ensure_run_data(run)
 
     itc_set = set(body.itc_ledgers or [])
     excluded = set(body.excluded_ledgers or [])
@@ -669,8 +924,6 @@ async def rerun(
     await lib_svc.pin_file_to_run(latest_xlsx["file_id"], run_id)
 
     update_doc = {
-        "accounting": accounting,
-        "ledgers_xlsx": ledgers_xlsx,
         "itc_candidates": suggestions["itc_candidates"],
         "pl_ledgers": suggestions["pl_ledgers"],
         "json_filename": latest_books["filename_original"],
@@ -687,6 +940,16 @@ async def rerun(
         "rerun_at": datetime.now(timezone.utc).isoformat(),
         "rerun_by_email": user.get("email"),
     }
+    # Phase D — keep the doc lean if either the existing run was lazy or
+    # the books JSON would push the doc past Mongo's 16 MB BSON ceiling.
+    if run.get("lazy_books") or latest_books.get("size_bytes", 0) > 12 * 1024 * 1024:
+        update_doc["lazy_books"] = True
+        update_doc["accounting"] = {}
+        update_doc["ledgers_xlsx"] = {}
+    else:
+        update_doc["lazy_books"] = False
+        update_doc["accounting"] = accounting
+        update_doc["ledgers_xlsx"] = ledgers_xlsx
     await db.runs.update_one({"run_id": run_id}, {"$set": update_doc})
     return {
         "run_id": run_id,
@@ -744,12 +1007,16 @@ async def save_selections(
         run = await db.runs.find_one(
             {"run_id": run_id},
             {"_id": 0, "by_ledger": 1, "by_party": 1, "summary": 1,
-             "transactions": 1, "ledgers_xlsx": 1, "accounting": 1},
+             "transactions": 1, "ledgers_xlsx": 1, "accounting": 1,
+             "pinned_files": 1, "lazy_books": 1},
         )
         if run and run.get("by_ledger"):
             from modules.clause44.service import (
                 build_group_chain, compute_recon_and_filter,
             )
+            # Phase D — re-hydrate `accounting`/`ledgers_xlsx` from the
+            # pinned Library files when the run was created lazily.
+            run = await _ensure_run_data(run)
             ledgers_xlsx = run.get("ledgers_xlsx") or {}
             groups = (run.get("accounting") or {}).get("groups", [])
             group_chains = build_group_chain(groups)

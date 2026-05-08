@@ -1,5 +1,29 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 "Start a new run" should reuse Library files (2026-05-08, post-Release 4.7-D)
+
+**User feedback**: After uploading Books JSON + Ledger Mapping into the Data Library for Tiriuppur Division, clicking "Start a new run" on Clause 44 still opened the upload dialog asking for the same files again — the Library wasn't being reused.
+
+**Root cause** (2 layers):
+1. **Missing endpoint.** `POST /api/runs` was the only run-creation path — it required multipart file uploads.  No way to spin up a run from already-pinned Library files.
+2. **Latent BSON 16 MB ceiling.** Storing the full parsed `accounting` JSON inline on the run doc blew past Mongo's 16 MB BSON limit for the user's 16.6 MB Tally export — even the legacy upload flow would have hit this on first attempt.
+
+**Fix**:
+
+1. **New endpoint `POST /api/runs/from-library`** (`backend/modules/clause44/controller.py`):
+   - Body: `{client_id, period, scope_kind?, division_ids?, gstin_group_id?, division_id?}`.
+   - Fetches the pinned `books_json` + `ledger_mapping_xlsx` from the Library, validates company-name match, runs the same parser/suggester as the legacy upload, upserts the canonical run doc.
+2. **Lazy-load helper `_ensure_run_data(run)`** — re-hydrates `accounting` + `ledgers_xlsx` from the pinned Library files on demand, so the run doc itself can stay lean.  Wired into all 4 read sites (GET `/runs/{id}`, PATCH selections, recon-recompute, generate).
+3. **Run docs go lazy when books JSON > 12 MB** — `lazy_books: true` flag, empty inline blobs, payload re-loaded from the pinned Library file on demand.  Applies to both the new from-library endpoint AND the legacy POST `/runs` upload + rerun paths.  Existing runs (with inline blobs) continue to work — helper is no-op when blobs are present.
+4. **Frontend `ClientHome.jsx`**:
+   - Fetches Library status whenever scope changes; shows a `Library ready` (emerald) / `Library partial` (amber) chip on the Quick-Start card.
+   - `onStartRun()` is smart — when both required files are present, it calls `POST /runs/from-library` and navigates directly to the run page.  Falls back to the upload modal only when the Library is incomplete.
+   - The fallback branch was previously firing even on hard backend errors — now properly `return`-guarded so a 400 from `from-library` shows the error and stops, doesn't silently re-prompt.
+
+**Verified**:
+- Live screenshot — clicked **Start a new run** on a multi-div client (Tiriuppur Division, FY 2024-25, 16.6 MB books) → backend created `run_81389acbbd5b` lazily from Library → user landed on **Step 02: Special Ledgers** with 222 ledgers loaded, 26 exempt + 54 ITC suggestions auto-detected.  No upload dialog.
+- 47/47 backend regression tests still green.
+
 ## UX refinement · Clause 44 ClientHome — Skip duplicate Period/Division picker (2026-05-08, post-Release 4.7-D)
 
 **User feedback**: After picking FY + Division on the parent ClientUtilities page, opening Clause 44 still showed `STEP 01 · Choose Period & Division` — duplicate selectors that auditors had to set again.

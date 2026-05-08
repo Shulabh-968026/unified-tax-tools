@@ -37,6 +37,10 @@ export default function ClientHome() {
   const [newDiv, setNewDiv] = useState("");
 
   const [showUpload, setShowUpload] = useState(false);
+  // Phase D — library readiness for the current scope (so "Start a new
+  // run" can pull from the Library instead of re-prompting for files).
+  const [libStatus, setLibStatus] = useState(null);
+  const [starting, setStarting] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -60,6 +64,20 @@ export default function ClientHome() {
 
   const effectivePeriod = (period === "__custom" ? customPeriod : period).trim();
 
+  // Phase D — refresh Library status whenever the active scope changes
+  // so the "Start a new run" CTA knows whether to call from-library or
+  // open the upload modal.
+  useEffect(() => {
+    let cancel = false;
+    if (!clientId || !effectivePeriod) { setLibStatus(null); return; }
+    import("@/lib/api").then(({ getLibraryStatus }) =>
+      getLibraryStatus(clientId, effectivePeriod, divisionId || null)
+        .then((s) => { if (!cancel) setLibStatus(s); })
+        .catch(() => { if (!cancel) setLibStatus(null); })
+    );
+    return () => { cancel = true; };
+  }, [clientId, divisionId, effectivePeriod]);
+
   const onAddDivision = async () => {
     if (!newDiv.trim()) return;
     try {
@@ -71,6 +89,55 @@ export default function ClientHome() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
     }
+  };
+
+  /**
+   * Phase D — smart "Start a new run" handler.  When both required
+   * Library files (books_json + ledger_mapping_xlsx) are already
+   * uploaded for the current scope, call the new ``POST /runs/from-library``
+   * endpoint and skip the upload modal.  Otherwise fall back to the
+   * legacy upload flow.
+   */
+  const onStartRun = async () => {
+    const lib = libStatus?.files || [];
+    const findKey = (k) => lib.find((f) => f.key === k && f.uploaded);
+    const hasBooks = !!findKey("books_json");
+    const hasMap   = !!findKey("ledger_mapping_xlsx");
+
+    if (hasBooks && hasMap) {
+      setStarting(true);
+      try {
+        const { http } = await import("@/lib/api");
+        const body = {
+          client_id: clientId,
+          period: effectivePeriod,
+          division_id: divisionId || null,
+        };
+        if (urlScope?.scopeKind) body.scope_kind = urlScope.scopeKind;
+        if (urlScope?.divisionIds?.length) body.division_ids = urlScope.divisionIds;
+        if (urlScope?.gstinGroupId) body.gstin_group_id = urlScope.gstinGroupId;
+        const { data } = await http.post("/runs/from-library", body);
+        toast.success(`Run ready · ${data.vouchers_count} vouchers · ${data.ledgers_count} ledgers`);
+        navigate(`/dashboard/runs/${data.run_id}`);
+        return;
+      } catch (e) {
+        toast.error(e?.response?.data?.detail || "Failed to start run from Library");
+      } finally {
+        setStarting(false);
+      }
+    }
+
+    // Library is missing one or both files — open the legacy upload modal.
+    if (libStatus) {
+      const missing = [
+        !hasBooks && "Books JSON",
+        !hasMap   && "Ledger Mapping",
+      ].filter(Boolean).join(" and ");
+      toast.message(`Upload ${missing} to start.`, {
+        description: "These files will be saved into the Library and reused next time.",
+      });
+    }
+    setShowUpload(true);
   };
 
   const onArchive = async (id) => {
@@ -173,30 +240,48 @@ export default function ClientHome() {
              No duplicate selectors here; just a one-click "Start a new
              run" CTA scoped to the active period+division.  Auditor goes
              back via the breadcrumb to change the scope. */
-          <section
-            data-testid="clause44-quick-start"
-            className="border border-[#E5E5E0] bg-white rounded-sm p-5 flex items-center justify-between gap-4 flex-wrap"
-          >
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Working scope</div>
-              <Badge className="bg-slate-50 text-slate-800 border-slate-200 border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">FY {effectivePeriod}</Badge>
-              {isMulti && (
-                <Badge className={`${urlScope.scopeKind === "consolidation" ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-slate-50 text-slate-800 border-slate-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}>
-                  {activeScopeLabel}
-                </Badge>
-              )}
-              <span className="font-mono text-[11px] tracking-[0.04em] text-[#8A8A83]">
-                Change via the breadcrumb above.
-              </span>
-            </div>
-            <Button
-              data-testid="start-run-btn"
-              onClick={() => setShowUpload(true)}
-              className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2"
-            >
-              Start a new run <ArrowRight size={14} weight="bold"/>
-            </Button>
-          </section>
+          (() => {
+            const lib = libStatus?.files || [];
+            const findKey = (k) => lib.find((f) => f.key === k && f.uploaded);
+            const hasBooks = !!findKey("books_json");
+            const hasMap   = !!findKey("ledger_mapping_xlsx");
+            const ready = hasBooks && hasMap;
+            return (
+              <section
+                data-testid="clause44-quick-start"
+                className="border border-[#E5E5E0] bg-white rounded-sm p-5 flex items-center justify-between gap-4 flex-wrap"
+              >
+                <div className="flex items-center gap-3 flex-wrap min-w-0">
+                  <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Working scope</div>
+                  <Badge className="bg-slate-50 text-slate-800 border-slate-200 border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">FY {effectivePeriod}</Badge>
+                  {isMulti && (
+                    <Badge className={`${urlScope.scopeKind === "consolidation" ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-slate-50 text-slate-800 border-slate-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}>
+                      {activeScopeLabel}
+                    </Badge>
+                  )}
+                  <Badge
+                    data-testid="lib-readiness-chip"
+                    className={`${ready ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-amber-50 text-amber-900 border-amber-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}
+                    title={ready
+                      ? "Books + Ledger Mapping are pinned in the Library; the run will use them directly."
+                      : "Books JSON and/or Ledger Mapping not yet uploaded for this scope."}
+                  >
+                    {ready ? "Library ready" : "Library partial"}
+                  </Badge>
+                </div>
+                <Button
+                  data-testid="start-run-btn"
+                  onClick={onStartRun}
+                  disabled={starting}
+                  className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2 disabled:opacity-60"
+                  title={ready ? "Start a run using the Library files" : "Upload required files to start"}
+                >
+                  {starting ? "Starting…" : (ready ? "Start a new run" : "Upload to start run")}
+                  <ArrowRight size={14} weight="bold"/>
+                </Button>
+              </section>
+            );
+          })()
         ) : (
           /* Legacy direct-deep-link flow (no parent scope) — keep the
              full Step-01 picker so users who land here directly can
