@@ -81,32 +81,76 @@ export default function ClientHome() {
     } catch { toast.error("Archive failed"); }
   };
 
-  // Group runs by period
-  const grouped = useMemo(() => {
+  if (loading || !client) return <AppShell><div className="p-10 font-mono text-sm text-[#8A8A83]">Loading client…</div></AppShell>;
+
+  const isMulti = client.type === "multi";
+  // Phase D refinement (2026-05-08) — when the parent ClientUtilities
+  // page already pinned both a Working Period and a Division/Scope via
+  // URL, suppress the duplicate Step-01 form on this page and just
+  // surface "Start a new run" as a one-click action.  The auditor can
+  // change period/division by going back to the parent page.
+  const scopePinned = Boolean(urlScope.fy) && (
+    !isMulti || urlScope.scopeKind === "division" || urlScope.scopeKind === "consolidation"
+  );
+  const activeDivisionName = (client.divisions || []).find(
+    (d) => d.division_id === divisionId,
+  )?.name || "";
+  const activeScopeLabel = isMulti
+    ? (urlScope.scopeKind === "consolidation" ? "Consolidation" : (activeDivisionName || "Division"))
+    : "";
+
+  // Phase D — runs filtered to the active period+scope so the list
+  // matches what the upper bar describes.
+  const filteredRuns = scopePinned
+    ? runs.filter((r) => {
+        if (effectivePeriod && r.period !== effectivePeriod) return false;
+        if (isMulti) {
+          if (urlScope.scopeKind === "division") {
+            if ((r.division_id || "") !== (divisionId || "")) return false;
+          } else if (urlScope.scopeKind === "consolidation") {
+            if (r.division_id) return false;
+          }
+        }
+        return true;
+      })
+    : runs;
+  const grouped = (() => {
     const map = new Map();
-    runs.forEach((r) => {
+    filteredRuns.forEach((r) => {
       if (!map.has(r.period)) map.set(r.period, []);
       map.get(r.period).push(r);
     });
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [runs]);
-
-  if (loading || !client) return <AppShell><div className="p-10 font-mono text-sm text-[#8A8A83]">Loading client…</div></AppShell>;
-
-  const isMulti = client.type === "multi";
+  })();
 
   return (
     <AppShell>
       <PageHeader
-        eyebrow={<button onClick={() => navigate(`/dashboard/clients/${clientId}`)} className="hover:text-[#0F172A] inline-flex items-center gap-1"><ArrowLeft size={11}/>{client.name} · Utilities</button>}
+        eyebrow={<button onClick={() => navigate(`/dashboard/clients/${clientId}${location.search || ""}`)} className="hover:text-[#0F172A] inline-flex items-center gap-1"><ArrowLeft size={11}/>{client.name} · Utilities</button>}
         title={<span className="inline-flex items-center gap-3"><span className="font-mono text-[11px] uppercase tracking-[0.18em] bg-[#0F172A] text-white px-2 py-0.5">Clause 44</span>{client.name}</span>}
         subtitle={
-          <span className="inline-flex items-center gap-2">
+          <span className="inline-flex items-center gap-2 flex-wrap">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#52524E]">File · {client.file_number}</span>
             <span>·</span>
             <Badge className={`${isMulti ? "bg-amber-50 text-amber-900 border-amber-200" : "bg-emerald-50 text-emerald-900 border-emerald-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}>
               {isMulti ? `Multi · ${client.divisions?.length || 0} div` : "Single"}
             </Badge>
+            {scopePinned && (
+              <>
+                <span>·</span>
+                <Badge data-testid="header-period-chip" className="bg-slate-50 text-slate-800 border-slate-200 border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">
+                  FY {effectivePeriod}
+                </Badge>
+                {isMulti && (
+                  <Badge
+                    data-testid="header-scope-chip"
+                    className={`${urlScope.scopeKind === "consolidation" ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-slate-50 text-slate-800 border-slate-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}
+                  >
+                    {activeScopeLabel}
+                  </Badge>
+                )}
+              </>
+            )}
           </span>
         }
         actions={
@@ -124,8 +168,40 @@ export default function ClientHome() {
       />
 
       <div className="px-6 md:px-10 py-8 pb-40 max-w-6xl">
-        {/* Start a new run */}
-        <section className="border border-[#E5E5E0] bg-white rounded-sm p-6">
+        {scopePinned ? (
+          /* Phase D — scope pre-pinned from parent ClientUtilities page.
+             No duplicate selectors here; just a one-click "Start a new
+             run" CTA scoped to the active period+division.  Auditor goes
+             back via the breadcrumb to change the scope. */
+          <section
+            data-testid="clause44-quick-start"
+            className="border border-[#E5E5E0] bg-white rounded-sm p-5 flex items-center justify-between gap-4 flex-wrap"
+          >
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Working scope</div>
+              <Badge className="bg-slate-50 text-slate-800 border-slate-200 border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]">FY {effectivePeriod}</Badge>
+              {isMulti && (
+                <Badge className={`${urlScope.scopeKind === "consolidation" ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-slate-50 text-slate-800 border-slate-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}>
+                  {activeScopeLabel}
+                </Badge>
+              )}
+              <span className="font-mono text-[11px] tracking-[0.04em] text-[#8A8A83]">
+                Change via the breadcrumb above.
+              </span>
+            </div>
+            <Button
+              data-testid="start-run-btn"
+              onClick={() => setShowUpload(true)}
+              className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2"
+            >
+              Start a new run <ArrowRight size={14} weight="bold"/>
+            </Button>
+          </section>
+        ) : (
+          /* Legacy direct-deep-link flow (no parent scope) — keep the
+             full Step-01 picker so users who land here directly can
+             still pick period + division. */
+          <section className="border border-[#E5E5E0] bg-white rounded-sm p-6">
           <div className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[#8A8A83]">Step 01</div>
           <h2 className="mt-1 font-heading text-xl tracking-tight">Choose Period {isMulti && "& Division"}</h2>
           <div className="mt-5 grid md:grid-cols-3 gap-4">
@@ -176,6 +252,7 @@ export default function ClientHome() {
             </div>
           </div>
         </section>
+        )}
 
         {/* Runs grouped by period */}
         <section className="mt-10">

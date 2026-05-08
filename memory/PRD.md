@@ -1,5 +1,20 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## UX refinement · Clause 44 ClientHome — Skip duplicate Period/Division picker (2026-05-08, post-Release 4.7-D)
+
+**User feedback**: After picking FY + Division on the parent ClientUtilities page, opening Clause 44 still showed `STEP 01 · Choose Period & Division` — duplicate selectors that auditors had to set again.
+
+**Fix** (`frontend/src/pages/ClientHome.jsx`):
+1. **PageHeader subtitle** now embeds Period + Scope chips inline alongside `FILE · G-901 · MULTI · 2 DIV` so the auditor always sees the active scope at a glance:
+   - `[data-testid=header-period-chip]` showing `FY 2024-25`
+   - `[data-testid=header-scope-chip]` showing the division name or "Consolidation"
+2. **Step-01 form is bypassed when scope is pre-pinned** via URL (`?fy=…&scope=…`). In its place, a compact **"Working scope" strip** with a single one-click `Start a new run →` CTA (`[data-testid=clause44-quick-start]`).
+3. **Legacy direct-deep-link flow preserved** — auditors who land on `/dashboard/clients/:id/utilities/clause-44` without scope params still see the full Step-01 picker.
+4. **Runs list now filters to the active period+scope** so what's shown matches what the header chips advertise.
+5. **Breadcrumb back-link** preserves scope query string (`?fy=…&scope=…`) so flipping back to ClientUtilities lands on the same scope.
+
+**Verified**: smoke screenshot confirms `period-select` / `division-select` count = 0 when scope is pinned; `clause44-quick-start` + both header chips render; legacy deep-link flow still ships the full picker. Cross-division upload bleed bug (also fixed today) regression-tested clean.
+
 ## Bugfix · Library cross-division bleed (2026-05-08, post-Release 4.7-D)
 
 **Bug**: After uploading Books JSON + Ledger Mapping under Tiruppur Division, switching scope to Mumbai Division still showed both files as "uploaded" with a `REPLACE` button — they'd appeared to bleed across divisions.
