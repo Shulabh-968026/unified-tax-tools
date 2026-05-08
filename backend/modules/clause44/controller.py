@@ -1121,10 +1121,30 @@ async def export_run(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
+    """Release 4.4.11 — Mirror `getRun`'s silent re-classification path
+    (controller.py:680-688) so the exported workbook always reflects
+    the *current* engine logic, not the stale snapshot frozen on the
+    last Generate click.  Without this, fixes to the engine (e.g.
+    capex head-based split, exempt × ITC cross-check) showed up on
+    screen but stayed missing in the Excel.  Falls back gracefully
+    to the stored snapshot when re-classification raises."""
     await get_current_user(request, session_token, authorization)
     run = await _fetch_run(run_id)
     if not run.get("generated"):
         raise HTTPException(status_code=400, detail="Run not generated yet")
+    try:
+        run = await _ensure_run_data(run)
+        fresh = _run_classification(run)
+        run = {
+            **run,
+            "summary":      fresh["summary"],
+            "by_ledger":    fresh["by_ledger"],
+            "by_party":     fresh["by_party"],
+            "recon":        fresh["recon"],
+            "transactions": fresh.get("transactions", run.get("transactions", [])),
+        }
+    except Exception:  # pragma: no cover — fall back to stored snapshot
+        pass
     company = (run.get("company_name") or "Clause44").replace(" ", "_")[:50]
     return build_export_response(run, f"Clause44_{company}_{run_id}")
 

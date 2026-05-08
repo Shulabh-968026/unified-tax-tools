@@ -1,5 +1,52 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 Export Excel ≡ On-Screen Recon (Release 4.4.11, 2026-02-09)
+
+**User report**: "I find the Reconciliation tab in Excel doesn't contain the capital expenditure fix recently carried out. Can you recheck whether Excel export is exactly the same as on-screen report?"
+
+**Root cause** — engine vs snapshot divergence:
+- `GET /runs/{id}` (powers on-screen Reconciliation) silently re-classifies the run on every read (`controller.py` lines 680–688), so on-screen always reflects the *current* engine logic.
+- `GET /runs/{id}/export` was reading the stored snapshot from MongoDB **as-is**, so the Excel reflected whatever was frozen on the last Generate click. Fix 5B's head-based capex split (and any future engine refinement) showed up on screen but not in Excel.
+
+### What shipped — Fix 6
+**Backend** (`modules/clause44/controller.py`):
+- Mirrored the on-screen silent-re-classify path into the export endpoint:
+  ```python
+  try:
+      run = await _ensure_run_data(run)
+      fresh = _run_classification(run)
+      run = {**run,
+             "summary":      fresh["summary"],
+             "by_ledger":    fresh["by_ledger"],
+             "by_party":     fresh["by_party"],
+             "recon":        fresh["recon"],
+             "transactions": fresh.get("transactions", run.get("transactions", [])),
+            }
+  except Exception:
+      pass   # fall back to stored snapshot
+  ```
+- Fall-back to stored snapshot on any classification error (corrupt accounting blob, missing ledgers_xlsx, etc.) — never returns a 500 from a stored generated run.
+
+### Verified
+- 4 new offline unit tests in `tests/test_clause44_export_fresh_classification.py`:
+  - Spread mechanism: stale stored recon + fresh result → Excel reflects FRESH.
+  - Per-ledger pivot in Summary sheet picks up fresh by_ledger.
+  - Fallback path — `_run_classification` raises → stored snapshot used → workbook still builds.
+  - Endpoint-level: patched `_run_classification` is invoked by `export_run` and its result lands in the rendered workbook.
+- 100 offline Clause 44 tests passing (up from 96). Same 3 pre-existing live-test failures.
+- Lint clean. Backend healthy.
+
+### How to verify in live data
+1. Open the same Tiruppur run that previously exported with capex = 0.
+2. Click `Export Excel` from the Report step (no need to click Generate again).
+3. Open the workbook → Reconciliation tab now shows the capital expenditure additions row populated to match the on-screen value to the rupee.
+
+### Files touched
+**Backend:** `modules/clause44/controller.py` (`export_run` endpoint).
+
+**Tests:** new `tests/test_clause44_export_fresh_classification.py` (4 tests, all green).
+
+
 ## Bugfix · Clause 44 Export Excel — IllegalCharacterError (Release 4.4.10, 2026-02-09)
 
 **User report**: "Export Excel is not working."
