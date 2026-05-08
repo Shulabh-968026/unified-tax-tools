@@ -164,6 +164,10 @@ def test_fa_division_scope_distinct_doc(first_division_id):
 # GST Recon
 # ──────────────────────────────────────────────────────────────────────
 def test_gst_default_consolidation():
+    """Phase C.3 — GST Recon's grain is ALWAYS gstin_group; the backend
+    auto-synthesises a hidden Default group for clients that haven't
+    set up groups, so a no-scope POST resolves to scope_kind=gstin_group
+    + scope_key=gstin_<default_id> (NOT consolidation)."""
     r = requests.post(
         _api("/gst-recon/runs"),
         cookies=COOKIE,
@@ -172,19 +176,18 @@ def test_gst_default_consolidation():
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["scope_key"] == "consolidation"
+    assert body["scope_kind"] == "gstin_group"
+    assert body["scope_key"].startswith("gstin_")
+    assert body["gstin_group_id"]
 
 
 def test_gst_idempotent_per_scope(first_division_id):
-    payload = {
-        "client_id": MULTI_DIV_CLIENT, "fy": TEST_FY,
-        "scope_kind": "division",
-        "division_ids": [first_division_id],
-    }
+    """No-scope POST is idempotent (same Default group resolves to same id)."""
+    payload = {"client_id": MULTI_DIV_CLIENT, "fy": TEST_FY}
     a = requests.post(_api("/gst-recon/runs"), cookies=COOKIE, json=payload, timeout=10).json()
     b = requests.post(_api("/gst-recon/runs"), cookies=COOKIE, json=payload, timeout=10).json()
     assert a["id"] == b["id"]
-    assert a["scope_kind"] == "division"
+    assert a["scope_kind"] == "gstin_group"
 
 
 # ──────────────────────────────────────────────────────────────────────

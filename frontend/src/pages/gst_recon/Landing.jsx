@@ -114,14 +114,22 @@ export default function GstReconLanding() {
     return data.id;
   };
 
-  const onFiles = useCallback(async (list) => {
+  // Phase C.3 — GSTIN-mismatch warnings surfaced from POST /runs/:rid/files.
+  // The auditor sees a banner with the offending filenames and an
+  // "Override and proceed" CTA that re-uploads with
+  // ?override_gstin_mismatch=true.
+  const [gstinWarnings, setGstinWarnings] = useState([]);
+  const [pendingOverride, setPendingOverride] = useState(null); // { files, expectedGstin }
+
+  const onFiles = useCallback(async (list, opts = {}) => {
     if (!list || !list.length) return;
     setBusy(true);
     try {
       const rid = await ensureRun();
       const form = new FormData();
       Array.from(list).forEach(f => form.append("files", f));
-      const { data } = await http.post(`/gst-recon/runs/${rid}/files`, form, {
+      const url = `/gst-recon/runs/${rid}/files${opts.override ? "?override_gstin_mismatch=true" : ""}`;
+      const { data } = await http.post(url, form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setBuckets(data.buckets);
@@ -132,6 +140,14 @@ export default function GstReconLanding() {
       setFiles(prev => [...prev, ...Array.from(list).map(f => f.name)]);
       setValidation(null); // stale after a new upload
       setSummary(null);    // stale after a new upload
+      // Phase C.3 — show GSTIN warnings if the server flagged any.
+      if (Array.isArray(data.gstin_warnings) && data.gstin_warnings.length > 0) {
+        setGstinWarnings(data.gstin_warnings);
+        setPendingOverride({ files: list, expectedGstin: data.expected_gstin });
+      } else {
+        setGstinWarnings([]);
+        setPendingOverride(null);
+      }
       const reprocess = data.books_reprocessed ? " · books re-aggregated with mapping" : "";
       toast.success(`${data.accepted} file(s) categorized${reprocess}`);
     } catch (e) {
@@ -307,6 +323,56 @@ export default function GstReconLanding() {
           <div className="text-xs text-gray-500 mt-1">Multi-select supported — accepts JSON, PDF, XLSX, CSV</div>
           {files.length > 0 && <div className="text-[11px] text-gray-500 mt-3 font-mono">{files.length} uploaded this session</div>}
         </div>
+
+        {/* Phase C.3 — GSTIN-mismatch warning banner (warn + override) */}
+        {gstinWarnings.length > 0 && (
+          <div
+            data-testid="gstin-mismatch-banner"
+            className="mb-6 border border-amber-300 bg-amber-50 px-4 py-3 rounded-sm"
+          >
+            <div className="flex items-start gap-3">
+              <XCircle size={16} className="text-amber-700 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-[12.5px] font-semibold text-amber-900">
+                  GSTIN mismatch on {gstinWarnings.length} file{gstinWarnings.length === 1 ? "" : "s"}
+                </div>
+                <div className="text-[12px] text-amber-900/90 mt-0.5">
+                  This working doc is bound to GSTIN
+                  {" "}<span className="font-mono">{pendingOverride?.expectedGstin || "—"}</span>{" "}
+                  but the uploaded file{gstinWarnings.length === 1 ? " carries" : "s carry"} a different GSTIN.
+                </div>
+                <ul className="mt-2 text-[11.5px] font-mono text-amber-900/80 space-y-0.5">
+                  {gstinWarnings.map((w, i) => (
+                    <li key={i} data-testid={`gstin-mismatch-row-${i}`}>
+                      <span className="inline-block min-w-[60px] uppercase">{w.bucket}</span>
+                      {" "}{w.filename}
+                      <span className="text-amber-800/70"> · found </span>
+                      <span className="font-semibold">{w.found}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="gstin-mismatch-override"
+                    onClick={() => pendingOverride && onFiles(pendingOverride.files, { override: true })}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-700 bg-amber-700 text-white text-[11.5px] font-medium hover:bg-amber-800"
+                  >
+                    Override and re-process
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="gstin-mismatch-dismiss"
+                    onClick={() => { setGstinWarnings([]); setPendingOverride(null); }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 border border-amber-300 text-amber-900 text-[11.5px] hover:bg-amber-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Bucket summary */}
         <div className="grid grid-cols-5 gap-3 mb-8">

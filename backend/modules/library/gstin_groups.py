@@ -52,6 +52,62 @@ class GstinGroupOut(BaseModel):
     created_at:   str
     updated_at:   str
     created_by:   str = ""
+    # Phase C.3 — hidden auto-synthesised "Default" group per client.
+    # The frontend GstinGroupsManager filters these out by default; they
+    # exist only so every gst_recon_run can be canonicalised by a real
+    # gstin_group_id (incl. on single-GSTIN clients).
+    is_default:   bool = False
+
+
+async def ensure_default_group(client_id: str) -> dict:
+    """Phase C.3 · idempotently create a hidden ``Default`` GSTIN group
+    for the given client and return its full doc.
+
+    Used by GST Recon's POST /runs (and the backfill migration) so every
+    working doc — including those on single-GSTIN clients that haven't
+    explicitly set up groups — can be canonicalised by a real
+    ``gstin_group_id``.
+
+    Behaviour:
+      * If the client already has a group flagged ``is_default=True`` →
+        return it as-is.
+      * Else create a fresh ``Default`` group seeded with the client's
+        primary GSTIN (when present on the client doc) and every
+        division_id known on the client.
+    """
+    cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
+    if not cli:
+        raise HTTPException(404, f"Client not found: {client_id}")
+
+    existing = await db.gstin_groups.find_one(
+        {"client_id": client_id, "is_default": True},
+        {"_id": 0},
+    )
+    if existing:
+        return existing
+
+    division_ids = sorted({
+        (d.get("division_id") or "").strip()
+        for d in (cli.get("divisions") or [])
+        if (d.get("division_id") or "").strip()
+    })
+    primary_gstin = (cli.get("gstin") or "").strip().upper()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "group_id":     f"gst_{uuid.uuid4().hex[:14]}",
+        "client_id":    client_id,
+        "label":        "Default",
+        "gstin":        primary_gstin if GSTIN_RE.match(primary_gstin) else "",
+        "division_ids": division_ids,
+        "created_at":   now_iso,
+        "updated_at":   now_iso,
+        "created_by":   "system",
+        "is_default":   True,
+    }
+    await db.gstin_groups.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 def _normalise(payload: GstinGroupIn) -> dict:
@@ -87,17 +143,42 @@ def _validate_membership(cli: dict, division_ids: List[str]) -> None:
 async def list_groups(
     client_id: str,
     request: Request,
+    include_default: bool = False,
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Return all GSTIN groups defined for the client (newest first)."""
+    """Return GSTIN groups defined for the client (newest first).
+
+    Hidden auto-synthesised ``Default`` groups (``is_default=True``) are
+    excluded by default — the GstinGroupsManager UI never shows them.
+    Internal callers (e.g. the GST Recon backend) pass
+    ``include_default=true`` to see every group.
+    """
     await get_current_user(request, session_token, authorization)
     await _client_or_404(client_id)
+    query = {"client_id": client_id}
+    if not include_default:
+        query["is_default"] = {"$ne": True}
     rows = await db.gstin_groups.find(
-        {"client_id": client_id},
-        {"_id": 0},
+        query, {"_id": 0},
     ).sort("created_at", -1).to_list(length=200)
     return {"groups": rows}
+
+
+@router.post("/clients/{client_id}/gstin-groups/ensure-default", response_model=GstinGroupOut)
+async def ensure_default_group_endpoint(
+    client_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase C.3 — idempotently fetch (or create) the hidden ``Default``
+    GSTIN group for this client.  Used by the frontend before opening a
+    GST Recon working doc so a single-GSTIN client doesn't see a
+    confusing "pick a group" prompt.
+    """
+    await get_current_user(request, session_token, authorization)
+    return await ensure_default_group(client_id)
 
 
 @router.post("/clients/{client_id}/gstin-groups", response_model=GstinGroupOut)

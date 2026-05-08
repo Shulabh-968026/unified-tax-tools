@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Cookie, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Cookie, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from core.db import db
@@ -16,6 +16,7 @@ from modules.library import service as lib_svc
 from modules.library.controller import DEFAULT_FIRM_ID
 from modules.library.generations import append_generation, list_generations
 from modules.library.scope import resolve_scope_for_request
+from modules.library.gstin_groups import ensure_default_group
 from modules.gst_recon.schemas import RunCreate, RunOut
 from modules.gst_recon.aggregators import (
     aggregate_books,
@@ -152,13 +153,34 @@ async def create_run(
     authorization: Optional[str] = Header(default=None),
 ):
     user = await _auth(request, session_token, authorization)
-    # Phase C.1 — resolve scope (defaults to consolidation when absent).
+    # Phase C.3 — every GST Recon run must be scoped to a real
+    # gstin_group_id.  If the caller didn't pass one (legacy single-
+    # GSTIN flow), synthesise/fetch the hidden ``Default`` group so the
+    # working doc has a canonical group binding.
+    gstin_group_id = payload.gstin_group_id
+    default_group = None
+    if not gstin_group_id:
+        default_group = await ensure_default_group(payload.client_id)
+        gstin_group_id = default_group["group_id"]
+    # GST Recon's grain is always gstin_group (per scope.js MODULE_GRAIN).
+    # Force ``scope_kind="gstin_group"`` regardless of what the page
+    # selector forwarded — this prevents stray Consolidation/Division
+    # gst_recon_runs from being created.
     scope = await resolve_scope_for_request(
         db, client_id=payload.client_id,
-        scope_kind=payload.scope_kind,
-        division_ids=payload.division_ids,
-        gstin_group_id=payload.gstin_group_id,
+        scope_kind="gstin_group",
+        gstin_group_id=gstin_group_id,
     )
+    # Use the group's label as scope_label (more useful than the raw id).
+    if default_group is not None:
+        scope["scope_label"] = default_group.get("label") or scope["scope_label"]
+    else:
+        grp = await db.gstin_groups.find_one(
+            {"client_id": payload.client_id, "group_id": gstin_group_id},
+            {"_id": 0, "label": 1},
+        )
+        if grp and grp.get("label"):
+            scope["scope_label"] = grp["label"]
     # Release 4.5 — upsert canonical working doc per (client_id, fy, scope_key)
     existing = await COLL.find_one(
         {"client_id": payload.client_id, "fy": payload.fy,
@@ -264,15 +286,36 @@ async def upload_batch(
     rid: str,
     request: Request,
     files: List[UploadFile] = File(...),
+    override_gstin_mismatch: bool = Query(default=False),
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
     """Categorize a batch of filenames into buckets. Phase A returns the bucket summary + updated 12-month grid.
-    Phase B will persist file contents and run pre-flight validation."""
+    Phase B will persist file contents and run pre-flight validation.
+
+    Phase C.3 — validates each file's intrinsic GSTIN against the run's
+    bound ``gstin_group_id`` (fetched via gstin_groups).  Mismatched
+    files are surfaced in ``warnings[]`` for the auditor; pass
+    ``?override_gstin_mismatch=true`` to suppress the warnings (the
+    files are persisted either way — validation is informational).
+    """
     user = await _auth(request, session_token, authorization)
     doc = await COLL.find_one({"id": rid}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+
+    # Phase C.3 — load the run's bound GSTIN group (if any) for ingest
+    # validation.  Older pre-Phase-C.3 runs may have no group attached;
+    # we treat them as "no validation possible" rather than erroring.
+    expected_gstin = ""
+    if doc.get("gstin_group_id"):
+        grp = await db.gstin_groups.find_one(
+            {"client_id": doc["client_id"], "group_id": doc["gstin_group_id"]},
+            {"_id": 0, "gstin": 1, "label": 1},
+        )
+        if grp:
+            expected_gstin = (grp.get("gstin") or "").strip().upper()
+    gstin_warnings: List[Dict[str, str]] = []
 
     # Load any pre-existing mapping rules to re-process Books on upload
     existing_rules = _load_rules_from_doc(doc)
@@ -290,6 +333,23 @@ async def upload_batch(
             entry["period"] = meta["period"]
         if meta.get("gstin"):
             entry["gstin"] = meta["gstin"]
+        # Phase C.3 — flag mismatched GSTINs (Books has no GSTIN to
+        # check).  We do NOT block ingest — the auditor sees a banner
+        # in the UI and can re-POST with ``?override_gstin_mismatch=true``
+        # to suppress.
+        file_gstin = (entry.get("gstin") or "").strip().upper()
+        if (
+            expected_gstin
+            and file_gstin
+            and file_gstin != expected_gstin
+            and entry["bucket"] in ("gstr1", "gstr2b", "gstr3b")
+        ):
+            gstin_warnings.append({
+                "filename": entry["filename"],
+                "bucket":   entry["bucket"],
+                "found":    file_gstin,
+                "expected": expected_gstin,
+            })
         entry["integrity_ok"] = meta.get("integrity_ok", False)
         entry["parse_error"] = meta.get("parse_error")
         if entry["bucket"] == "books":
@@ -407,6 +467,10 @@ async def upload_batch(
         "has_mapping": has_mapping,
         "mapping_unmapped_ledgers": mapping_meta.get("mapping_unmapped_ledgers", []),
         "books_reprocessed": bool(active_rules_sets and (pending_books_content is not None or new_mapping_rules is not None)),
+        # Phase C.3 — surface GSTIN-mismatch warnings (empty list when
+        # no expected GSTIN is set on the group, or override is on).
+        "gstin_warnings": [] if override_gstin_mismatch else gstin_warnings,
+        "expected_gstin": expected_gstin,
     }
 
 

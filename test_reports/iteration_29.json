@@ -1,0 +1,34 @@
+{
+  "summary": "Phase C.3 (GST Recon → GSTIN-group canonical key) verified end-to-end. All 37 backend tests pass (5 new test_phase_c3_gst_recon_groups + 9 updated test_phase_c1_scope_runs + 11 test_phase_a_gstin_groups + 6 test_release_4_5_collapse_live + 6 test_bc_release_4_6_universal_recipients). Migration script gst_recon_attach_default_group_20260507.py is idempotent (re-run reports seen=0 updated=0). DB validation: 3/3 active gst_recon_runs all carry gstin_group_id + scope_kind='gstin_group' + scope_key='gstin_<id>'. GSTIN-mismatch warn+override flow validated end-to-end against the live preview backend by pinning a GSTIN on the multi-div Default group, uploading a GSTR-1 JSON with mismatched GSTIN, and confirming response.gstin_warnings is populated; override=true suppresses warnings. Frontend GST Recon Landing renders correctly with ScopeChip 'Default' (violet tone) on past runs, confirming canonical key rebind is live; banner JSX with all required data-testids (gstin-mismatch-banner, gstin-mismatch-row-N, gstin-mismatch-override, gstin-mismatch-dismiss) is wired and triggered when onFiles() captures gstin_warnings[] from the upload response.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_c3_gst_recon_groups.py",
+    "/app/backend/tests/test_phase_c1_scope_runs.py",
+    "/app/test_reports/pytest/iteration_29.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "controller.py POST /runs (lines 156-183): correctly forces scope_kind='gstin_group' regardless of caller-supplied scope, preventing stray Consolidation/Division gst_recon_runs. Auto-calls ensure_default_group when no gstin_group_id is passed. scope_label is overridden with the group's label for better UX.",
+    "controller.py upload_batch (lines 307-352): GSTIN validation correctly limited to buckets gstr1/gstr2b/gstr3b — Books/Mapping exempt as required. Warn-only behavior (file persisted regardless) per spec; override flag suppresses warnings cleanly.",
+    "gstin_groups.py ensure_default_group() (lines 62-110): idempotent on (client_id, is_default=True) lookup; seeds gstin from client.gstin only when it matches GSTIN_RE — prevents corrupt validation later.",
+    "gstin_groups.py list_groups (lines 142-165): include_default=False default correctly filters {is_default:{$ne:True}} — hidden Default groups never leak into GstinGroupsManager UI.",
+    "Note: GSTR-3B validator only parses PDF (validation.py:46-56); JSON-format GSTR-3B uploads will not extract intrinsic GSTIN, so GSTIN-mismatch warn cannot fire for GSTR-3B JSON files. GSTR-1/GSTR-2B JSON validation works correctly. Not a regression — pre-existing behavior — but worth documenting.",
+    "Frontend Landing.jsx (lines 144-146): onFiles() correctly captures gstin_warnings + expected_gstin into pendingOverride state; banner re-runs upload with ?override_gstin_mismatch=true on Override CTA — clean retry pattern."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (37/37)", "frontend": "100% (Landing renders, ScopeChip Default visible, banner JSX verified)"},
+  "test_credentials": "session_token=qa_test_session_token_20260206_dev (admin, qa-bot@transformautomations.com)",
+  "seed_data_creation": "Temporarily pinned GSTIN '27ABCDE1234F1Z5' on cli_c5d02541264c Default group to validate GSTIN-mismatch warn+override end-to-end; cleared at teardown. TEST_FY=2099-00 rows wiped automatically.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase C is now COMPLETE (C.1+C.2+C.3 all green). All gst_recon_runs canonical key is now (client_id, fy, gstin_group_id) via scope_key='gstin_<group_id>'. Hidden Default groups exist invisibly per client. GSTIN-mismatch banner is informational-only (file persisted regardless). Single-div clients' Default group has empty division_ids and empty gstin (until auditor edits) — that's by design. Note GSTR-3B JSON intrinsic GSTIN extraction is unsupported (only PDF) — if main agent wants warn-on-GSTR3B-JSON, validation.py would need a JSON branch added.",
+  "rca of the issue": "No issues found in Phase C.3. End-to-end backend warn+override validated against live preview URL using GSTR-1 JSON (gstin='29DIFFERENT1Z9F5' vs expected '27ABCDE1234F1Z5'); response.gstin_warnings=[{filename,bucket:'gstr1',found,expected}], override=true → empty list."
+}
