@@ -666,7 +666,24 @@ def compute_suggestions(
 #                                    (bsOrPl = 'B' AND head ∈ FA_HEADS) )
 # ─────────────────────────────────────────────────────────────────────────
 _REVENUE_HEADS_EXCLUDE = {"revenue from operations", "other income"}
-_FA_HEADS = {"property, plant and equipment", "intangible fixed assets"}
+# Release 4.4.9 — Capex head whitelist.  Any BS-side ledger whose
+# books-XLSX `head` value (case-insensitive) is in this set is treated
+# as capital expenditure for two purposes:
+#   1. Voucher amounts on these ledgers are auto-folded into the recon
+#      row "Capital expenditure additions (Para 79.18)" via the head-
+#      based capex split in `compute_recon_and_filter`.
+#   2. They are NOT surfaced in the Exclusions tab — capex flows to
+#      Col 2 automatically and never needs auditor opt-in.
+# Common spellings + Schedule III canonical names + CWIP per user's
+# Release 4.4.9 ask: "treat WIP additions as capex".
+_FA_HEADS = {
+    "property, plant and equipment",
+    "property plant and equipment",       # without comma
+    "intangible assets",                  # Schedule III canonical
+    "intangible fixed assets",            # legacy AssureAI alias
+    "capital work-in-progress",
+    "capital work in progress",           # without hyphen
+}
 # Schedule III subheads where Input / Output GST naturally lands.  Hard-
 # coded for now — Release 4.5 will surface this as a per-firm config.
 ITC_SUBHEAD_DEFAULTS = (
@@ -842,21 +859,22 @@ def compute_pools(
     itc_ledgers = [r for r in itc_ledgers_all_bs if r["in_default_view"]]
 
     # --- Pool 3 · Exclusions --------------------------------------------
+    # Release 4.4.9 — BS-side capex ledgers (Property, Plant and
+    # Equipment / Intangible Assets / Capital Work-in-progress) are NO
+    # LONGER surfaced here.  Capex purchases auto-flow into Col 2 via
+    # `classify_vouchers`, and the Para 79.18 recon row reads from
+    # `capex_total` (head-based split in `compute_recon_and_filter`) —
+    # auditor never needs to tick anything for capex to land in the
+    # right bucket.  Only P-side ledgers and a small set of P-aliased
+    # statutory deductions remain here.
     exclusion_ledgers = []
     for r in universe.values():
         head_norm = _norm(r["head"])
         if head_norm in _REVENUE_HEADS_EXCLUDE:
             continue
-        is_capex = (r["bs_or_pl"] == "B" and head_norm in _FA_HEADS)
-        if r["bs_or_pl"] != "P" and not is_capex:
+        if r["bs_or_pl"] != "P":
             continue
-        # Auto-tick rule (Release 4.4.5): keyword match for genuine Sch III
-        # / non-cash / money exclusions only.  Capex (FA + Intangibles) is
-        # NEVER auto-ticked — it's reportable in Col 2 and only flows
-        # through the recon's `capex_addback` bucket if the auditor
-        # explicitly opts it in.  The badge below tells the auditor what
-        # each tick does.
-        suggested = (not is_capex) and _is_exclusion_hint(r["name"])
+        suggested = _is_exclusion_hint(r["name"])
         exclusion_ledgers.append({
             "name": r["name"],
             "subhead": r["subhead"],
@@ -864,10 +882,10 @@ def compute_pools(
             "head": r["head"],
             "closing_balance": r["closing_balance"],
             "suggested": suggested,
-            # `recon_role` tells the UI whether ticking this row will
-            # SUBTRACT it from P&L (most exclusions) or ADD IT BACK to
-            # P&L (capex — Col 2 already includes capex purchases).
-            "recon_role": "addback" if is_capex else "subtract",
+            # Pool 3 rows are ALL `subtract` after Release 4.4.9 — capex
+            # `addback` rows have been removed from this pool.  Field
+            # retained for backwards-compat with the existing UI badge.
+            "recon_role": "subtract",
         })
 
     return {
@@ -1226,19 +1244,34 @@ def compute_recon_and_filter(
     by_ledger: Dict[str, Dict[str, float]] = full_result["by_ledger"]
     summary: Dict[str, Any] = full_result["summary"]
 
-    # Split the gross Col 2 into P&L vs capex based on ledger group chain
-    # — capex is a memo line in the ICAI recon (already inside Col 2).
+    # Split the gross Col 2 into P&L vs capex based on the books-XLSX
+    # `head` value (whitelisted to `_FA_HEADS`) — this is the auditor-
+    # curated Schedule III taxonomy and is reliable across clients.
+    # Falls back to the parent-group chain only when `head` is empty
+    # (legacy runs uploaded before head-mapping became mandatory).
+    # Release 4.4.9 — switched from chain-only ("fixed asset" substring
+    # in parentGroup chain) to head-primary because real-world Tally
+    # parent groups (Plant & Machineries, Office Equipments, Buildings,
+    # Computers) rarely contain the literal word "fixed asset", causing
+    # capex_total to silently report 0 and the Para 79.18 row to stay
+    # blank.
     pl_total = 0.0
     capex_total = 0.0
     for lname, vals in by_ledger.items():
         total = float(vals.get("total", 0) or 0)
         rec = ledgers_xlsx.get(lname, {}) or {}
-        group_parent = (rec.get("groupParent") or "").lower()
-        chain = group_chains.get(group_parent, group_parent).lower()
-        if "fixed asset" in chain or "fixed asset" in group_parent:
+        head_norm = (rec.get("head") or "").strip().lower()
+        if head_norm in _FA_HEADS:
             capex_total += total
-        else:
-            pl_total += total
+            continue
+        # Head missing → fall back to parent-group chain.
+        if not head_norm:
+            group_parent = (rec.get("groupParent") or "").lower()
+            chain = group_chains.get(group_parent, group_parent).lower()
+            if "fixed asset" in chain or "fixed asset" in group_parent:
+                capex_total += total
+                continue
+        pl_total += total
 
     # Bucket the excluded ledgers into ICAI sub-buckets for the recon +
     # for the new Col 8 Excel sheet.  Each excluded ledger's Col 8 amount

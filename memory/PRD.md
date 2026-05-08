@@ -1,5 +1,60 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 Capex Auto-Flow + Recon Population (Release 4.4.9, 2026-02-09)
+
+**User feedback**: Fixed Assets and Intangible Asset additions ought to flow automatically into Col 2 + the Para 79.18 recon row — no auditor selection required. Two real issues observed:
+1. BS-side capex ledgers (PPE / Intangibles / CWIP) were appearing in the Exclusions tab as un-ticked rows — visual noise, not actionable.
+2. The recon row "Capital expenditure additions (ICAI Para 79.18)" was showing ₹0 even though the per-ledger pivot above it had non-zero capex amounts.
+
+**Root cause**: The `is_capex` admission in `compute_pools` Pool 3 surfaced BS-side capex rows for opt-in addback (legacy design). Meanwhile `compute_recon_and_filter` split Col 2 into `pl_total` vs `capex_total` using a literal `"fixed asset"` substring match against the **parent-group chain** — but real Tally chains use `Plant & Machineries`, `Office Equipments`, `Buildings`, etc. (none contain the string "fixed asset"), so capex was silently bucketed into `pl_total` and the Para 79.18 row stayed at zero. The two places used inconsistent signals: Pool 3 used `head` (correct), recon used chain (broken).
+
+### What shipped — Fix 5A + 5B + 5C (CWIP included)
+
+**Fix 5A · Remove BS-side capex from Pool 3** (`modules/clause44/service.py`):
+- The `is_capex` admission and `recon_role="addback"` rows are removed.
+- Pool 3 now contains ONLY P-side rows (Sch III, non-cash, money exclusions).
+- Every Pool 3 row carries `recon_role="subtract"` (field retained for backwards-compat with the existing UI badge).
+
+**Fix 5B · Head-based capex split in recon** (`compute_recon_and_filter`):
+- New logic: capex if `head` is in `_FA_HEADS`. Falls back to parent-group chain only when `head` is empty (legacy runs).
+- Reads books-XLSX `head` field, which is the auditor-curated Schedule III taxonomy and is reliable across clients.
+
+**Fix 5C · Expanded `_FA_HEADS` whitelist**:
+```python
+_FA_HEADS = {
+    "property, plant and equipment",
+    "property plant and equipment",       # without comma
+    "intangible assets",                  # Schedule III canonical
+    "intangible fixed assets",            # legacy AssureAI alias
+    "capital work-in-progress",
+    "capital work in progress",           # without hyphen
+}
+```
+CWIP additions count as capex per user's call (Para 79.18 should reflect total capex spend including in-flight work).
+
+### Verified
+- 11 new offline unit tests in `tests/test_clause44_capex_auto_flow.py` — all green:
+  - `_FA_HEADS` covers all canonical spellings + CWIP.
+  - Pool 3 excludes BS-side PPE / Intangibles / CWIP ledgers.
+  - Pool 3 keeps P-side Sch III exclusions (Salary / PF / penal interest).
+  - Recon `capex_total` populates correctly when chain doesn't contain "fixed asset" but head is `Property, Plant and Equipment` / `Intangible Assets` / `Capital Work-in-progress`.
+  - Recon falls back to chain when head is empty (legacy run compat).
+  - P-side ledgers never go into capex_total even if mis-mapped.
+- Updated `tests/test_clause44_release4_4_pools.py::test_exclusion_excludes_capex_and_keeps_pside_keywords` to reflect the new Pool 3 contract.
+- 90 offline Clause 44 tests passing (up from 79). Same 3 pre-existing live-test failures (require backend env) — unaffected.
+
+### Files touched
+**Backend:** `modules/clause44/service.py` (expanded `_FA_HEADS`; removed BS-side capex from Pool 3; switched recon capex split to head-primary with chain fallback).
+
+**Tests:** new `tests/test_clause44_capex_auto_flow.py` (11 tests); updated `tests/test_clause44_release4_4_pools.py`.
+
+### How to verify in live data
+1. Open the Tiruppur Clause 44 run → Step 4 (Exclusions). Capex BS-side rows are gone.
+2. Generate the report (Step 5).
+3. The Reconciliation tab "Capital expenditure additions" row now shows the actual capex spend (computed from voucher classification on PPE / Intangibles / CWIP heads). Per-ledger pivot continues to show capex amounts as before.
+4. Re-download the Excel — the Reconciliation sheet's Para 79.18 line populates correctly.
+
+
 ## Feature · Clause 44 Exempt × ITC Voucher Cross-Check + Stepper Split (Release 4.4.8, 2026-02-09)
 
 **User insight**: Exempt-pool was wrongly suggesting ledgers like "Group Health Insurance Premium" purely on keyword match — but those vouchers carry Input GST entries (taxable post-2022). Proposed: split the combined Special-Ledgers step into sequential ITC → Exempt steps, and after ITC is locked, walk vouchers under each exempt candidate; if any voucher carries an entry under a confirmed ITC ledger, demote the suggestion (taxable supply ≠ exempt supply).
