@@ -1,5 +1,32 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-D · Library Scope Unification (2026-05-08)
+
+User feedback after Phase C ship: the page-level Scope selector + the per-Library Division dropdown + per-row Attribution popover were three controls fighting for the same job. Collapse to one source of truth — the page-level Scope.
+
+### What shipped
+1. **Removed** the in-Library `DIVISION ▼` dropdown (`ClientLibraryPanel` header).
+2. **Removed** the per-row clickable `AttributionControl` popover; replaced with a **static, read-only badge** showing the row's effective scope (`Tiriuppur Division` / `All divisions` / `Per GSTIN group` etc.).
+3. **Row masking** — when a file's catalog `default_attribution` doesn't match the page-level `scope.kind`, the row stays visible but greyed (opacity 55%), Upload button disabled, and the description area shows a one-line hint: `Switch to <Consolidation/Division/GSTIN group> to upload`.
+   - `current_division` files → enabled only under `scope.kind="division"`.
+   - `all_divisions` files → enabled only under `scope.kind="consolidation"`.
+   - `pick_divisions` files → enabled only under `scope.kind="gstin_group"`.
+4. **Delete stays enabled on masked rows** — auditor can still clean up files uploaded under a different scope.
+5. **Single-div clients are unaffected** — no scope UI; behaviour identical to today.
+6. **No backend changes.** Upload still posts `division_ids` derived from the page-level scope (consolidation = all client divisions; division = the selected one; gstin-group = best-effort all divisions).
+
+### Tests · 37 / 37 ✅ (no regressions)
+- All Phase A/B/C.1/C.2/C.3 backend tests still pass (37/37).
+- Frontend smoke verified live on multi-div + single-div + URL-param scope-flip — masking, badges, removed dropdown, removed popover all behave per spec.
+
+### Files touched
+- `frontend/src/pages/ClientUtilities.jsx` — passes `scope` prop to both ClientLibraryPanel mounts.
+- `frontend/src/components/ClientLibraryPanel.jsx`:
+  - Drops the `DIVISION` Select control + the `AttributionControl` popover component (~95 lines removed).
+  - Adds `ATTR_TO_SCOPE` map + `rowGate(file)` helper for masking.
+  - `FileChipRow` renders a static scope badge + masked-row hint.
+  - `resolveAttribution()` now derives `division_ids` purely from the page-level scope (no per-row state).
+
 ## Release 4.7-C.3 · Multi-Division Phase C.3 — GST Recon → GSTIN-group canonical key (2026-05-07 PM)
 
 User-facing Phase C completion. GST Recon's working doc canonical key shifts from `(client, FY)` → `(client, FY, gstin_group_id)`. Auto-synthesises a hidden `Default` group for clients that haven't set up groups so single-GSTIN auditor flow stays one-click. Adds GSTIN-mismatch warn+override on file ingest.

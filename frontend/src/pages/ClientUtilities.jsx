@@ -258,6 +258,7 @@ export default function ClientUtilities() {
               divisions={client.divisions || []}
               initialPeriod={fy}
               periodLocked
+              scope={scope}
               onChange={onLibraryChange}
             />
           </TabsContent>
@@ -273,6 +274,7 @@ export default function ClientUtilities() {
               divisions={client.divisions || []}
               initialPeriod={fy}
               periodLocked
+              scope={scope}
               onChange={onLibraryChange}
             />
           </div>

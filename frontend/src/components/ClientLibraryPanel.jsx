@@ -17,10 +17,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import {
   CheckCircle, Circle, WarningCircle, ArrowClockwise, UploadSimple,
-  DownloadSimple, Trash, Folder, Lightning, FileArrowDown, Stack, CaretDown,
+  DownloadSimple, Trash, Folder, Lightning, FileArrowDown, Stack,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import {
@@ -33,10 +32,29 @@ import GstinGroupsManager from "@/components/GstinGroupsManager";
 
 const PERIOD_PRESETS = FY_OPTIONS;
 
+/**
+ * Map a file's catalog ``default_attribution`` to the page-level scope
+ * that's allowed to upload it.  Phase D refinement (2026-05-07) — the
+ * page-level Scope is the SOLE control; per-row dropdowns are gone and
+ * rows are masked when the auditor's current scope can't upload them.
+ */
+const ATTR_TO_SCOPE = {
+  current_division: "division",
+  all_divisions:    "consolidation",
+  pick_divisions:   "gstin_group",
+};
+
+const SCOPE_LABEL = {
+  division:      "Division",
+  consolidation: "Consolidation",
+  gstin_group:   "GSTIN group",
+};
+
 export default function ClientLibraryPanel({
   clientId, divisions = [],
   initialPeriod = DEFAULT_FY,
   periodLocked = false,
+  scope = null,           // { scopeKind, divisionIds, gstinGroupId, scopeLabel } from ClientUtilities
   onChange,
 }) {
   const [period, setPeriod] = useState(initialPeriod);
@@ -44,17 +62,23 @@ export default function ClientLibraryPanel({
   // (e.g. ClientUtilities FY selector).  Without this effect, the panel
   // would freeze on whatever it picked up at first mount.
   useEffect(() => { setPeriod(initialPeriod); }, [initialPeriod]);
-  const [division, setDivision] = useState(divisions[0]?.division_id || "");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState(null);
   const [showSecondary, setShowSecondary] = useState(true);
-  // Per-row attribution overrides (only relevant for multi-div clients).
-  // Map { fileType -> string[] | null }.  null = "use default for the
-  // catalog entry's `default_attribution`".
-  const [attrByKey, setAttrByKey] = useState({});
   const fileInputs = useRef({});
   const isMulti = divisions.length > 1;
+
+  // Phase D — all uploads are scoped from the page-level Scope selector.
+  // Single-div clients: no scope passed → behave as today (consolidation).
+  // The shape of `scope` follows ``decodeScope()`` from ``@/lib/scope``:
+  //   { kind: "consolidation" | "division" | "gstin_group", id, label,
+  //     divisions: [string] }
+  const pageScopeKind = scope?.kind || "consolidation";
+  const pageDivisionIds = Array.isArray(scope?.divisions) ? scope.divisions : [];
+  // The single division id used for back-compat ``division`` query (used
+  // by the GET /status call to pin the legacy per-division view).
+  const division = pageScopeKind === "division" ? (pageDivisionIds[0] || "") : "";
 
   const refresh = async () => {
     setLoading(true);
@@ -80,28 +104,57 @@ export default function ClientLibraryPanel({
     e.target.value = "";  // reset for re-upload of same name
   };
 
-  // Resolve the effective attribution for a given file row.
-  // - Single-div clients: empty array (server defaults to legacy `division`).
-  // - Multi-div: per-row override if set, else the catalog's
-  //   `default_attribution` rule.
-  const resolveAttribution = (file) => {
+  /**
+   * Phase D — derive division_ids for an upload purely from the
+   * page-level scope.  Per-row picking is gone.
+   *
+   * - scope=division     → [<division_id>]
+   * - scope=consolidation → every division on the client (same as
+   *                          legacy "all_divisions" attribution)
+   * - scope=gstin_group  → divisions belonging to the chosen GSTIN
+   *                          group (looked up via the group on the
+   *                          client doc).  If unavailable, falls back
+   *                          to all divisions so the upload still works.
+   */
+  const resolveAttribution = () => {
     if (!isMulti) return [];
-    const override = attrByKey[file.key];
-    if (Array.isArray(override)) return override;
-    const mode = file.default_attribution || "current_division";
-    if (mode === "all_divisions") return divisions.map((d) => d.division_id);
-    if (mode === "current_division") return division ? [division] : [];
-    return [];  // pick_divisions — auditor must pick
+    if (pageScopeKind === "division") return pageDivisionIds.slice();
+    if (pageScopeKind === "consolidation") return divisions.map((d) => d.division_id);
+    if (pageScopeKind === "gstin_group") {
+      // Best-effort: the GSTIN group's division membership lives on the
+      // group doc itself (Phase A schema).  We don't have it on the page
+      // here, so default to "all divisions" for the upload — the server
+      // already accepts this and the Phase C.3 ingest validator will
+      // catch any GSTIN mismatch on actual GST returns.
+      return divisions.map((d) => d.division_id);
+    }
+    return [];
+  };
+
+  /**
+   * Is this row uploadable under the current page-level scope?
+   * A row is masked (disabled) when its catalog ``default_attribution``
+   * doesn't match the page-level ``scope_kind``.  Outputs (generated
+   * files) are never masked — they're read-only either way.
+   */
+  const rowGate = (file) => {
+    if (!isMulti) return { allowed: true, hint: "" };
+    if (file.kind === "output") return { allowed: true, hint: "" };
+    const required = ATTR_TO_SCOPE[file.default_attribution || "current_division"];
+    if (required === pageScopeKind) return { allowed: true, hint: "" };
+    return {
+      allowed: false,
+      hint: `Switch to ${SCOPE_LABEL[required] || required} to upload`,
+    };
   };
 
   const onUpload = async (file, fileType) => {
     const fileRow = (status?.files || []).find((f) => f.key === fileType);
-    const divisionIds = fileRow ? resolveAttribution(fileRow) : [];
-    // Multi-div clients with `pick_divisions` files must explicitly pick.
-    if (isMulti && (fileRow?.default_attribution === "pick_divisions") && divisionIds.length === 0) {
-      toast.error("Please pick at least one division before uploading this file.");
-      return;
+    if (fileRow) {
+      const gate = rowGate(fileRow);
+      if (!gate.allowed) { toast.error(gate.hint); return; }
     }
+    const divisionIds = resolveAttribution();
     setBusyKey(fileType);
     try {
       await uploadLibraryFile({
@@ -188,40 +241,21 @@ export default function ClientLibraryPanel({
         </div>
       </div>
 
-      {/* Period + Division selectors.  The whole row is hidden when the
-          period is locked from the page-level Working Period selector AND
-          there's no division choice to offer (i.e., single-entity client) —
-          showing "For FY 2025-26" twice on the same screen is just noise. */}
-      {(!periodLocked || divisions.length > 1) && (
+      {/* Period selector — only shown when not locked from the page-level
+          Working Period bar (single-page-design rule).  The Division /
+          Scope is owned by the page-level Scope selector — there's no
+          duplicate here.  Phase D refinement (2026-05-07). */}
+      {!periodLocked && (
         <div className="px-5 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
-          {!periodLocked && (
-            <>
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">For</span>
-              <Select value={period} onValueChange={setPeriod}>
-                <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  {PERIOD_PRESETS.map((p) => (
-                    <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </>
-          )}
-          {divisions.length > 1 && (
-            <>
-              {!periodLocked && <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">·</span>}
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">Division</span>
-              <Select value={division || "all"} onValueChange={(v) => setDivision(v === "all" ? "" : v)}>
-                <SelectTrigger data-testid="library-division-select" className="h-8 w-[180px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all" data-testid="library-division-all">All divisions</SelectItem>
-                  {divisions.map((d) => (
-                    <SelectItem key={d.division_id} value={d.division_id} data-testid={`library-division-${d.division_id}`}>{d.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </>
-          )}
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#8A8A83]">For</span>
+          <Select value={period} onValueChange={setPeriod}>
+            <SelectTrigger data-testid="library-period-select" className="h-8 w-[140px] rounded-sm shadow-none border-[#D4D4D0] text-xs font-mono"><SelectValue/></SelectTrigger>
+            <SelectContent>
+              {PERIOD_PRESETS.map((p) => (
+                <SelectItem key={p} value={p} data-testid={`library-period-${p}`}>FY {p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
@@ -243,9 +277,8 @@ export default function ClientLibraryPanel({
             division={division}
             divisions={divisions}
             isMulti={isMulti}
-            attrByKey={attrByKey}
-            setAttrByKey={setAttrByKey}
-            resolveAttribution={resolveAttribution}
+            rowGate={rowGate}
+            pageScopeKind={pageScopeKind}
           />
           <button
             onClick={() => setShowSecondary((v) => !v)}
@@ -267,9 +300,8 @@ export default function ClientLibraryPanel({
               division={division}
               divisions={divisions}
               isMulti={isMulti}
-              attrByKey={attrByKey}
-              setAttrByKey={setAttrByKey}
-              resolveAttribution={resolveAttribution}
+              rowGate={rowGate}
+              pageScopeKind={pageScopeKind}
             />
           )}
           {outputs.length > 0 && (
@@ -289,9 +321,8 @@ export default function ClientLibraryPanel({
                 division={division}
                 divisions={divisions}
                 isMulti={isMulti}
-                attrByKey={attrByKey}
-                setAttrByKey={setAttrByKey}
-                resolveAttribution={resolveAttribution}
+                rowGate={rowGate}
+                pageScopeKind={pageScopeKind}
               />
             </div>
           )}
@@ -302,7 +333,7 @@ export default function ClientLibraryPanel({
   );
 }
 
-function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete, clientId, period, division, divisions, isMulti, attrByKey, setAttrByKey, resolveAttribution }) {
+function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput, onDelete, clientId, period, division, divisions, isMulti, rowGate, pageScopeKind }) {
   return (
     <div>
       {label && (
@@ -325,9 +356,8 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
             division={division}
             divisions={divisions}
             isMulti={isMulti}
-            attrByKey={attrByKey}
-            setAttrByKey={setAttrByKey}
-            resolveAttribution={resolveAttribution}
+            gate={rowGate(f)}
+            pageScopeKind={pageScopeKind}
           />
         ))}
       </ul>
@@ -335,16 +365,41 @@ function FileGrid({ label, files, busyKey, fileInputs, onPickFile, triggerInput,
   );
 }
 
-function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division, divisions, isMulti, attrByKey, setAttrByKey, resolveAttribution }) {
+function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, clientId, period, division, divisions, isMulti, gate, pageScopeKind }) {
   const isUploaded = file.uploaded;
   const isOutput = file.kind === "output";
   const templateUrl = file.has_template
     ? downloadLibraryTemplateUrl(clientId, file.key, period, division || null)
     : null;
+  // Phase D — gate.allowed=false → row stays visible but greyed/disabled.
+  const masked = !gate.allowed;
+  // Static badge label for the row (no dropdown; purely informational).
+  const scopeBadge = (() => {
+    if (!isMulti || isOutput) return null;
+    const attr = file.default_attribution || "current_division";
+    if (attr === "current_division") {
+      // Show the actual division name when the auditor IS in division
+      // scope; else label generically as "Per-division".
+      if (pageScopeKind === "division") {
+        const d = divisions.find((x) => x.division_id === (division || ""));
+        return { tone: "slate", label: d?.name || "Division" };
+      }
+      return { tone: "slate", label: "Per-division" };
+    }
+    if (attr === "all_divisions") return { tone: "emerald", label: "All divisions" };
+    if (attr === "pick_divisions") return { tone: "violet", label: "Per GSTIN group" };
+    return null;
+  })();
+  const badgeTone = {
+    slate:   "bg-slate-50 text-slate-800 border-slate-200",
+    emerald: "bg-emerald-50 text-emerald-900 border-emerald-200",
+    violet:  "bg-violet-50 text-violet-900 border-violet-200",
+  };
   return (
     <li
       data-testid={`library-file-${file.key}`}
-      className="px-5 py-3 flex items-start gap-4 hover:bg-[#F9F9F8]"
+      data-masked={masked || undefined}
+      className={`px-5 py-3 flex items-start gap-4 ${masked ? "bg-[#FBFBF8] opacity-55 hover:bg-[#FBFBF8]" : "hover:bg-[#F9F9F8]"}`}
     >
       <div className="mt-0.5">
         {isUploaded ? (
@@ -383,7 +438,9 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
           )}
         </div>
         <div className="font-mono text-[10.5px] tracking-[0.06em] text-[#8A8A83] mt-0.5 truncate">
-          {isUploaded ? (
+          {masked ? (
+            <span data-testid={`library-file-${file.key}-mask-hint`}>{gate.hint}</span>
+          ) : isUploaded ? (
             <>
               {file.filename_original} · {(file.size_bytes / 1024).toFixed(0)} KB
               · {isOutput ? "generated" : "uploaded"} {formatDateTime(file.uploaded_at)}
@@ -395,15 +452,16 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {!isOutput && isMulti && (
-          <AttributionControl
-            file={file}
-            divisions={divisions}
-            division={division}
-            value={attrByKey[file.key]}
-            resolved={resolveAttribution(file)}
-            onChange={(next) => setAttrByKey((m) => ({ ...m, [file.key]: next }))}
-          />
+        {/* Phase D — static, read-only scope badge (no dropdown). */}
+        {scopeBadge && (
+          <span
+            data-testid={`library-scope-badge-${file.key}`}
+            className={`h-8 inline-flex items-center gap-1 px-2 border rounded-sm font-mono text-[10.5px] uppercase tracking-[0.12em] ${badgeTone[scopeBadge.tone]}`}
+            title={`Effective scope · ${scopeBadge.label}`}
+          >
+            <Stack size={11} />
+            <span className="max-w-[110px] truncate">{scopeBadge.label}</span>
+          </span>
         )}
         {!isOutput && (
           <input
@@ -428,7 +486,7 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
         {/* Download Template — only for file_types with a registered
             generator (Party Master today; FA Register / Bank Statements
             etc. follow the same pattern in future). */}
-        {templateUrl && !isOutput && (
+        {templateUrl && !isOutput && !masked && (
           <a
             href={templateUrl}
             data-testid={`library-template-${file.key}`}
@@ -443,9 +501,10 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
             data-testid={`library-upload-${file.key}`}
             size="sm"
             variant="outline"
-            disabled={busy}
+            disabled={busy || masked}
             onClick={onUploadClick}
-            className="h-8 px-2.5 rounded-sm shadow-none border-[#D4D4D0] font-mono text-[10.5px] uppercase tracking-[0.12em]"
+            title={masked ? gate.hint : (isUploaded ? "Replace this file" : "Upload this file")}
+            className="h-8 px-2.5 rounded-sm shadow-none border-[#D4D4D0] font-mono text-[10.5px] uppercase tracking-[0.12em] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? <><Lightning size={11} className="animate-pulse mr-1"/> Uploading</> : (
               <>
@@ -454,6 +513,8 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
             )}
           </Button>
         )}
+        {/* Delete stays enabled even on masked rows so an auditor can
+            clean up files that were uploaded under a different scope. */}
         {isUploaded && !isOutput && (
           <button
             onClick={() => onDelete(file.key, file.file_id)}
@@ -471,105 +532,3 @@ function FileChipRow({ file, busy, inputRef, onPick, onUploadClick, onDelete, cl
 
 // Re-export the small helpers if a parent wants them.
 export { WarningCircle };
-
-/**
- * AttributionControl — small popover trigger shown on every Library
- * row for multi-division clients.  Lets the auditor scope the upload
- * to one or more specific divisions, all divisions, or just the
- * currently-selected division.  The default selection follows the
- * file_type's `default_attribution` rule from the catalog.
- */
-function AttributionControl({ file, divisions, division, value, resolved, onChange }) {
-  const allIds = divisions.map((d) => d.division_id);
-  const sel = Array.isArray(value) ? value : resolved;
-  const isAll = sel.length === allIds.length && allIds.length > 0;
-
-  // Persisted attribution from server (existing uploads).  Show as a
-  // muted hint so auditor knows what's currently saved.
-  const persisted = file.division_ids || [];
-
-  const label = (() => {
-    if (sel.length === 0) return "Pick divisions…";
-    if (isAll) return "All divisions";
-    if (sel.length === 1) {
-      const d = divisions.find((x) => x.division_id === sel[0]);
-      return d?.name || "1 division";
-    }
-    return `${sel.length} divisions`;
-  })();
-
-  const toggle = (id) => {
-    const cur = new Set(sel);
-    if (cur.has(id)) cur.delete(id);
-    else cur.add(id);
-    onChange(Array.from(cur).sort());
-  };
-
-  const tone =
-    sel.length === 0
-      ? "bg-rose-50 text-rose-900 border-rose-200"
-      : isAll
-      ? "bg-emerald-50 text-emerald-900 border-emerald-200"
-      : "bg-slate-50 text-slate-800 border-slate-200";
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          data-testid={`library-attribution-${file.key}`}
-          className={`h-8 inline-flex items-center gap-1 px-2 border rounded-sm font-mono text-[10.5px] uppercase tracking-[0.12em] hover:opacity-90 ${tone}`}
-          title={`Attribution for ${file.label}`}
-          type="button"
-        >
-          <Stack size={11}/>
-          <span className="max-w-[110px] truncate">{label}</span>
-          <CaretDown size={9}/>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0">
-        <div className="px-3 py-2 border-b border-[#E5E5E0] bg-[#FAFAF7]">
-          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#8A8A83]">
-            Attribute to divisions
-          </div>
-          <div className="text-[11.5px] text-[#52524E] mt-0.5 leading-snug">
-            Default for this file: <span className="font-mono">{(file.default_attribution || "current_division").replace("_", " ")}</span>
-          </div>
-        </div>
-        <div className="max-h-64 overflow-auto">
-          <button
-            type="button"
-            data-testid={`library-attribution-${file.key}-all`}
-            onClick={() => onChange(isAll ? [] : allIds)}
-            className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[#F3F4F1] flex items-center gap-2 border-b border-[#E5E5E0]"
-          >
-            <span className={`w-3 h-3 border ${isAll ? "bg-[#0F172A] border-[#0F172A]" : "border-[#D4D4D0]"}`}/>
-            <span className="font-medium">All divisions</span>
-          </button>
-          {divisions.map((d) => {
-            const checked = sel.includes(d.division_id);
-            return (
-              <button
-                type="button"
-                key={d.division_id}
-                data-testid={`library-attribution-${file.key}-div-${d.division_id}`}
-                onClick={() => toggle(d.division_id)}
-                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-[#F3F4F1] flex items-center gap-2"
-              >
-                <span className={`w-3 h-3 border ${checked ? "bg-[#0F172A] border-[#0F172A]" : "border-[#D4D4D0]"}`}/>
-                <span className="flex-1 truncate">{d.name}</span>
-                {division === d.division_id && (
-                  <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#8A8A83]">current</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-        {persisted.length > 0 && (
-          <div className="px-3 py-2 border-t border-[#E5E5E0] bg-[#FAFAF7] font-mono text-[10px] tracking-[0.06em] text-[#8A8A83]">
-            Saved: {persisted.length === allIds.length ? "All divisions" : `${persisted.length} division${persisted.length === 1 ? "" : "s"}`}
-          </div>
-        )}
-      </PopoverContent>
-    </Popover>
-  );
-}
