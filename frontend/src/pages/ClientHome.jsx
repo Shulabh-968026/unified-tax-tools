@@ -246,6 +246,14 @@ export default function ClientHome() {
             const hasBooks = !!findKey("books_json");
             const hasMap   = !!findKey("ledger_mapping_xlsx");
             const ready = hasBooks && hasMap;
+            // Release 4.4.12 — in Consolidation scope view, the CTA is
+            // "View Consolidated Report" (computed from division runs),
+            // NOT "Start a new run".  Uploads only happen at division
+            // scope.
+            const isConsolidationView = isMulti && urlScope.scopeKind === "consolidation";
+            const generatedDivCount = runs.filter(
+              (r) => r.period === effectivePeriod && r.generated && r.division_id,
+            ).length;
             return (
               <section
                 data-testid="clause44-quick-start"
@@ -259,26 +267,53 @@ export default function ClientHome() {
                       {activeScopeLabel}
                     </Badge>
                   )}
-                  <Badge
-                    data-testid="lib-readiness-chip"
-                    className={`${ready ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-amber-50 text-amber-900 border-amber-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}
-                    title={ready
-                      ? "Books + Ledger Mapping are pinned in the Library; the run will use them directly."
-                      : "Books JSON and/or Ledger Mapping not yet uploaded for this scope."}
-                  >
-                    {ready ? "Library ready" : "Library partial"}
-                  </Badge>
+                  {!isConsolidationView && (
+                    <Badge
+                      data-testid="lib-readiness-chip"
+                      className={`${ready ? "bg-emerald-50 text-emerald-900 border-emerald-200" : "bg-amber-50 text-amber-900 border-amber-200"} border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]`}
+                      title={ready
+                        ? "Books + Ledger Mapping are pinned in the Library; the run will use them directly."
+                        : "Books JSON and/or Ledger Mapping not yet uploaded for this scope."}
+                    >
+                      {ready ? "Library ready" : "Library partial"}
+                    </Badge>
+                  )}
+                  {isConsolidationView && (
+                    <Badge
+                      data-testid="consolidation-info-chip"
+                      className="bg-slate-50 text-slate-800 border-slate-200 border rounded-sm shadow-none font-mono text-[10px] uppercase tracking-[0.1em]"
+                      title="Consolidated Report is the computed sum of per-division runs — there is no upload at Consolidation scope."
+                    >
+                      Σ {generatedDivCount} division run{generatedDivCount === 1 ? "" : "s"} · Auto-computed
+                    </Badge>
+                  )}
                 </div>
-                <Button
-                  data-testid="start-run-btn"
-                  onClick={onStartRun}
-                  disabled={starting}
-                  className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2 disabled:opacity-60"
-                  title={ready ? "Start a run using the Library files" : "Upload required files to start"}
-                >
-                  {starting ? "Starting…" : (ready ? "Start a new run" : "Upload to start run")}
-                  <ArrowRight size={14} weight="bold"/>
-                </Button>
+                {isConsolidationView ? (
+                  <Button
+                    data-testid="open-consolidated-btn"
+                    onClick={() => navigate(`/dashboard/clients/${clientId}/utilities/clause-44/consolidated/${encodeURIComponent(effectivePeriod)}`)}
+                    disabled={generatedDivCount < 1}
+                    className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2 disabled:opacity-60"
+                    title={generatedDivCount < 1
+                      ? "Generate at least one division run first"
+                      : "Open the computed Consolidated Report"}
+                  >
+                    <Stack size={12} weight="bold"/>
+                    {generatedDivCount < 1 ? "Generate a division first" : "View Consolidated Report"}
+                    <ArrowRight size={14} weight="bold"/>
+                  </Button>
+                ) : (
+                  <Button
+                    data-testid="start-run-btn"
+                    onClick={onStartRun}
+                    disabled={starting}
+                    className="h-10 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-2 disabled:opacity-60"
+                    title={ready ? "Start a run using the Library files" : "Upload required files to start"}
+                  >
+                    {starting ? "Starting…" : (ready ? "Start a new run" : "Upload to start run")}
+                    <ArrowRight size={14} weight="bold"/>
+                  </Button>
+                )}
               </section>
             );
           })()
@@ -348,8 +383,16 @@ export default function ClientHome() {
             </div>
           ) : (
             grouped.map(([per, list]) => {
+              // Release 4.4.12 — Consolidated Report is a computed merge
+              // of per-division runs.  Only show the button when the
+              // auditor is in Consolidation scope view (never inside a
+              // specific division's view).  Requires ≥1 generated
+              // division run for the period.
               const generatedDivs = list.filter((r) => r.generated && r.division_id);
-              const showConsolidated = isMulti && generatedDivs.length >= 2;
+              const showConsolidated =
+                isMulti &&
+                urlScope.scopeKind === "consolidation" &&
+                generatedDivs.length >= 1;
               return (
                 <div key={per} className="mt-5 border border-[#E5E5E0] bg-white rounded-sm">
                   <div className="px-4 py-3 border-b border-[#E5E5E0] flex items-center gap-3 flex-wrap">
@@ -441,7 +484,10 @@ export default function ClientHome() {
             clientId={clientId}
             period={effectivePeriod}
             divisionId={isMulti ? divisionId : null}
-            scopeKind={urlScope.scopeKind === "consolidation" && isMulti && !divisionId ? "consolidation" : null}
+            /* Release 4.4.12 (Clause 44) — Consolidated view is a
+               computed merge, not an upload target.  Never request
+               scope_kind="consolidation" on upload. */
+            scopeKind={null}
             onUploaded={(runId) => {
               setShowUpload(false);
               navigate(`/dashboard/runs/${runId}`);

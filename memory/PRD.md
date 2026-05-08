@@ -1,5 +1,50 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Feature · Clause 44 Consolidated Report — Clean Cut to Mode A (Release 4.4.12, 2026-02-09)
+
+**User clarification**: *"Consolidation is nothing but a sum total of individual divisions reports. Uploads are done at division level, Consolidated tab should only automatically populate with excel upload. Nothing else."* — i.e. Mode A only. Not touching other modules.
+
+**Root cause of the user-reported bugs**:
+1. **Division view showed a Consolidated Report button** — `ClientHome.jsx:352` used the rule `isMulti && generatedDivs.length >= 2`, scope-blind.
+2. **Consolidated for FY 2024-25 showed Tiruppur's data** — the endpoint `GET /clients/{id}/consolidated` fetched *every* generated run for the period with no scope filter and merged them, including any stray `scope_kind="consolidation"` run (which could coexist with division runs silently).
+3. **Upload dialog quietly allowed consolidation-scope uploads** — `ClientHome.jsx:444` passed `scopeKind="consolidation"` whenever the auditor was in Consolidation view, creating standalone uploads that don't fit the computed-sum model.
+
+### What shipped — Fix 7 (Clause 44 only, no other modules touched)
+
+**Backend** (`modules/clause44/controller.py`):
+- `POST /runs` — reject `scope.scope_kind == "consolidation"` with `400` + helpful message.
+- `POST /runs/from-library` — same rejection.
+- `GET /clients/{id}/consolidated` — query now filters `scope_kind != "consolidation"` AND `division_id != None`. Applies the Fix 6 fresh-re-classification contract per division run before merging, so the merged view reflects current engine logic (including capex head-based split etc.) without requiring re-Generate on each division.
+- `GET /clients/{id}/consolidated/export` — same filter + fresh re-classify.
+- 404 response when no division runs exist: *"No generated division runs for this client/period. The Consolidated Report is computed by summing division runs — generate at least one division run first."*
+
+**Frontend** (`pages/ClientHome.jsx`):
+- Consolidated Report button in the runs list header now gated by `urlScope.scopeKind === "consolidation"` (hides it inside any Division view). Changed threshold from `≥2` to `≥1` division runs (merge is idempotent at N=1).
+- Quick-start panel: in Consolidation scope, replaces *"Start a new run"* with a *"View Consolidated Report"* CTA that navigates to the consolidated report page. Disabled until ≥1 division run is generated. Uses `<Stack/>` icon + `data-testid="open-consolidated-btn"`.
+- Library-readiness chip hidden in Consolidation scope; replaced by a `Σ N division runs · Auto-computed` informational chip.
+- Upload dialog no longer passes `scopeKind="consolidation"` — any upload the auditor initiates lands at division scope only.
+
+### Verified
+- 8 new offline tests in `tests/test_clause44_consolidated_merge.py` — merge semantics (P&L sum, capex sum, idempotence at N=1, same-name ledger combine, division stamp on transactions, single-division matches on-screen).
+- 3 new offline tests in `tests/test_clause44_consolidated_guards.py` — query filter verified via mocked Mongo cursor, 404 message contract, source-level assertion that the upload guard appears in both POST endpoints.
+- 111 offline Clause 44 tests passing (up from 100). Same 3 pre-existing live-test failures (require backend env), unaffected.
+- Lint clean. Backend healthy.
+
+### How to verify in live data
+1. Open Tiruppur Division view → the Consolidated Report button is gone from the runs list header. The quick-start panel still shows "Start a new run".
+2. Switch scope to Consolidation via the parent page → button reappears in the quick-start panel. Shows `Σ N division runs · Auto-computed` chip.
+3. Click `View Consolidated Report` → page now shows only the sum of division runs; no Tiruppur bleed.
+4. Try to upload inside Consolidation scope → rejected with `400` + message pointing the auditor to upload under a specific division.
+5. If any legacy `scope_kind="consolidation"` run exists in Mongo, it's now invisible to the consolidated endpoint (no delete / migration needed).
+
+### Files touched
+**Backend:** `modules/clause44/controller.py` (upload guards + consolidated query filter + fresh-re-classify).
+
+**Frontend:** `pages/ClientHome.jsx` (scope-gated button, consolidation-aware quick-start, upload dialog neutered).
+
+**Tests:** new `tests/test_clause44_consolidated_merge.py` (8 tests) + `tests/test_clause44_consolidated_guards.py` (3 tests).
+
+
 ## Bugfix · Clause 44 Export Excel ≡ On-Screen Recon (Release 4.4.11, 2026-02-09)
 
 **User report**: "I find the Reconciliation tab in Excel doesn't contain the capital expenditure fix recently carried out. Can you recheck whether Excel export is exactly the same as on-screen report?"

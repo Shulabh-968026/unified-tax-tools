@@ -244,6 +244,22 @@ async def upload_run(
         legacy_division_id=division_id,
     )
 
+    # Release 4.4.12 (Clause 44 — Mode A only): Consolidated is a COMPUTED
+    # merge of division runs, not an independent upload target.  Reject
+    # any attempt to create a consolidation-scope run so the two flows
+    # can't mix and silently double-count.
+    if scope.get("scope_kind") == "consolidation":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Consolidated view for Clause 44 is the computed sum of "
+                "division runs — it is not an upload target.  Upload "
+                "under a specific division instead; the Consolidated "
+                "Report will auto-populate once ≥1 division run is "
+                "generated."
+            ),
+        )
+
     period = (period or "").strip()
     if not is_valid_period(period):
         raise HTTPException(
@@ -474,6 +490,18 @@ async def create_run_from_library(
         gstin_group_id=payload.get("gstin_group_id"),
         legacy_division_id=division_id,
     )
+    # Release 4.4.12 — reject consolidation-scope runs for Clause 44.
+    # Consolidated is a computed merge of divisions (see `POST /runs`
+    # comment above).
+    if scope.get("scope_kind") == "consolidation":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Consolidated view for Clause 44 is the computed sum of "
+                "division runs — it is not an upload target.  Upload "
+                "under a specific division instead."
+            ),
+        )
     if scope["scope_kind"] == "division" and not division_id and scope["division_ids"]:
         division_id = scope["division_ids"][0]
         match = next((d for d in (cli.get("divisions") or []) if d.get("division_id") == division_id), None)
@@ -1274,13 +1302,48 @@ async def get_consolidated(
     cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
     if not cli:
         raise HTTPException(status_code=404, detail="Client not found")
+    # Release 4.4.12 — ONLY merge per-division runs.  Any stray
+    # consolidation-scope runs from earlier builds are excluded so they
+    # can't double-count into the merged view.
     runs = await db.runs.find(
-        {"client_id": client_id, "period": period, "generated": True},
+        {
+            "client_id": client_id,
+            "period": period,
+            "generated": True,
+            "archived": {"$ne": True},
+            "scope_kind": {"$ne": "consolidation"},
+            "division_id": {"$ne": None},
+        },
         {"_id": 0, "accounting": 0, "ledgers_xlsx": 0},
     ).to_list(500)
     if not runs:
-        raise HTTPException(status_code=404, detail="No generated runs for this client/period")
-    merged = merge_runs_for_consolidation(runs)
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No generated division runs for this client/period.  "
+                "The Consolidated Report is computed by summing "
+                "division runs — generate at least one division run first."
+            ),
+        )
+    # Apply the same fresh-classification contract (Release 4.4.11) to
+    # every contributing run so the merged view reflects current engine
+    # logic without forcing each division to be re-generated.
+    fresh_runs = []
+    for r in runs:
+        try:
+            rh = await _ensure_run_data(r)
+            fresh = _run_classification(rh)
+            fresh_runs.append({
+                **r,
+                "summary":      fresh["summary"],
+                "by_ledger":    fresh["by_ledger"],
+                "by_party":     fresh["by_party"],
+                "recon":        fresh["recon"],
+                "transactions": fresh.get("transactions", r.get("transactions", [])),
+            })
+        except Exception:
+            fresh_runs.append(r)     # fall back to stored snapshot
+    merged = merge_runs_for_consolidation(fresh_runs)
     return {
         "client_id": client_id,
         "client_name": cli.get("name"),
@@ -1304,13 +1367,40 @@ async def export_consolidated(
     cli = await db.clients.find_one({"client_id": client_id}, {"_id": 0})
     if not cli:
         raise HTTPException(status_code=404, detail="Client not found")
+    # Release 4.4.12 — same scope filter + fresh-classify as the
+    # on-screen consolidated endpoint so the Excel matches to the rupee.
     runs = await db.runs.find(
-        {"client_id": client_id, "period": period, "generated": True},
+        {
+            "client_id": client_id,
+            "period": period,
+            "generated": True,
+            "archived": {"$ne": True},
+            "scope_kind": {"$ne": "consolidation"},
+            "division_id": {"$ne": None},
+        },
         {"_id": 0, "accounting": 0, "ledgers_xlsx": 0},
     ).to_list(500)
     if not runs:
-        raise HTTPException(status_code=404, detail="No generated runs for this client/period")
-    merged = merge_runs_for_consolidation(runs)
+        raise HTTPException(
+            status_code=404,
+            detail="No generated division runs for this client/period",
+        )
+    fresh_runs = []
+    for r in runs:
+        try:
+            rh = await _ensure_run_data(r)
+            fresh = _run_classification(rh)
+            fresh_runs.append({
+                **r,
+                "summary":      fresh["summary"],
+                "by_ledger":    fresh["by_ledger"],
+                "by_party":     fresh["by_party"],
+                "recon":        fresh["recon"],
+                "transactions": fresh.get("transactions", r.get("transactions", [])),
+            })
+        except Exception:
+            fresh_runs.append(r)
+    merged = merge_runs_for_consolidation(fresh_runs)
     pseudo = {
         "company_name": f"{cli.get('name')} (Consolidated · {period})",
         "generated_at": datetime.now(timezone.utc).isoformat(),
