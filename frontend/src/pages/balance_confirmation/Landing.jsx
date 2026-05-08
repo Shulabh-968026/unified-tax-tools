@@ -155,6 +155,19 @@ export default function BalanceConfirmationLanding() {
     } finally { setBusy(false); }
   };
 
+  /* Phase D — pull books from Library if it's already pinned */
+  const onIngestFromLibrary = async () => {
+    if (!rid) { toast.error("Create a run first"); return; }
+    setBusy(true);
+    try {
+      const { data } = await http.post(`/balance-confirmation/runs/${rid}/ingest-from-library`);
+      toast.success(`Ingested ${data.ledger_count} ledgers from Library`);
+      refreshRun(); refreshLedgers();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Library ingest failed");
+    } finally { setBusy(false); }
+  };
+
   /* ---------- Ledger CSV import / export ---------- */
   const exportCsv = async () => {
     if (!rid) return;
@@ -415,17 +428,29 @@ export default function BalanceConfirmationLanding() {
 
                   {/* Books upload zone */}
                   {!run.source_filename && (
-                    <div ref={dropRef}
-                      className="mt-5 border border-dashed border-gray-300 p-6 rounded-sm text-center hover:bg-gray-50 cursor-pointer"
-                      onDragOver={e => { e.preventDefault(); }}
-                      onDrop={e => { e.preventDefault(); onFileDrop(e.dataTransfer.files?.[0]); }}
-                      onClick={() => document.getElementById("bc-books-input").click()}
-                      data-testid="bc-books-dropzone">
-                      <FolderUp size={28} className="mx-auto text-gray-400"/>
-                      <div className="text-sm text-gray-700 font-medium mt-2">Drop the year's Books JSON, or click to browse</div>
-                      <div className="text-[11px] text-gray-500 mt-1">Tally export with `ledgers[]`, `groups[]`, `vouchers[]`</div>
-                      <input id="bc-books-input" type="file" accept=".json,application/json" className="hidden"
-                        onChange={e => onFileDrop(e.target.files?.[0])}/>
+                    <div className="mt-5 space-y-3">
+                      <button
+                        type="button"
+                        data-testid="bc-pull-from-library"
+                        onClick={onIngestFromLibrary}
+                        disabled={busy}
+                        className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-60 rounded-sm text-[13px] font-medium text-emerald-900"
+                        title="Pull the pinned Books JSON from the Data Library — no re-upload needed"
+                      >
+                        <Download size={14}/> Pull books from Library
+                      </button>
+                      <div ref={dropRef}
+                        className="border border-dashed border-gray-300 p-6 rounded-sm text-center hover:bg-gray-50 cursor-pointer"
+                        onDragOver={e => { e.preventDefault(); }}
+                        onDrop={e => { e.preventDefault(); onFileDrop(e.dataTransfer.files?.[0]); }}
+                        onClick={() => document.getElementById("bc-books-input").click()}
+                        data-testid="bc-books-dropzone">
+                        <FolderUp size={28} className="mx-auto text-gray-400"/>
+                        <div className="text-sm text-gray-700 font-medium mt-2">…or drop a fresh Books JSON, or click to browse</div>
+                        <div className="text-[11px] text-gray-500 mt-1">Tally export with `ledgers[]`, `groups[]`, `vouchers[]`</div>
+                        <input id="bc-books-input" type="file" accept=".json,application/json" className="hidden"
+                          onChange={e => onFileDrop(e.target.files?.[0])}/>
+                      </div>
                     </div>
                   )}
                 </div>

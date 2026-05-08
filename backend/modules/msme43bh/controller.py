@@ -145,11 +145,20 @@ async def upload_yearend(
     session_token: Optional[str] = Cookie(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    await _auth(request, session_token, authorization)
+    user = await _auth(request, session_token, authorization)
     doc = await dao.find_session(sid)
     if not doc:
         raise HTTPException(404, "Session not found")
     content = await file.read()
+    return await _persist_msme_yearend(
+        sid=sid, doc=doc, content=content,
+        filename=file.filename or "yearend.xlsx", user=user,
+    )
+
+
+async def _persist_msme_yearend(*, sid: str, doc: dict, content: bytes, filename: str, user: dict, save_to_library: bool = True) -> dict:
+    """Shared yearend-Excel ingest logic — used by both ``POST /yearend``
+    (multipart re-upload) and ``POST /yearend-from-library`` (Phase D)."""
     try:
         bills = parse_yearend_excel(content)
     except Exception as e:
@@ -162,17 +171,70 @@ async def upload_yearend(
     else:
         profiles = doc["profiles"]
 
+    pinned_files = doc.get("pinned_files") or {}
+    if save_to_library and doc.get("client_id") and doc.get("fy"):
+        try:
+            firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+            lib_file = await lib_svc.save_and_pin(
+                firm_id=firm_id, client_id=doc["client_id"], period=doc["fy"],
+                division=None, file_type="msme43bh_creditor_report_xlsx",
+                filename_original=filename, content=content,
+                uploaded_by_email=user.get("email") or "", run_id=sid,
+                parse_status="success",
+                parse_summary={"bill_count": len(bills)},
+            )
+            pinned_files = {**pinned_files, "msme43bh_creditor_report_xlsx": lib_file["file_id"]}
+        except Exception:
+            logger.exception("Library save failed (non-fatal)")
+
     await dao.set_session_fields(sid, {
         "yearend_bills": bills,
         "profiles": profiles,
         "results": None,
-        "source_filename": file.filename or "",
+        "source_filename": filename,
+        "pinned_files": pinned_files,
+        "firm_id": user.get("firm_id") or DEFAULT_FIRM_ID,
     })
     return {
         "bill_count": len(bills),
         "unique_ledgers": len({b["ledger_name"] for b in bills}),
         "profile_count": len(profiles),
     }
+
+
+@router.post("/sessions/{sid}/yearend-from-library")
+async def yearend_from_library(
+    sid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase D — pull the pinned MSME 43B(h) creditor report from the
+    Library and ingest without re-uploading."""
+    user = await _auth(request, session_token, authorization)
+    doc = await dao.find_session(sid)
+    if not doc:
+        raise HTTPException(404, "Session not found")
+    if not doc.get("client_id") or not doc.get("fy"):
+        raise HTTPException(400, "Session is not bound to a client/FY")
+    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+    division = (doc.get("division_ids") or [None])[0] if doc.get("scope_kind") == "division" else None
+    cur = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=doc["client_id"], period=doc["fy"],
+        division=division, file_type="msme43bh_creditor_report_xlsx",
+    )
+    if not cur:
+        raise HTTPException(
+            400,
+            "MSME 43B(h) Creditor Report is not pinned in the Library for this scope. "
+            "Upload it via the Data Library tab first, or use the legacy upload.",
+        )
+    content = await lib_svc.read_file_bytes(cur["file_id"])
+    return await _persist_msme_yearend(
+        sid=sid, doc=doc, content=content,
+        filename=cur.get("filename_original") or "yearend.xlsx",
+        user=user, save_to_library=False,
+    )
 
 
 @router.get("/sessions/{sid}/template")

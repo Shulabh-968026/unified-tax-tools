@@ -80,6 +80,20 @@ export default function FsRunPage() {
     }
   };
 
+  /* Phase D — pull books from Library if pinned */
+  const onIngestFromLibrary = async () => {
+    setUploading(true);
+    try {
+      await http.post(`/fin-statement/runs/${rid}/ingest-from-library`);
+      toast.success("Financial statement ingested from Library");
+      refresh();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Library ingest failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const downloadPdf = async (template) => {
     setDownloading(template);
     try {
@@ -151,6 +165,15 @@ export default function FsRunPage() {
               className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-700 text-[12px] hover:bg-slate-50"
             >
               <History size={13}/> History
+            </button>
+            <button
+              onClick={onIngestFromLibrary}
+              disabled={uploading}
+              data-testid="fs-pull-from-library"
+              title="Pull the pinned FinalStatement JSON from the Data Library — no re-upload needed"
+              className="inline-flex items-center gap-1.5 px-3 py-2 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-[12px] disabled:opacity-60"
+            >
+              <FileText size={13}/> Pull from Library
             </button>
             <button
               onClick={() => fileRef.current?.click()}

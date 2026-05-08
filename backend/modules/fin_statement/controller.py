@@ -198,22 +198,10 @@ async def delete_run(
 
 
 # ============================ Ingestion ==================================
-@router.post("/runs/{rid}/ingest")
-async def ingest_statement(
-    rid: str,
-    request: Request,
-    file: UploadFile = File(...),
-    session_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
-):
-    """Upload a pre-aggregated FinalStatement JSON for this run. Parses,
-    normalizes, persists, and returns the normalized preview document."""
-    user = await _auth(request, session_token, authorization)
-    run = await RUNS.find_one({"id": rid}, {"_id": 0})
-    if not run:
-        raise HTTPException(404, "Run not found")
-
-    raw = await file.read()
+async def _persist_fs_books(*, rid: str, run: dict, raw: bytes, filename: str, user: dict, save_to_library: bool = True) -> dict:
+    """Shared FS ingest logic — used by both ``POST /runs/:rid/ingest``
+    (multipart re-upload) and ``POST /runs/:rid/ingest-from-library``
+    (Phase D)."""
     if not raw:
         raise HTTPException(400, "Empty file")
     if len(raw) > 60 * 1024 * 1024:
@@ -222,42 +210,33 @@ async def ingest_statement(
         payload = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise HTTPException(400, f"Invalid JSON: {e}")
-
     try:
         client_rec = await db.clients.find_one({"client_id": run["client_id"]}, {"_id": 0})
         doc = normalize_final_statement(payload, client_record=client_rec)
     except ValueError as e:
         raise HTTPException(400, str(e))
-
     now_iso = datetime.now(timezone.utc).isoformat()
     doc["run_id"] = rid
-    doc["source_filename"] = file.filename or ""
+    doc["source_filename"] = filename
     doc["ingested_at"] = now_iso
-
-    # Library — save the FinalStatement JSON as books_json + pin to run.
     pinned_files = run.get("pinned_files") or {}
-    try:
-        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
-        lib_books = await lib_svc.save_and_pin(
-            firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
-            division=None, file_type="books_json",
-            filename_original=file.filename or "books.json", content=raw,
-            uploaded_by_email=user.get("email") or "", run_id=rid,
-            parse_status="success",
-            parse_summary={"n_notes": doc.get("counts", {}).get("notes", 0)},
-        )
-        pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
-    except Exception:
-        log.exception("Library save failed (non-fatal)")
-
+    if save_to_library:
+        try:
+            firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+            lib_books = await lib_svc.save_and_pin(
+                firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+                division=None, file_type="books_json",
+                filename_original=filename or "books.json", content=raw,
+                uploaded_by_email=user.get("email") or "", run_id=rid,
+                parse_status="success",
+                parse_summary={"n_notes": doc.get("counts", {}).get("notes", 0)},
+            )
+            pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
+        except Exception:
+            log.exception("Library save failed (non-fatal)")
     await BOOKS_RAW.replace_one(
         {"run_id": rid},
-        {
-            "run_id":          rid,
-            "ingested_at":     now_iso,
-            "source_filename": file.filename or "",
-            "envelope":        payload,
-        },
+        {"run_id": rid, "ingested_at": now_iso, "source_filename": filename, "envelope": payload},
         upsert=True,
     )
     await FS_DOC.replace_one({"run_id": rid}, doc, upsert=True)
@@ -274,12 +253,10 @@ async def ingest_statement(
             "firm_id":      user.get("firm_id") or DEFAULT_FIRM_ID,
         }},
     )
-    # Release 4.5 — append-only generations log
     try:
         await append_generation(
             run_id=rid, module="fin_statement",
-            client_id=run.get("client_id"),
-            period=run.get("fy"),
+            client_id=run.get("client_id"), period=run.get("fy"),
             generated_by_email=user.get("email"),
             pinned_files_snapshot=pinned_files,
             summary_snapshot={
@@ -291,6 +268,58 @@ async def ingest_statement(
         log.exception("append_generation failed (non-fatal)")
     doc.pop("_id", None)
     return doc
+
+
+@router.post("/runs/{rid}/ingest")
+async def ingest_statement(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Upload a pre-aggregated FinalStatement JSON for this run."""
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    raw = await file.read()
+    return await _persist_fs_books(
+        rid=rid, run=run, raw=raw, filename=file.filename or "books.json", user=user,
+    )
+
+
+@router.post("/runs/{rid}/ingest-from-library")
+async def ingest_from_library(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase D — pull the pinned ``books_json`` from the Library and ingest
+    without re-uploading."""
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+    division = (run.get("division_ids") or [None])[0] if run.get("scope_kind") == "division" else None
+    cur = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+        division=division, file_type="books_json",
+    )
+    if not cur:
+        raise HTTPException(
+            400,
+            "Books JSON is not pinned in the Library for this scope. "
+            "Upload it via the Data Library tab first, or use the legacy upload.",
+        )
+    raw = await lib_svc.read_file_bytes(cur["file_id"])
+    return await _persist_fs_books(
+        rid=rid, run=run, raw=raw,
+        filename=cur.get("filename_original") or "books.json",
+        user=user, save_to_library=False,
+    )
 
 
 @router.get("/runs/{rid}/generations")

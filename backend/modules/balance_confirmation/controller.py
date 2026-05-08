@@ -319,56 +319,45 @@ async def rerun_on_latest(
 
 
 # ============================ Books JSON ingest ===============================
-@router.post("/runs/{rid}/upload-books")
-async def upload_books(
-    rid: str,
-    request: Request,
-    file: UploadFile = File(...),
-    session_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
-):
-    user = await _auth(request, session_token, authorization)
-    run = await RUNS.find_one({"id": rid}, {"_id": 0})
-    if not run:
-        raise HTTPException(404, "Run not found")
+async def _persist_bc_books(*, rid: str, run: dict, content: bytes, filename: str, user: dict, save_to_library: bool = True) -> dict:
+    """Shared books-JSON ingest logic — used by both ``POST /upload-books``
+    (multipart re-upload) and ``POST /ingest-from-library`` (Phase D).
 
-    content = await file.read()
+    Idempotent: replaces ``BOOKS_RAW`` + ``LEDGERS`` for the run, carries
+    forward auditor-edited per-ledger fields (emails, addresses, status)
+    when the same ledger name reappears.
+    """
     try:
         company, groups, ledgers = parse_books_json(content)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    # Persist gzipped raw for any later re-classification + audit trail
     import gzip
     await BOOKS_RAW.delete_many({"run_id": rid})
     await BOOKS_RAW.insert_one({
         "run_id": rid,
-        "filename": file.filename or "",
+        "filename": filename,
         "content_b64": base64.b64encode(gzip.compress(content)).decode("ascii"),
         "size": len(content),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     })
 
-    # Library integration — also save bytes to the Client Library and pin
-    # this run to the resulting version.  Downstream "outdated" detection
-    # works off this pin.
     pinned_files = run.get("pinned_files") or {}
-    try:
-        firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
-        lib_books = await lib_svc.save_and_pin(
-            firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
-            division=None, file_type="books_json",
-            filename_original=file.filename or "books.json",
-            content=content, uploaded_by_email=user.get("email") or "",
-            run_id=rid, parse_status="success",
-            parse_summary={"company_name": company, "n_ledgers": len(ledgers or [])},
-        )
-        pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
-    except Exception:
-        log.exception("Library save failed (non-fatal)")
+    if save_to_library:
+        try:
+            firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+            lib_books = await lib_svc.save_and_pin(
+                firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+                division=None, file_type="books_json",
+                filename_original=filename or "books.json",
+                content=content, uploaded_by_email=user.get("email") or "",
+                run_id=rid, parse_status="success",
+                parse_summary={"company_name": company, "n_ledgers": len(ledgers or [])},
+            )
+            pinned_files = {**pinned_files, "books_json": lib_books["file_id"]}
+        except Exception:
+            log.exception("Library save failed (non-fatal)")
 
-    # Build ledger records — replace any prior ledgers from earlier upload, but
-    # preserve manual email mappings if the same name reappears.
     existing = {
         L["name"]: L for L in await LEDGERS.find(
             {"run_id": rid}, {"_id": 0}
@@ -378,13 +367,11 @@ async def upload_books(
     for rec in new_records:
         prev = existing.get(rec["name"])
         if prev:
-            # carry forward user-edited fields
             for k in ("email", "cc_emails", "bcc_emails", "contact_name", "phone",
                       "address", "address_line_1", "address_line_2", "city",
                       "pincode", "gstin", "pan", "category"):
                 if prev.get(k):
                     rec[k] = prev[k]
-            # keep the prior token + status so any sent/awaiting links don't break
             rec["response_token"] = prev.get("response_token") or rec["response_token"]
             rec["confirmation_status"] = prev.get("confirmation_status") or rec["confirmation_status"]
 
@@ -397,7 +384,7 @@ async def upload_books(
         {"id": rid},
         {"$set": {
             "module": "balance_confirmation",
-            "source_filename": file.filename or "",
+            "source_filename": filename,
             "company": company,
             "summary": summary,
             "status": "ingested",
@@ -406,11 +393,64 @@ async def upload_books(
             "firm_id": user.get("firm_id") or DEFAULT_FIRM_ID,
         }},
     )
-    return {
-        "ledger_count": len(new_records),
-        "summary": summary,
-        "company": company,
-    }
+    return {"ledger_count": len(new_records), "summary": summary, "company": company}
+
+
+@router.post("/runs/{rid}/upload-books")
+async def upload_books(
+    rid: str,
+    request: Request,
+    file: UploadFile = File(...),
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    content = await file.read()
+    return await _persist_bc_books(
+        rid=rid, run=run, content=content,
+        filename=file.filename or "books.json", user=user,
+    )
+
+
+@router.post("/runs/{rid}/ingest-from-library")
+async def ingest_from_library(
+    rid: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Phase D — pull the pinned ``books_json`` for this run's scope
+    from the Library and ingest it without re-uploading.
+
+    The run's ``(client_id, fy, division)`` already carries everything
+    we need to look up the right Library version; the caller passes
+    only the run id.  Returns the same shape as ``upload-books``.
+    """
+    user = await _auth(request, session_token, authorization)
+    run = await RUNS.find_one({"id": rid}, {"_id": 0})
+    if not run:
+        raise HTTPException(404, "Run not found")
+    firm_id = user.get("firm_id") or DEFAULT_FIRM_ID
+    division = (run.get("division_ids") or [None])[0] if run.get("scope_kind") == "division" else None
+    cur = await lib_svc.get_current_file(
+        firm_id=firm_id, client_id=run["client_id"], period=run.get("fy", ""),
+        division=division, file_type="books_json",
+    )
+    if not cur:
+        raise HTTPException(
+            400,
+            "Books JSON is not pinned in the Library for this scope. "
+            "Upload it via the Data Library tab first, or use the legacy upload.",
+        )
+    content = await lib_svc.read_file_bytes(cur["file_id"])
+    return await _persist_bc_books(
+        rid=rid, run=run, content=content,
+        filename=cur.get("filename_original") or "books.json",
+        user=user, save_to_library=False,  # already in Library; just pin
+    )
 
 
 # ============================ Ledgers (workbench) =============================

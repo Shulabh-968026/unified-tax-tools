@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { UploadCloud, FileSpreadsheet, CheckCircle2, Loader2 } from "lucide-react";
+import { UploadCloud, FileSpreadsheet, CheckCircle2, Loader2, FolderDown } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/msme-api";
 
@@ -30,6 +30,24 @@ export default function YearEndUpload({ session, onUploaded }) {
     }
   };
 
+  /* Phase D — pull yearend report from Library if pinned */
+  const pullFromLibrary = async () => {
+    if (!session?.id) {
+      toast.error("No active session");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/sessions/${session.id}/yearend-from-library`);
+      toast.success(`Imported ${data.bill_count} bills from Library · ${data.unique_ledgers} unique creditors`);
+      onUploaded && onUploaded();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Library ingest failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDrop = (e) => {
     e.preventDefault();
     setDrag(false);
@@ -48,6 +66,19 @@ export default function YearEndUpload({ session, onUploaded }) {
           (Outstanding Balance / FIFO bills).
         </p>
       </div>
+
+      {!session?.has_yearend && (
+        <button
+          type="button"
+          data-testid="msme-pull-from-library"
+          onClick={pullFromLibrary}
+          disabled={busy}
+          className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-60 rounded-sm text-[13px] font-medium text-emerald-900"
+          title="Pull the pinned MSME 43B(h) creditor report from the Data Library"
+        >
+          <FolderDown size={14}/> Pull from Library
+        </button>
+      )}
 
       <div
         className={`upload-drop p-8 text-center cursor-pointer ${drag ? "bg-gray-50 border-gray-900" : ""}`}

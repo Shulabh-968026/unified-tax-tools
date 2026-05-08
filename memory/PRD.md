@@ -1,5 +1,38 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix Round 2 · Library reuse on BC, FS, MSME (2026-05-08, follow-up to Clause 44)
+
+**User feedback**: "Apply same Library-reuse pattern to BC / FS / MSME — currently still prompt for files even when Library is ready."  *(FA + GST Recon deferred — multi-tab register parser + 4-file batch + month grid both warrant a separate session.)*
+
+### What shipped
+**Backend — 3 new endpoints, all idempotent + back-compat:**
+1. `POST /api/balance-confirmation/runs/{rid}/ingest-from-library` — pulls pinned `books_json` for the run's scope, runs the same parser as legacy `/upload-books`, persists ledgers + summary. Carries forward auditor-edited per-ledger fields (emails, addresses, status) when re-ingesting.
+2. `POST /api/fin-statement/runs/{rid}/ingest-from-library` — pulls pinned `books_json` (FinalStatement format), normalises + persists `FS_DOC` + appends to generations log.
+3. `POST /api/msme/sessions/{sid}/yearend-from-library` — pulls pinned `msme43bh_creditor_report_xlsx`, parses bills + auto-builds profiles. Also adds Library save+pin to the legacy `/yearend` upload (was previously missing).
+
+Each pairs the legacy upload endpoint with a small `_persist_*` helper so both paths share parser logic; the Library-pull path skips the redundant `save_and_pin` (file is already pinned).
+
+**Frontend — Pull-from-Library buttons:**
+1. `[data-testid=bc-pull-from-library]` — emerald CTA above the Drop Books JSON dropzone in `pages/balance_confirmation/Landing.jsx`; one-click 1578-ledger ingest verified live.
+2. `[data-testid=fs-pull-from-library]` — emerald button next to the Upload JSON button in `pages/fin_statement/RunPage.jsx`.
+3. `[data-testid=msme-pull-from-library]` — emerald CTA above the year-end Excel dropzone in `components/msme43bh/YearEndUpload.jsx`.
+
+All buttons fall back to the legacy upload UI when the Library doesn't have the file (clear backend toast — "Books JSON is not pinned in the Library for this scope").
+
+### Still deferred (per user's choice c)
+- 🟡 **FA Phase D** — fa_register_xlsx (multi-tab parser) + it_depreciation_opening_wdv_xlsx ingest from Library. ~1 hour.
+- 🟡 **GST Recon Phase D** — books + ledger_mapping + GSTR-1 + GSTR-3B 4-file batch + month grid + GSTIN validation orchestration. ~2 hours.
+
+### Verified
+- Live curl: BC run for Tiriuppur Division ingested 1578 ledgers from the Library (`company=GMS Processors P Limited`).
+- FS verified the `from-library` path correctly errors when the books JSON in the Library is a Tally export (not a FinalStatement format) — this is correct behaviour, not a bug.
+- 47/47 backend regression tests still green (one flake on retry).
+
+### Files touched
+**Backend:** `modules/balance_confirmation/controller.py` · `modules/fin_statement/controller.py` · `modules/msme43bh/controller.py` (added Library save+pin to upload_yearend in passing).
+
+**Frontend:** `pages/balance_confirmation/Landing.jsx` · `pages/fin_statement/RunPage.jsx` · `components/msme43bh/YearEndUpload.jsx`.
+
 ## Bugfix · Clause 44 "Start a new run" should reuse Library files (2026-05-08, post-Release 4.7-D)
 
 **User feedback**: After uploading Books JSON + Ledger Mapping into the Data Library for Tiriuppur Division, clicking "Start a new run" on Clause 44 still opened the upload dialog asking for the same files again — the Library wasn't being reused.
