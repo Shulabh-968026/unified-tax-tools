@@ -77,11 +77,13 @@ def test_mapping_snapshot_exempt_pretick_and_selected():
     resp = build_mapping_export_response(_sample_run(), "Clause44_Mapping_test")
     wb = _load_workbook_from_response(resp)
     by_name = _body_rows(wb["Exempt Purchases"])
-    # Petrol auto-suggested + ticked; Rent neither.
-    assert by_name["Petrol Expenses"][5] == "Yes"   # Auto-Suggested?
-    assert by_name["Petrol Expenses"][6] == "Yes"   # Currently Selected?
-    assert by_name["Office Rent"][5] == "No"
-    assert by_name["Office Rent"][6] == "No"
+    # Column layout (Release 4.4.8): Name, Subhead, Group, Head, CB,
+    # Vouchers, ITC-Overlap Vouchers, Demoted by ITC Cross-Check?,
+    # Auto-Suggested?, Currently Selected?
+    assert by_name["Petrol Expenses"][8] == "Yes"   # Auto-Suggested?
+    assert by_name["Petrol Expenses"][9] == "Yes"   # Currently Selected?
+    assert by_name["Office Rent"][8] == "No"
+    assert by_name["Office Rent"][9] == "No"
 
 
 def test_mapping_snapshot_itc_kind_and_usage_columns():

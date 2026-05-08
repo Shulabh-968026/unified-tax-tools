@@ -878,6 +878,80 @@ def compute_pools(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Release 4.4.8 — Exempt × ITC voucher cross-check.
+#
+# A voucher carrying an Input GST entry (e.g. `Input CGST`) is, by
+# definition, a *taxable* purchase.  Any expense ledger appearing on
+# that same voucher therefore cannot be an exempt supply, even if its
+# *name* matches an exempt-hint keyword (e.g. "Insurance Premium" for
+# group health insurance — taxable and ITC-claimable post-2022).
+#
+# This helper walks every voucher, counts `total_vouchers` and
+# `itc_overlap_vouchers` per exempt-pool ledger, and demotes the
+# pre-tick (`suggested → False`) when ANY voucher under that ledger
+# carries an entry under an auditor-confirmed ITC ledger.  The chip
+# (`itc_overlap_demoted`, plus the two counters) lets the UI show
+# *"12/80 vouchers carry ITC — likely taxable"* so the auditor can
+# manually re-tick mixed-use ledgers if they want to.
+# ─────────────────────────────────────────────────────────────────────────
+def filter_exempt_by_itc_overlap(
+    exempt_ledgers: List[Dict[str, Any]],
+    itc_selection,
+    vouchers: List[Dict[str, Any]] | None,
+) -> List[Dict[str, Any]]:
+    """Cross-check exempt-pool suggestions against ITC vouchers.
+
+    Returns a NEW list of rows; each row gains:
+      - ``itc_overlap_vouchers`` — vouchers under this ledger that also
+        touch any ledger in ``itc_selection``.
+      - ``total_vouchers``      — total vouchers touching this ledger.
+      - ``itc_overlap_demoted`` — True iff the cross-check downgraded
+        ``suggested`` from True → False.
+
+    Falls back gracefully (no demotion, counters all zero) when
+    ``itc_selection`` is empty or ``vouchers`` not provided — the new
+    fields are still set so downstream UI can rely on their presence.
+    """
+    itc_set = set(itc_selection or [])
+    have_data = bool(itc_set) and bool(vouchers)
+    target_names = {r.get("name", "") for r in (exempt_ledgers or []) if r.get("name")}
+    counters: Dict[str, Dict[str, int]] = {
+        n: {"total": 0, "overlap": 0} for n in target_names
+    }
+
+    if have_data:
+        for v in vouchers:
+            entries = v.get("ledgerEntries", []) or []
+            ledger_set = {e.get("ledger", "") for e in entries if e.get("ledger")}
+            if not ledger_set:
+                continue
+            candidates_in_voucher = ledger_set & target_names
+            if not candidates_in_voucher:
+                continue
+            has_itc = bool(ledger_set & itc_set)
+            for n in candidates_in_voucher:
+                counters[n]["total"] += 1
+                if has_itc:
+                    counters[n]["overlap"] += 1
+
+    out: List[Dict[str, Any]] = []
+    for r in (exempt_ledgers or []):
+        c = counters.get(r.get("name", ""), {"total": 0, "overlap": 0})
+        was_suggested = bool(r.get("suggested"))
+        # Zero-tolerance demotion — any ITC overlap demotes the suggestion.
+        # Auditor sees the chip and can re-tick if mixed-use justifies it.
+        demote = was_suggested and c["overlap"] > 0
+        out.append({
+            **r,
+            "suggested": False if demote else r.get("suggested"),
+            "itc_overlap_vouchers": c["overlap"],
+            "total_vouchers": c["total"],
+            "itc_overlap_demoted": demote,
+        })
+    return out
+
+
 def determine_expenditure_ledgers(
     ledgers_xlsx: Dict[str, Dict[str, Any]],
     ledgers_json: List[Dict[str, Any]],

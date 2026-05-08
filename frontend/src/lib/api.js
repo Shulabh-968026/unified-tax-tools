@@ -68,6 +68,8 @@ export const saveSelections = (id, payload) =>
   http.patch(`/runs/${id}/selections`, payload).then((r) => r.data);
 export const exportRunUrl = (id) => `${API}/runs/${id}/export`;
 export const exportRunMappingSnapshotUrl = (id) => `${API}/runs/${id}/mapping-export`;
+export const fetchExemptPool = (id, itcLedgers) =>
+  http.post(`/runs/${id}/exempt-pool`, { itc_ledgers: itcLedgers || [] }).then((r) => r.data);
 
 // Run rerun — re-pin to latest Library versions, re-parse, reset `generated`.
 export const rerunRun = (id) => http.post(`/runs/${id}/rerun`).then((r) => r.data);

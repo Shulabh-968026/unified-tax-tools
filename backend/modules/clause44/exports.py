@@ -444,7 +444,9 @@ def _write_mapping_exempt(wb, run, exempt_selection: set):
 
     headers = [
         "Ledger Name", "Subhead", "Group Parent", "Head",
-        "Closing Balance", "Auto-Suggested?", "Currently Selected?",
+        "Closing Balance",
+        "Vouchers", "ITC-Overlap Vouchers", "Demoted by ITC Cross-Check?",
+        "Auto-Suggested?", "Currently Selected?",
     ]
     ws.append(headers)
     header_row = ws.max_row
@@ -459,6 +461,9 @@ def _write_mapping_exempt(wb, run, exempt_selection: set):
             r.get("group_parent") or "",
             r.get("head") or "",
             r.get("closing_balance"),
+            int(r.get("total_vouchers") or 0),
+            int(r.get("itc_overlap_vouchers") or 0),
+            _yn(r.get("itc_overlap_demoted")),
             _yn(r.get("suggested")),
             _yn((r.get("name") or "") in exempt_selection),
         ])
@@ -466,7 +471,7 @@ def _write_mapping_exempt(wb, run, exempt_selection: set):
     if not rows:
         ws.append(["— No exempt-purchase candidates in this run —"])
 
-    widths = [40, 26, 26, 26, 18, 16, 18]
+    widths = [40, 26, 26, 26, 18, 12, 18, 22, 16, 18]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     _apply_indian_fmt(ws, min_row=header_row + 1, cols=[5])

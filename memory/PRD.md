@@ -1,5 +1,44 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Feature · Clause 44 Exempt × ITC Voucher Cross-Check + Stepper Split (Release 4.4.8, 2026-02-09)
+
+**User insight**: Exempt-pool was wrongly suggesting ledgers like "Group Health Insurance Premium" purely on keyword match — but those vouchers carry Input GST entries (taxable post-2022). Proposed: split the combined Special-Ledgers step into sequential ITC → Exempt steps, and after ITC is locked, walk vouchers under each exempt candidate; if any voucher carries an entry under a confirmed ITC ledger, demote the suggestion (taxable supply ≠ exempt supply).
+
+### What shipped
+
+**Backend** (`modules/clause44/service.py` + `controller.py`):
+- New helper `filter_exempt_by_itc_overlap(exempt_ledgers, itc_selection, vouchers)` — walks vouchers, populates `total_vouchers` + `itc_overlap_vouchers` per ledger, demotes `suggested → False` (zero-tolerance: any single overlap demotes). Returns rows enriched with `itc_overlap_demoted` flag.
+- New endpoint `POST /api/runs/{run_id}/exempt-pool` — body `{itc_ledgers: [...]}`, returns refreshed exempt pool. Called by frontend on entry to Exempt step.
+- Mapping Snapshot Excel updated — Exempt sheet gains 3 new columns (`Vouchers`, `ITC-Overlap Vouchers`, `Demoted by ITC Cross-Check?`); cross-check is folded in using the run's saved ITC selection.
+
+**Frontend** (`pages/clause44/`):
+- Stepper expanded from 4 → 5 steps: `Import → ITC → Exempt → Exclusions → Report`.
+- New file `StepITC.jsx` — extracted ITC tab from old `StepSpecialLedgers.jsx`.
+- New file `StepExempt.jsx` — fetches cross-checked pool on mount, shows amber banner ("X suggestions demoted because vouchers carry ITC: [chip-list]"), falls back gracefully on error.
+- `Clause44Run.jsx` — new `proceedItc` / `proceedExempt` / `backFromExempt` handlers; legacy URL shim `?step=special` → `?step=itc`.
+- API helper `fetchExemptPool(runId, itcLedgers)`.
+- `StepSpecialLedgers.jsx` retained but no longer imported (will be deleted in a follow-up cleanup).
+
+### Verified
+- 9 new offline unit tests in `tests/test_clause44_exempt_itc_cross_check.py` — all green. Coverage: insurance-premium demotion, petrol/diesel pass-through, zero-tolerance on 1/100 overlap, empty-ITC fallback, voucher-not-entry counter accuracy, mixed-pool partial demotion, only-already-suggested demotion.
+- Mapping-export test updated to match new 10-column Exempt sheet layout.
+- 79 offline Clause 44 tests passing (up from 70).
+
+### How to verify in live data
+1. Open the Tiruppur Clause 44 run.
+2. New stepper shows 5 pills (Import / ITC Ledgers / Exempt Purchases / Exclusions / Report).
+3. On Step 2 (ITC), tick `Input CGST`, `Input SGST` etc. Click `Proceed to Exempt`.
+4. On Step 3 (Exempt), the page fetches the cross-checked pool. Amber banner lists demoted ledgers with `12/80` overlap chips.
+5. `Mapping Snapshot` from any of the three middle steps now reflects the cross-check in the Exempt sheet.
+
+### Files touched
+**Backend:** `modules/clause44/service.py` (added `filter_exempt_by_itc_overlap`); `modules/clause44/controller.py` (added `POST /runs/{id}/exempt-pool`; folded cross-check into Mapping Snapshot); `modules/clause44/exports.py` (Exempt sheet now 10 columns).
+
+**Frontend:** new `pages/clause44/StepITC.jsx`; new `pages/clause44/StepExempt.jsx`; `pages/clause44/Clause44Run.jsx` (5-step stepper + new handlers + URL shim); `lib/api.js` (added `fetchExemptPool`).
+
+**Tests:** new `tests/test_clause44_exempt_itc_cross_check.py` (9 tests, all green); updated `tests/test_clause44_mapping_export.py` for new column layout.
+
+
 ## Bugfix · Clause 44 ITC Auto-Selection — Head-level whitelist (Release 4.4.7, 2026-02-09)
 
 **User feedback (continued)**: After Release 4.4.6 shipped, user reviewed a fresh Mapping Snapshot and reported 26 *more* wrong-tick ledgers — Plant & Machinery, Office Equipments, Buildings, Computers, Capital Work-in-Progress, vendor advances (Advance for Materials), Other Loans & Advances, and Cash Credit (Axis CC, Yes Bank CC). All shared `kind = input` / `kind_source = usage` / `in_default_view = No` / `Auto-Suggested = No` but `Currently Selected = Yes` (stale ticks).

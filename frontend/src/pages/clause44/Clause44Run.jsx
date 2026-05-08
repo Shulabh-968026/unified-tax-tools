@@ -16,20 +16,24 @@ import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
 import { generateRun, getRun, saveSelections, exportRunUrl, exportRunMappingSnapshotUrl, rerunRun } from "@/lib/api";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
-import StepSpecialLedgers from "./StepSpecialLedgers";
+import StepITC from "./StepITC";
+import StepExempt from "./StepExempt";
 import StepExclusion from "./StepExclusion";
 import StepReport from "./StepReport";
 
 const STEPS = [
   { key: "import",    label: "Import" },             // shown as completed — import happens on ClientHome
-  { key: "special",   label: "Special Ledgers" },    // renamed from "itc" (was narrower)
+  { key: "itc",       label: "ITC Ledgers" },        // Release 4.4.8 split — was the right tab of `special`
+  { key: "exempt",    label: "Exempt Purchases" },   // Release 4.4.8 split — was the left tab of `special`
   { key: "exclusion", label: "Exclusions" },
   { key: "report",    label: "Report" },
 ];
 
-// Legacy URL shim — `?step=itc` → `special`.
+// Legacy URL shim — `?step=special` (the old combined step) → default
+// to the new ITC step (auditor's natural starting point).  Old saved
+// URLs / bookmarks won't 404.
 function normaliseStepKey(raw) {
-  if (raw === "itc") return "special";
+  if (raw === "special") return "itc";
   return raw;
 }
 
@@ -39,19 +43,17 @@ export default function Clause44Run() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   // Legacy /runs/:runId/report URLs → default to the report step.
-  const rawStep = params.get("step") || (location.pathname.endsWith("/report") ? "report" : "special");
+  const rawStep = params.get("step") || (location.pathname.endsWith("/report") ? "report" : "itc");
   const step = normaliseStepKey(rawStep);
 
   const [run, setRun] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // Step 2 — Special Ledgers (two tabs + toggle)
+  // Step 2 (ITC) + Step 3 (Exempt) shared state
   const [itc, setItc] = useState(new Set());
   const [exempt, setExempt] = useState(new Set());
   const [useItcInf, setUseItcInf] = useState(true);
-  const [itcQuery, setItcQuery] = useState("");
-  const [exemptQuery, setExemptQuery] = useState("");
   const [itcKindFilter, setItcKindFilter] = useState("all");
 
   // Step 3 — Exclusions
@@ -161,7 +163,26 @@ export default function Clause44Run() {
 
   const goTo = (key) => setParams({ step: key });
 
-  const proceedSpecial = async () => {
+  // Step 2 → Step 3 transition.  Save the locked ITC selection so the
+  // Exempt step can fetch the cross-checked pool from the backend.
+  const proceedItc = async () => {
+    setBusy(true);
+    try {
+      await saveSelections(runId, {
+        itc_ledgers: Array.from(itc),
+        use_itc_inference: useItcInf,
+      });
+      goTo("exempt");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Step 3 → Step 4 transition.  Save the auditor's exempt picks
+  // (the pool itself was server-recomputed on entry to this step).
+  const proceedExempt = async () => {
     setBusy(true);
     try {
       await saveSelections(runId, {
@@ -214,7 +235,8 @@ export default function Clause44Run() {
   const backToClient = () => run?.client_id
     ? navigate(`/dashboard/clients/${run.client_id}/utilities/clause-44`)
     : navigate("/dashboard");
-  const backFromExclusion = () => goTo("special");
+  const backFromExempt = () => goTo("itc");
+  const backFromExclusion = () => goTo("exempt");
   const backFromReport = () => goTo("exclusion");
 
   // Header meta for the fixed top strip
@@ -329,7 +351,7 @@ export default function Clause44Run() {
 
           {/* Action cluster — top right */}
           <div className="ml-auto flex items-center gap-2">
-            {(step === "special" || step === "exclusion") && (
+            {(step === "itc" || step === "exempt" || step === "exclusion") && (
               <a
                 href={exportRunMappingSnapshotUrl(runId)}
                 className="inline-flex items-center gap-1.5 h-9 px-3 border border-[#D4D4D0] text-[#0F172A] hover:bg-[#F3F4F1] font-mono text-[10.5px] uppercase tracking-[0.12em] rounded-sm"
@@ -339,15 +361,36 @@ export default function Clause44Run() {
                 <DownloadSimple size={12}/> Mapping Snapshot
               </a>
             )}
-            {step === "special" && (
+            {step === "itc" && (
               <Button
-                onClick={proceedSpecial}
+                onClick={proceedItc}
                 disabled={busy}
-                data-testid="proceed-special"
+                data-testid="proceed-itc"
                 className="h-9 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-1.5"
               >
-                Proceed <ArrowLeft size={12} weight="bold" style={{ transform: "rotate(180deg)" }}/>
+                Proceed to Exempt <ArrowLeft size={12} weight="bold" style={{ transform: "rotate(180deg)" }}/>
               </Button>
+            )}
+            {step === "exempt" && (
+              <>
+                <Button
+                  variant="ghost"
+                  onClick={backFromExempt}
+                  disabled={busy}
+                  className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-[#52524E] h-9"
+                  data-testid="back-from-exempt"
+                >
+                  ← Back to ITC
+                </Button>
+                <Button
+                  onClick={proceedExempt}
+                  disabled={busy}
+                  data-testid="proceed-exempt"
+                  className="h-9 px-4 bg-[#0F172A] hover:bg-[#1E293B] text-white rounded-sm shadow-none gap-1.5"
+                >
+                  Proceed to Exclusions <ArrowLeft size={12} weight="bold" style={{ transform: "rotate(180deg)" }}/>
+                </Button>
+              </>
             )}
             {step === "exclusion" && (
               <>
@@ -402,21 +445,24 @@ export default function Clause44Run() {
 
       {/* ───── Step content ───── */}
       <div className="px-6 md:px-10 py-8 pb-40">
-        {step === "special" && (
-          <StepSpecialLedgers
+        {step === "itc" && (
+          <StepITC
             run={run}
             itcSelected={itc}
             setItcSelected={setItc}
-            itcQuery={itcQuery}
-            setItcQuery={setItcQuery}
-            exemptSelected={exempt}
-            setExemptSelected={setExempt}
-            exemptQuery={exemptQuery}
-            setExemptQuery={setExemptQuery}
             useItcInference={useItcInf}
             setUseItcInference={setUseItcInf}
             itcKindFilter={itcKindFilter}
             setItcKindFilter={setItcKindFilter}
+          />
+        )}
+        {step === "exempt" && (
+          <StepExempt
+            runId={runId}
+            run={run}
+            itcSelected={itc}
+            exemptSelected={exempt}
+            setExemptSelected={setExempt}
           />
         )}
         {step === "exclusion" && (

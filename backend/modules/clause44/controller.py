@@ -14,7 +14,7 @@ from modules.clause44.service import (
     parse_ledger_xlsx, build_group_chain, compute_suggestions, compute_pools,
     determine_expenditure_ledgers, classify_vouchers,
     compute_recon_and_filter, merge_runs_for_consolidation,
-    is_valid_period,
+    is_valid_period, filter_exempt_by_itc_overlap,
 )
 from modules.clause44.exports import build_export_response, build_mapping_export_response
 from modules.library.scope import resolve_scope_for_request, parse_division_ids_form
@@ -1156,6 +1156,14 @@ async def export_run_mapping_snapshot(
         accounting.get("ledgers", []),
         accounting.get("vouchers", []),
     )
+    # Release 4.4.8 — fold the Exempt × ITC voucher cross-check into the
+    # snapshot so the Excel reflects exactly what the auditor sees on
+    # the Exempt step.  Uses the run's saved ITC selection.
+    exempt_with_overlap = filter_exempt_by_itc_overlap(
+        pools["exempt_ledgers"],
+        run.get("itc_selection") or [],
+        accounting.get("vouchers", []),
+    )
 
     snapshot = {
         "run_id": run.get("run_id"),
@@ -1164,7 +1172,7 @@ async def export_run_mapping_snapshot(
         "period": run.get("period"),
         "division_name": run.get("division_name"),
         "snapshot_at": datetime.now(timezone.utc).isoformat(),
-        "exempt_ledgers": pools["exempt_ledgers"],
+        "exempt_ledgers": exempt_with_overlap,
         "itc_ledgers": pools["itc_ledgers"],
         "itc_ledgers_all_bs": pools["itc_ledgers_all_bs"],
         "exclusion_ledgers": pools["exclusion_ledgers"],
@@ -1178,6 +1186,60 @@ async def export_run_mapping_snapshot(
     return build_mapping_export_response(
         snapshot, f"Clause44_Mapping_{company}_{run_id}"
     )
+
+
+class ExemptPoolBody(BaseModel):
+    """Body for POST /runs/{run_id}/exempt-pool — recompute Pool 1 with
+    a voucher cross-check against the auditor's confirmed ITC selection.
+    """
+    itc_ledgers: List[str] = Field(default_factory=list)
+
+
+@router.post("/runs/{run_id}/exempt-pool")
+async def get_exempt_pool(
+    run_id: str,
+    body: ExemptPoolBody,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Release 4.4.8 — Refresh the Exempt Purchases pool with the
+    Exempt × ITC voucher cross-check applied.
+
+    Called by the frontend on entry to the Exempt step (after the
+    auditor has locked their ITC selection).  For each candidate, walks
+    every voucher and counts vouchers that touch any ledger in
+    ``itc_ledgers``.  Demotes ``suggested → False`` when the count is
+    > 0 (zero-tolerance rule per ICAI's "if the supply was taxable, it
+    cannot also be exempt" axiom).  Returns a fresh ``exempt_ledgers``
+    array carrying the cross-check counters and a demotion flag.
+    """
+    await get_current_user(request, session_token, authorization)
+    run = await _fetch_run(run_id)
+    run = await _ensure_run_data(run)
+
+    ledgers_xlsx = run.get("ledgers_xlsx") or {}
+    accounting = run.get("accounting") or {}
+    if not ledgers_xlsx:
+        raise HTTPException(status_code=400, detail="Run has no ledger mapping data — re-ingest required")
+
+    pools = compute_pools(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
+    refreshed = filter_exempt_by_itc_overlap(
+        pools["exempt_ledgers"],
+        body.itc_ledgers or [],
+        accounting.get("vouchers", []),
+    )
+    n_demoted = sum(1 for r in refreshed if r.get("itc_overlap_demoted"))
+    return {
+        "exempt_ledgers": refreshed,
+        "n_demoted": n_demoted,
+        "n_total": len(refreshed),
+        "itc_selection_count": len(body.itc_ledgers or []),
+    }
 
 
 @router.get("/clients/{client_id}/consolidated")
