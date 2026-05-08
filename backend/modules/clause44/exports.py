@@ -14,12 +14,39 @@ cells inside the data region) so auditors can slice further without going
 back to the app.
 """
 import io
+import re
 from typing import Dict, Any, List
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from fastapi.responses import StreamingResponse
 
 INDIAN_FMT = "[>=10000000]##\\,##\\,##\\,##0.00;[>=100000]##\\,##\\,##0.00;##,##0.00"
+
+# Strip ASCII control characters that openpyxl's worksheet writer rejects
+# (mirrors openpyxl's `ILLEGAL_CHARACTERS_RE`).  Tally voucher narrations
+# routinely carry stray \r / \v / \f / \x1f bytes from clipboard pastes,
+# which crash the export with `IllegalCharacterError`.  We sanitise once
+# at the boundary instead of trying to clean upstream.
+_ILLEGAL_XLSX_CHARS = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
+
+
+def _clean(v):
+    """Sanitise a single cell value for openpyxl.
+
+    Strings → strip illegal control chars + cap at openpyxl's 32 767-char
+    cell limit.  Other types pass through unchanged.
+    """
+    if isinstance(v, str):
+        s = _ILLEGAL_XLSX_CHARS.sub("", v)
+        if len(s) > 32760:
+            s = s[:32760] + "…"
+        return s
+    return v
+
+
+def _clean_row(row):
+    return [_clean(v) for v in row]
+
 
 BOLD_WHITE = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill("solid", fgColor="0F172A")
@@ -119,13 +146,13 @@ def _write_summary_sheet(wb, run: Dict[str, Any]):
         col7 = row.get("col7", 0) or 0
         col8 = row.get("col8", 0) or 0
         total = row.get("total", 0) or (col3 + col4 + col5 + col7 + col8)
-        ws.append([
+        ws.append(_clean_row([
             lname,
             total,
             col3, col4, col5,
             col3 + col4 + col5,
             col7, col8,
-        ])
+        ]))
 
     ws.column_dimensions["A"].width = 36
     for col_letter in ["B", "C", "D", "E", "F", "G", "H"]:
@@ -167,7 +194,7 @@ def _write_recon_sheet(wb, run: Dict[str, Any]):
             header_row = ws.max_row
             ws.cell(row=header_row, column=1).font = Font(bold=True)
             for line in lines:
-                ws.append([f"   • {line['name']}", -float(line.get('amount') or 0)])
+                ws.append(_clean_row([f"   • {line['name']}", -float(line.get('amount') or 0)]))
 
         ws.append(["= Reportable Expenditure (Col 2 of Clause 44)", float(reportable or 0)])
         last_row = ws.max_row
@@ -181,7 +208,7 @@ def _write_recon_sheet(wb, run: Dict[str, Any]):
         ws.append(["Total Expenditure as per Books", recon.get("total_books", 0)])
         ws.append(["Less : Expenditures excluded from Clause 44 Report", None])
         for line in (recon.get("excluded_lines") or []):
-            ws.append([f"   • {line['name']}", -float(line.get("amount") or 0)])
+            ws.append(_clean_row([f"   • {line['name']}", -float(line.get("amount") or 0)]))
         ws.append(["Expenditure as per Clause 44 Report", recon.get("balance", 0)])
         last_row = ws.max_row
         for col in (1, 2):
@@ -264,7 +291,7 @@ def _write_cohort_sheet(wb, sheet_name: str, long_label: str, txns: List[Dict[st
             t.get("reason", ""),
             "",  # blank column for the auditor to note remarks
         ]
-        ws.append(row)
+        ws.append(_clean_row(row))
 
     if txns:
         footer = ["Total"] + [""] * (len(headers) - 1)
@@ -368,7 +395,7 @@ def _write_col8_sheet(wb, run: Dict[str, Any]):
                 t.get("reason", ""),
                 "",
             ]
-            ws.append(row)
+            ws.append(_clean_row(row))
 
         # Sub-total row
         foot = ["Sub-total · " + sub_label] + [""] * (len(headers) - 1)
@@ -455,7 +482,7 @@ def _write_mapping_exempt(wb, run, exempt_selection: set):
     rows = run.get("exempt_ledgers") or []
     rows = sorted(rows, key=lambda r: (not r.get("suggested"), (r.get("name") or "").lower()))
     for r in rows:
-        ws.append([
+        ws.append(_clean_row([
             r.get("name") or "",
             r.get("subhead") or "",
             r.get("group_parent") or "",
@@ -466,7 +493,7 @@ def _write_mapping_exempt(wb, run, exempt_selection: set):
             _yn(r.get("itc_overlap_demoted")),
             _yn(r.get("suggested")),
             _yn((r.get("name") or "") in exempt_selection),
-        ])
+        ]))
 
     if not rows:
         ws.append(["— No exempt-purchase candidates in this run —"])
@@ -504,7 +531,7 @@ def _write_mapping_itc(wb, run, itc_selection: set):
         ),
     )
     for r in rows:
-        ws.append([
+        ws.append(_clean_row([
             r.get("name") or "",
             r.get("subhead") or "",
             r.get("group_parent") or "",
@@ -518,7 +545,7 @@ def _write_mapping_itc(wb, run, itc_selection: set):
             _yn(r.get("in_default_view", True)),
             _yn(r.get("suggested")),
             _yn((r.get("name") or "") in itc_selection),
-        ])
+        ]))
 
     if not rows:
         ws.append(["— No ITC candidates in this run —"])
@@ -547,7 +574,7 @@ def _write_mapping_exclusions(wb, run, exclusion_selection: set, exclusion_categ
     rows = sorted(rows, key=lambda r: (not r.get("suggested"), (r.get("name") or "").lower()))
     for r in rows:
         name = r.get("name") or ""
-        ws.append([
+        ws.append(_clean_row([
             name,
             r.get("subhead") or "",
             r.get("group_parent") or "",
@@ -557,7 +584,7 @@ def _write_mapping_exclusions(wb, run, exclusion_selection: set, exclusion_categ
             _yn(r.get("suggested")),
             _yn(name in exclusion_selection),
             exclusion_categories.get(name, "—"),
-        ])
+        ]))
 
     if not rows:
         ws.append(["— No exclusion candidates in this run —"])

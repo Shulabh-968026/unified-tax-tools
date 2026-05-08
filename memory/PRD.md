@@ -1,5 +1,41 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 Export Excel — IllegalCharacterError (Release 4.4.10, 2026-02-09)
+
+**User report**: "Export Excel is not working."
+
+**Root cause**: Tally voucher data occasionally carries stray ASCII control characters (`\x07`, `\x0b`, `\x0c`, `\x1f`, etc.) in narration / voucher number / ledger name fields — usually from clipboard pastes of source documents. `openpyxl` rejects these via `IllegalCharacterError` in `_write_cohort_sheet` line 267, crashing the entire workbook build with HTTP 500. Backend log captured stack trace:
+```
+File "/app/backend/modules/clause44/exports.py", line 267, in _write_cohort_sheet
+  raise IllegalCharacterError(f"{value} cannot be used in worksheets.")
+openpyxl.utils.exceptions.IllegalCharacterError:  unknown cannot be used in worksheets.
+```
+
+### What shipped
+**Backend** (`modules/clause44/exports.py`):
+- New `_clean(v)` helper at the boundary — strips characters matching openpyxl's `ILLEGAL_CHARACTERS_RE` (`[\000-\010]|[\013-\014]|[\016-\037]`), caps strings at openpyxl's 32 767-char per-cell limit. Pass-through for non-strings.
+- New `_clean_row(row)` — list-level wrapper.
+- Wrapped 7 critical `ws.append(...)` call sites that emit voucher / ledger / auditor data:
+  - Summary per-ledger row.
+  - Cohort sheet voucher rows (Col 3 / 4 / 5 / 7).
+  - Col 8 voucher rows.
+  - Mapping Snapshot rows (Exempt / ITC / Exclusions sheets).
+  - Recon "Less line" rows.
+
+### Verified
+- 6 new offline unit tests in `tests/test_clause44_export_control_char_safe.py`:
+  - `_clean` strips banned ranges, preserves normal strings, passes numerics, truncates oversize.
+  - `_clean_row` handles mixed-type lists.
+  - **End-to-end** test builds an export workbook from a synthetic run with control chars in voucher number, party name, ledger name, narration, and recon less-line — workbook now opens cleanly via `openpyxl.load_workbook`, all leaked control chars are stripped.
+- 96 offline Clause 44 tests passing (up from 90). Same 3 pre-existing live-test failures unaffected.
+- Lint clean.
+
+### Files touched
+**Backend:** `modules/clause44/exports.py` (added `_clean`, `_clean_row`; wrapped 7 voucher/auditor-data `ws.append` sites).
+
+**Tests:** new `tests/test_clause44_export_control_char_safe.py` (6 tests, all green).
+
+
 ## Bugfix · Clause 44 Capex Auto-Flow + Recon Population (Release 4.4.9, 2026-02-09)
 
 **User feedback**: Fixed Assets and Intangible Asset additions ought to flow automatically into Col 2 + the Para 79.18 recon row — no auditor selection required. Two real issues observed:
