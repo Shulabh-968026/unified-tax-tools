@@ -1,5 +1,47 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Release 4.7-C.3 · Multi-Division Phase C.3 — GST Recon → GSTIN-group canonical key (2026-05-07 PM)
+
+User-facing Phase C completion. GST Recon's working doc canonical key shifts from `(client, FY)` → `(client, FY, gstin_group_id)`. Auto-synthesises a hidden `Default` group for clients that haven't set up groups so single-GSTIN auditor flow stays one-click. Adds GSTIN-mismatch warn+override on file ingest.
+
+### What shipped
+1. **`ensure_default_group(client_id)` helper** (`modules/library/gstin_groups.py`) — idempotently fetches/creates a hidden `Default` GSTIN group for the client, seeded with the client's primary GSTIN (when valid) and every division_id. Marked `is_default=True`.
+2. **GST Recon `POST /runs`** auto-calls `ensure_default_group` when `gstin_group_id` is missing, then **forces `scope_kind="gstin_group"`** regardless of caller-supplied scope (prevents stray Consolidation/Division gst_recon_runs from being created).
+3. **GSTIN validation on `POST /gst-recon/runs/{rid}/files`** — when the run's group has a pinned GSTIN, each gstr1/gstr2b/gstr3b file's intrinsic GSTIN is compared against it. Mismatched files surface in `gstin_warnings: [{filename, bucket, found, expected}]`. Optional `?override_gstin_mismatch=true` suppresses warnings. Books/Mapping files are exempt.
+4. **Migration `gst_recon_attach_default_group_20260507.py`** — backfilled 3/3 active gst_recon_runs to attach `gstin_group_id` + `scope_kind="gstin_group"` + `scope_key="gstin_<id>"`. Idempotent (re-run reports seen=0).
+5. **`list_groups` endpoint** now hides `is_default=true` groups by default; pass `?include_default=true` for the full list. The GstinGroupsManager UI never shows Default groups.
+6. **New endpoint `POST /library/clients/{client_id}/gstin-groups/ensure-default`** for the frontend to pre-warm the default group.
+7. **Frontend GST Recon Landing — GSTIN-mismatch warning banner** (`gst_recon/Landing.jsx`):
+   - `[data-testid=gstin-mismatch-banner]` shown when `onFiles()` response has non-empty `gstin_warnings[]`.
+   - Per-file rows + `Override and re-process` CTA (re-uploads with `?override_gstin_mismatch=true`) + `Dismiss` button.
+
+### Tests · 37 / 37 ✅
+- 5 new live HTTP tests (`tests/test_phase_c3_gst_recon_groups.py`):
+  - Auto-synthesises Default group on no-scope POST ✅
+  - Idempotent per-group POST ✅
+  - List groups hides defaults ✅
+  - `?include_default=true` surfaces defaults ✅
+  - `ensure-default` endpoint is idempotent ✅
+- 9 Phase C.1 (GST tests updated to new contract — grain is always `gstin_group`)
+- 11 Phase A · 6 Release 4.5 · 6 Release 4.6 — all green.
+- Frontend banner JSX + onFiles override-retry verified live by testing agent (iteration_29).
+
+### Files touched
+**Backend (modified):**
+- `modules/library/gstin_groups.py` — `ensure_default_group()` + `is_default` field + filtered `list_groups` + `POST /ensure-default`.
+- `modules/gst_recon/controller.py` — auto-default group + force gstin_group scope + GSTIN validation on upload.
+- `tests/test_phase_c1_scope_runs.py` — GST tests updated to Phase C.3 contract.
+
+**Backend (new):**
+- `scripts/gst_recon_attach_default_group_20260507.py` — migration.
+- `tests/test_phase_c3_gst_recon_groups.py` — 5 live tests.
+
+**Frontend (modified):**
+- `pages/gst_recon/Landing.jsx` — `gstin_warnings` state, mismatch banner JSX, override-retry pattern.
+
+### Known nuance (pre-existing, not a regression)
+- The GSTR-3B JSON-format ingest doesn't extract intrinsic GSTIN (only PDF format does today). GSTIN-mismatch warn correctly fires for GSTR-1 / GSTR-2B JSON; GSTR-3B JSON validation will need future work if/when an auditor wants strict GSTIN binding on JSON 3B uploads.
+
 ## Release 4.7-C.2 · Multi-Division Phase C.2 — Frontend wiring + Consolidation View scaffold (2026-05-07 PM)
 
 User-visible Phase C tier — wires the page-level Scope selector through every module, surfaces scope on past-runs lists, and ships a read-only "Consolidation View" scaffold above multi-div runs lists.
