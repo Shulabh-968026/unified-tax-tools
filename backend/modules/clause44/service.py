@@ -252,6 +252,57 @@ def is_capex_ledger(ledger: Dict[str, Any], group_chains: Dict[str, str]) -> boo
 _INPUT_SYNONYMS_NAME = ("itc", "cenvat", "input tax credit")
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Release 4.4.6 — Voucher-usage NEGATIVE list.  These patterns identify
+# BS-side ledgers that *do* touch purchase vouchers (TDS withheld on
+# contractor / professional bills, TCS collected on sales, advance-tax
+# clearings, bank-charge GST, statutory provisions) but are NOT input
+# tax credit.  When a ledger matches one of these, the voucher-usage
+# upgrade `other → input` is suppressed so it stays at `kind="other"`
+# and is never auto-pre-ticked.
+#
+# The block applies ONLY to the usage upgrade — name-based "input" /
+# "output" detection still wins.  So a ledger called `Input TDS Cr`
+# (rare but possible) would still be tagged input via the name signal.
+# ─────────────────────────────────────────────────────────────────────────
+_USAGE_BLOCK_NAME_PATTERNS = (
+    "tds", "tcs", "advance tax", "income tax", "professional tax",
+    "late fee", "late fees", "penalty", "penal interest",
+    "interest on",
+)
+_USAGE_BLOCK_GROUP_PATTERNS = (
+    "bank accounts", "bank account",
+    "advance taxes", "advance tax",
+    "provisions",
+)
+
+
+def _is_blocked_from_usage_upgrade(name: str, group_parent: str) -> bool:
+    """True when a ledger should NOT be upgraded to ``input`` via voucher-
+    usage inference even if it appears on ≥ N purchase vouchers.
+
+    Implements the auditor-curated negative list (Bucket A from the
+    Mapping Snapshot review): TDS / TCS / Advance-Tax / Bank-charge GST
+    / penal-interest ledgers naturally touch purchase vouchers but are
+    statutory deductions, not ITC.
+
+    Detection layers:
+      1. Name contains a TDS / TCS / advance-tax / penal-interest token.
+      2. Name matches the bank-charge-GST shape: contains "bank" AND
+         (one of "gst", "charge", "charges").
+      3. Group parent is a withholding-tax / bank / provisions bucket.
+    """
+    n = (name or "").lower()
+    g = (group_parent or "").lower()
+    if any(p in n for p in _USAGE_BLOCK_NAME_PATTERNS):
+        return True
+    if "bank" in n and any(k in n for k in ("gst", "charge", "charges")):
+        return True
+    if any(p in g for p in _USAGE_BLOCK_GROUP_PATTERNS):
+        return True
+    return False
+
+
 def _alnum_lower(s: str) -> str:
     """Collapse a string to lowercase alphanumerics only.  Lets us match
     `IN PUT`, `In-Put`, `IN_PUT` etc. as `input` — real-world Tally data
@@ -505,7 +556,13 @@ def compute_suggestions(
         # ledgers from ever being upgraded to Input via voucher counts.
         kind = c["name_kind"]
         kind_source = c["kind_source"]
-        if kind == "other" and usage_kind in ("input", "output"):
+        # Release 4.4.6 — block usage upgrade for TDS / TCS / advance-tax
+        # / bank-charge GST patterns (auditor-curated negative list).
+        usage_blocked = (
+            c["name_kind"] == "other"
+            and _is_blocked_from_usage_upgrade(c["name"], c["groupParent"])
+        )
+        if kind == "other" and usage_kind in ("input", "output") and not usage_blocked:
             kind = usage_kind
             kind_source = "usage"
 
@@ -696,7 +753,17 @@ def compute_pools(
         n_voucher = usage.get("n_voucher", 0)
         kind = name_kind
         ksource = kind_source
-        if kind == "other" and usage_kind in ("input", "output"):
+        # Release 4.4.6 — block the usage `other → input` upgrade for
+        # TDS / TCS / Advance-Tax / Bank-charge GST patterns.  These
+        # ledgers do appear on purchase vouchers (TDS deducted on
+        # contractor bills, etc.) but they aren't ITC.  Name-side input
+        # signals still win, so a ledger explicitly named "Input ..."
+        # is unaffected.
+        usage_blocked = (
+            name_kind == "other"
+            and _is_blocked_from_usage_upgrade(r["name"], r["group_parent"])
+        )
+        if kind == "other" and usage_kind in ("input", "output") and not usage_blocked:
             kind, ksource = usage_kind, "usage"
         usage_conflict = (
             name_kind == "input"

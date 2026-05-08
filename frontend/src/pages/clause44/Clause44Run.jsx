@@ -65,22 +65,38 @@ export default function Clause44Run() {
       try {
         const r = await getRun(runId);
         setRun(r);
-        // Silent ITC selection cleanup (Release 3.1 Fix #3a): a saved
-        // selection from before the seeding fix may include Output-kind
-        // ledgers that were wrongly auto-ticked.  Drop them on first
-        // load so the user sees the corrected default; we tag the run
-        // doc with `itc_selection_cleaned_at` to avoid double-cleaning.
+        // Silent ITC selection cleanup (Release 3.1 Fix #3a + 4.4.6):
+        // a saved selection from before the seeding fix may include
+        // (a) Output-kind ledgers that were wrongly auto-ticked, or
+        // (b) Stale picks whose subhead is not in the ITC default-view
+        //     whitelist AND have no name-side input signal — typically
+        //     vendor-advance / loans-and-advances ledgers carried over
+        //     from a prior engine version (Bucket B from the snapshot
+        //     review).
         // Source-of-truth for the cleanup is now `itc_ledgers_all_bs`
         // (Release 4.4 — full BS-side universe; covers ledgers that may
         // not be in the focused-view pool).
         const itcUniverse = r.itc_ledgers_all_bs || r.itc_candidates || [];
         const candidatesByName = new Map(itcUniverse.map((c) => [c.name, c]));
         const rawItc = r.itc_selection || [];
+        const isStaleNonDefault = (c) =>
+          // Not in default view AND no name-side input signal AND not
+          // a usage-upgraded match → stale tick from older engine.
+          c && c.in_default_view === false &&
+          c.name_kind !== "input" &&
+          c.kind !== "input";
         const cleanedItc = rawItc.filter((n) => {
           const c = candidatesByName.get(n);
-          return !c || c.kind !== "output";
+          if (!c) return true;          // unknown — leave for auditor
+          if (c.kind === "output") return false;
+          if (isStaleNonDefault(c)) return false;
+          return true;
         });
         const droppedOutput = rawItc.filter((n) => candidatesByName.get(n)?.kind === "output");
+        const droppedStale = rawItc.filter((n) => {
+          const c = candidatesByName.get(n);
+          return c && c.kind !== "output" && isStaleNonDefault(c);
+        });
         const itcSeed = new Set(cleanedItc);
         const exemptSeed = new Set(r.exempt_selection || []);
         const excSeed = new Set(r.exclusion_selection || []);
@@ -112,7 +128,7 @@ export default function Clause44Run() {
         setExempt(exemptSeed);
         setExc(excSeed);
         setUseItcInf(r.use_itc_inference !== false);  // default true
-        const needsPersist = droppedOutput.length > 0 || newlyDetectedFromUsage.length > 0;
+        const needsPersist = droppedOutput.length > 0 || droppedStale.length > 0 || newlyDetectedFromUsage.length > 0;
         if (needsPersist) {
           await saveSelections(runId, { itc_ledgers: Array.from(itcSeed) }).catch(() => {});
         }
@@ -120,6 +136,12 @@ export default function Clause44Run() {
           toast.message("ITC selection auto-corrected", {
             description: `Removed ${droppedOutput.length} Output-side ledger(s) that were auto-ticked under the older heuristic. Re-generate the report to refresh totals.`,
             duration: 8000,
+          });
+        }
+        if (droppedStale.length > 0) {
+          toast.message("ITC selection cleaned up", {
+            description: `Dropped ${droppedStale.length} stale tick(s) from a prior engine version: ${droppedStale.slice(0,3).join(", ")}${droppedStale.length > 3 ? "…" : ""}. Re-tick manually if any are genuinely ITC.`,
+            duration: 9000,
           });
         }
         if (newlyDetectedFromUsage.length > 0) {

@@ -1,5 +1,40 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 ITC Auto-Selection — TDS/TCS False Positives (Release 4.4.6, 2026-02-09)
+
+**User feedback** (after reviewing Mapping Snapshot for client GMS Processors): 9 wrong auto-selections in the ITC pool — TCS Receivable, TDS Form 16A-26AS, six TDS Payable variants, and Bank GST. All shared `Kind Source = "usage"`.
+
+**Root cause**: The voucher-usage upgrader (`compute_voucher_usage_kinds`) sees these BS-side ledgers on ≥3 purchase vouchers (TDS withheld on contractor bills, TCS on purchase invoices, Bank GST on bank-charge entries) and upgrades `kind: other → input`. With Subhead = `Balance with Revenue Authorities` / `Statutory Dues Payable`, the pre-tick fired.
+
+Two stale-tick items (A.J.Filament House, Sri Ram Printerss with `Subhead = Advance for Materials`) were carried over from a prior engine version — `Auto-Suggested = No` but `Currently Selected = Yes`.
+
+### What shipped — Fix 1 + Fix 2
+
+**Fix 1 · Backend negative-list** (`modules/clause44/service.py`):
+- New `_is_blocked_from_usage_upgrade(name, group_parent)` helper.
+- Name patterns blocked: `tds`, `tcs`, `advance tax`, `income tax`, `professional tax`, `late fee`/`late fees`, `penalty`, `penal interest`, `interest on`.
+- Bank-charge GST shape: name contains `bank` AND (`gst` / `charge` / `charges`).
+- Group-parent patterns blocked: `Bank Accounts`, `Advance Taxes`, `Provisions`.
+- Wired into both `compute_pools._enrich_itc` (Release 4.4 three-pool model) and legacy `compute_suggestions` so old code paths inherit the fix. Block applies ONLY to `name_kind == "other"` — name-side `Input ...` ledgers bypass the block (so a contrived `Input TDS Recoverable` still works).
+
+**Fix 2 · Frontend silent cleanup** (`pages/clause44/Clause44Run.jsx`):
+- Extended the existing Output-kind cleanup to also drop ITC selections where: `in_default_view == false` AND `name_kind != "input"` AND `kind != "input"` (catches stale vendor-advance picks).
+- New toast: `"ITC selection cleaned up — Dropped N stale tick(s) from a prior engine version: …"`.
+- Persists corrected selection via `saveSelections` so the cleanup is permanent on first load.
+
+### Verified
+- 12 new offline unit tests in `tests/test_clause44_itc_negative_list.py` (all passing). One end-to-end test replays the exact 9-ledger user-reported list and asserts none get pre-ticked even with 10 fabricated purchase vouchers per ledger.
+- Sanity: genuine `Input CGST` still pre-ticks. `Input TDS Recoverable` (contrived) still pre-ticks via the name-side bypass.
+- Existing 47-test backend suite green; pre-existing live-test failures (require backend env) unaffected.
+
+### Files touched
+**Backend:** `modules/clause44/service.py` (added `_USAGE_BLOCK_NAME_PATTERNS`, `_USAGE_BLOCK_GROUP_PATTERNS`, `_is_blocked_from_usage_upgrade`; updated `_enrich_itc` and `compute_suggestions`).
+
+**Frontend:** `pages/clause44/Clause44Run.jsx` (extended cleanup logic + new toast).
+
+**Tests:** `tests/test_clause44_itc_negative_list.py` (12 tests, all green).
+
+
 ## Feature · Clause 44 Mapping Snapshot Excel (2026-02-09)
 
 **User request**: "Is there a way to download the list of auto-selected items under various tabs (Exempted, ITC, Exclusions)?" — Existing `Export Excel` only fires post-generate and emits voucher cohorts, not the pre-generate ledger pools.
