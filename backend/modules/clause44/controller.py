@@ -16,7 +16,7 @@ from modules.clause44.service import (
     compute_recon_and_filter, merge_runs_for_consolidation,
     is_valid_period,
 )
-from modules.clause44.exports import build_export_response
+from modules.clause44.exports import build_export_response, build_mapping_export_response
 from modules.library.scope import resolve_scope_for_request, parse_division_ids_form
 
 router = APIRouter()
@@ -1127,6 +1127,57 @@ async def export_run(
         raise HTTPException(status_code=400, detail="Run not generated yet")
     company = (run.get("company_name") or "Clause44").replace(" ", "_")[:50]
     return build_export_response(run, f"Clause44_{company}_{run_id}")
+
+
+@router.get("/runs/{run_id}/mapping-export")
+async def export_run_mapping_snapshot(
+    run_id: str,
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Mapping Snapshot — 3-sheet workbook (Exempt / ITC / Exclusions)
+    showing the engine's current auto-suggestions and the auditor's
+    current ticks.  Available from the Mapping step onwards (no
+    Generate required), so reviewers can audit the proposed selections
+    before running the engine.
+    """
+    await get_current_user(request, session_token, authorization)
+    run = await _fetch_run(run_id)
+    run = await _ensure_run_data(run)
+
+    ledgers_xlsx = run.get("ledgers_xlsx") or {}
+    accounting = run.get("accounting") or {}
+    if not ledgers_xlsx:
+        raise HTTPException(status_code=400, detail="Run has no ledger mapping data — re-ingest required")
+
+    pools = compute_pools(
+        ledgers_xlsx,
+        accounting.get("ledgers", []),
+        accounting.get("vouchers", []),
+    )
+
+    snapshot = {
+        "run_id": run.get("run_id"),
+        "client_name": run.get("client_name"),
+        "company_name": run.get("company_name"),
+        "period": run.get("period"),
+        "division_name": run.get("division_name"),
+        "snapshot_at": datetime.now(timezone.utc).isoformat(),
+        "exempt_ledgers": pools["exempt_ledgers"],
+        "itc_ledgers": pools["itc_ledgers"],
+        "itc_ledgers_all_bs": pools["itc_ledgers_all_bs"],
+        "exclusion_ledgers": pools["exclusion_ledgers"],
+        "itc_selection": run.get("itc_selection") or [],
+        "exempt_selection": run.get("exempt_selection") or [],
+        "exclusion_selection": run.get("exclusion_selection") or [],
+        "exclusion_categories": run.get("exclusion_categories") or {},
+    }
+
+    company = (run.get("company_name") or "Clause44").replace(" ", "_")[:50]
+    return build_mapping_export_response(
+        snapshot, f"Clause44_Mapping_{company}_{run_id}"
+    )
 
 
 @router.get("/clients/{client_id}/consolidated")

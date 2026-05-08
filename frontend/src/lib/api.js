@@ -67,6 +67,7 @@ export const getTransactions = (id, bucket, ledger, party) =>
 export const saveSelections = (id, payload) =>
   http.patch(`/runs/${id}/selections`, payload).then((r) => r.data);
 export const exportRunUrl = (id) => `${API}/runs/${id}/export`;
+export const exportRunMappingSnapshotUrl = (id) => `${API}/runs/${id}/mapping-export`;
 
 // Run rerun — re-pin to latest Library versions, re-parse, reset `generated`.
 export const rerunRun = (id) => http.post(`/runs/${id}/rerun`).then((r) => r.data);

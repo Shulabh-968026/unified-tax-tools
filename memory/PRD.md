@@ -1,5 +1,38 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Feature · Clause 44 Mapping Snapshot Excel (2026-02-09)
+
+**User request**: "Is there a way to download the list of auto-selected items under various tabs (Exempted, ITC, Exclusions)?" — Existing `Export Excel` only fires post-generate and emits voucher cohorts, not the pre-generate ledger pools.
+
+### What shipped
+**Backend — new endpoint:**
+- `GET /api/runs/{run_id}/mapping-export` → 3-sheet `.xlsx` (`Exempt Purchases` / `ITC Ledgers` / `Exclusions`). Recomputes pools on every call so the snapshot reflects the current engine logic. No `generated=True` requirement — works from the Mapping step onwards.
+- Sheet columns:
+  - **Exempt**: Ledger Name, Subhead, Group Parent, Head, Closing Balance, Auto-Suggested?, Currently Selected?
+  - **ITC** (uses full BS-side universe `itc_ledgers_all_bs`): + Kind, Kind Source, Purchase Vouchers, Sales Vouchers, Usage Conflict?, In Default View?
+  - **Exclusions**: + Recon Role (subtract/addback), Recon Bucket (auditor override)
+- Each sheet carries a metadata block (Company / Client / Period / Division / Run ID / Snapshot timestamp) and Indian-formatted closing balances.
+- Auto-suggested rows sort to the top within each sheet so reviewers see the engine's picks first.
+
+**Frontend — new button:**
+- `[data-testid=download-mapping-snapshot]` in the action cluster on `Clause44Run.jsx`, visible during `special` and `exclusion` steps. Sits next to the Proceed/Generate buttons.
+- Uses `<a href={exportRunMappingSnapshotUrl(runId)}>` — browser handles auth cookie + download dialog.
+
+### Verified
+- 5 new offline unit tests in `/app/backend/tests/test_clause44_mapping_export.py` (all passing): 3-sheet structure, Exempt pre-tick + selection state, ITC kind/usage columns, Exclusions recon-role + bucket override, empty-pool placeholder rows.
+- Endpoint reachable on running backend (HTTP 401 unauthenticated; HTTP 200 authenticated path tested via existing TestClient harness in unit tests).
+
+### Files touched
+**Backend:** `modules/clause44/exports.py` (added `build_mapping_export_response` + 3 sheet writers + `_yn` / `_write_mapping_meta` helpers) · `modules/clause44/controller.py` (added `GET /runs/{run_id}/mapping-export` endpoint).
+
+**Frontend:** `lib/api.js` (added `exportRunMappingSnapshotUrl`) · `pages/clause44/Clause44Run.jsx` (added download button on Mapping/Exclusion steps).
+
+**Tests:** `tests/test_clause44_mapping_export.py` (5 tests, all green).
+
+### Still pending (P0 — original session focus, awaiting user input)
+- 🔴 **Refine ITC + Exempt auto-selection rules** — laymen explanation of current logic was provided to user; awaiting refined business rules to wire into `_classify_itc_kind`, `compute_pools`, `_is_exempt_hint`.
+
+
 ## Bugfix Round 2 · Library reuse on BC, FS, MSME (2026-05-08, follow-up to Clause 44)
 
 **User feedback**: "Apply same Library-reuse pattern to BC / FS / MSME — currently still prompt for files even when Library is ready."  *(FA + GST Recon deferred — multi-tab register parser + 4-file batch + month grid both warrant a separate session.)*

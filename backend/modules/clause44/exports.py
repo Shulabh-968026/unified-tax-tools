@@ -410,6 +410,190 @@ def _write_col8_sheet(wb, run: Dict[str, Any]):
     ws.freeze_panes = ws.cell(row=2, column=1)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Mapping Snapshot — pre-generate working paper that captures the engine's
+# current auto-suggestions for the three pools (Exempt / ITC / Exclusions)
+# alongside what the auditor has currently ticked.  Lets the auditor
+# review / share the proposed selections before clicking *Generate*.
+# ─────────────────────────────────────────────────────────────────────────
+def _yn(v):
+    return "Yes" if bool(v) else "No"
+
+
+def _write_mapping_meta(ws, run: Dict[str, Any], title: str):
+    ws["A1"] = title
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:F1")
+    meta = [
+        ("Company", run.get("company_name") or ""),
+        ("Client", run.get("client_name") or ""),
+        ("Period", run.get("period") or ""),
+        ("Division", run.get("division_name") or "—"),
+        ("Run ID", run.get("run_id") or ""),
+        ("Snapshot taken", run.get("snapshot_at") or ""),
+    ]
+    for label, value in meta:
+        ws.append([label, value])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+    ws.append([])
+
+
+def _write_mapping_exempt(wb, run, exempt_selection: set):
+    ws = wb.create_sheet("Exempt Purchases")
+    _write_mapping_meta(ws, run, "Pool 1 · Exempt Purchases — Mapping Snapshot")
+
+    headers = [
+        "Ledger Name", "Subhead", "Group Parent", "Head",
+        "Closing Balance", "Auto-Suggested?", "Currently Selected?",
+    ]
+    ws.append(headers)
+    header_row = ws.max_row
+    _style_header_row(ws, header_row, len(headers))
+
+    rows = run.get("exempt_ledgers") or []
+    rows = sorted(rows, key=lambda r: (not r.get("suggested"), (r.get("name") or "").lower()))
+    for r in rows:
+        ws.append([
+            r.get("name") or "",
+            r.get("subhead") or "",
+            r.get("group_parent") or "",
+            r.get("head") or "",
+            r.get("closing_balance"),
+            _yn(r.get("suggested")),
+            _yn((r.get("name") or "") in exempt_selection),
+        ])
+
+    if not rows:
+        ws.append(["— No exempt-purchase candidates in this run —"])
+
+    widths = [40, 26, 26, 26, 18, 16, 18]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[5])
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+
+def _write_mapping_itc(wb, run, itc_selection: set):
+    ws = wb.create_sheet("ITC Ledgers")
+    _write_mapping_meta(ws, run, "Pool 2 · ITC Ledgers — Mapping Snapshot")
+
+    headers = [
+        "Ledger Name", "Subhead", "Group Parent", "Head",
+        "Closing Balance", "Kind", "Kind Source",
+        "Purchase Vouchers", "Sales Vouchers", "Usage Conflict?",
+        "In Default View?", "Auto-Suggested?", "Currently Selected?",
+    ]
+    ws.append(headers)
+    header_row = ws.max_row
+    _style_header_row(ws, header_row, len(headers))
+
+    # Use the full BS-side universe so the snapshot includes ledgers the
+    # default view hides (e.g. ITC ledgers with non-standard subheads).
+    rows = run.get("itc_ledgers_all_bs") or run.get("itc_ledgers") or []
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            not r.get("suggested"),
+            not r.get("in_default_view", True),
+            (r.get("name") or "").lower(),
+        ),
+    )
+    for r in rows:
+        ws.append([
+            r.get("name") or "",
+            r.get("subhead") or "",
+            r.get("group_parent") or "",
+            r.get("head") or "",
+            r.get("closing_balance"),
+            (r.get("kind") or "other"),
+            (r.get("kind_source") or "—"),
+            int(r.get("n_purchase") or 0),
+            int(r.get("n_sales") or 0),
+            _yn(r.get("usage_conflict")),
+            _yn(r.get("in_default_view", True)),
+            _yn(r.get("suggested")),
+            _yn((r.get("name") or "") in itc_selection),
+        ])
+
+    if not rows:
+        ws.append(["— No ITC candidates in this run —"])
+
+    widths = [40, 26, 26, 26, 18, 12, 14, 14, 14, 14, 16, 16, 18]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[5])
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+
+def _write_mapping_exclusions(wb, run, exclusion_selection: set, exclusion_categories: Dict[str, str]):
+    ws = wb.create_sheet("Exclusions")
+    _write_mapping_meta(ws, run, "Pool 3 · Exclusions — Mapping Snapshot")
+
+    headers = [
+        "Ledger Name", "Subhead", "Group Parent", "Head",
+        "Closing Balance", "Recon Role", "Auto-Suggested?",
+        "Currently Selected?", "Recon Bucket (override)",
+    ]
+    ws.append(headers)
+    header_row = ws.max_row
+    _style_header_row(ws, header_row, len(headers))
+
+    rows = run.get("exclusion_ledgers") or []
+    rows = sorted(rows, key=lambda r: (not r.get("suggested"), (r.get("name") or "").lower()))
+    for r in rows:
+        name = r.get("name") or ""
+        ws.append([
+            name,
+            r.get("subhead") or "",
+            r.get("group_parent") or "",
+            r.get("head") or "",
+            r.get("closing_balance"),
+            r.get("recon_role") or "subtract",
+            _yn(r.get("suggested")),
+            _yn(name in exclusion_selection),
+            exclusion_categories.get(name, "—"),
+        ])
+
+    if not rows:
+        ws.append(["— No exclusion candidates in this run —"])
+
+    widths = [40, 26, 26, 26, 18, 14, 16, 18, 22]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    _apply_indian_fmt(ws, min_row=header_row + 1, cols=[5])
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+
+def build_mapping_export_response(run: Dict[str, Any], fname_prefix: str):
+    """Pre-generate Mapping Snapshot — 3 sheets (Exempt / ITC / Exclusions)
+    capturing the engine's auto-suggestions plus the auditor's current
+    ticks.  Available from the Mapping step onwards (no Generate required).
+    """
+    itc_selection = set(run.get("itc_selection") or [])
+    exempt_selection = set(run.get("exempt_selection") or [])
+    exclusion_selection = set(run.get("exclusion_selection") or [])
+    exclusion_categories = run.get("exclusion_categories") or {}
+
+    wb = openpyxl.Workbook()
+    # Replace the auto-created default sheet with our first sheet.
+    default = wb.active
+    wb.remove(default)
+
+    _write_mapping_exempt(wb, run, exempt_selection)
+    _write_mapping_itc(wb, run, itc_selection)
+    _write_mapping_exclusions(wb, run, exclusion_selection, exclusion_categories)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"{fname_prefix}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 def build_export_response(run: Dict[str, Any], fname_prefix: str):
     txns = run.get("transactions", []) or []
 

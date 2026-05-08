@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import { ArrowLeft, CheckCircle, DownloadSimple, Lightning, BookOpen, ClockCounterClockwise } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import AppShell from "@/components/AppShell";
-import { generateRun, getRun, saveSelections, exportRunUrl, rerunRun } from "@/lib/api";
+import { generateRun, getRun, saveSelections, exportRunUrl, exportRunMappingSnapshotUrl, rerunRun } from "@/lib/api";
 import GenerationsDrawer from "@/components/GenerationsDrawer";
 import StepSpecialLedgers from "./StepSpecialLedgers";
 import StepExclusion from "./StepExclusion";
@@ -307,6 +307,16 @@ export default function Clause44Run() {
 
           {/* Action cluster — top right */}
           <div className="ml-auto flex items-center gap-2">
+            {(step === "special" || step === "exclusion") && (
+              <a
+                href={exportRunMappingSnapshotUrl(runId)}
+                className="inline-flex items-center gap-1.5 h-9 px-3 border border-[#D4D4D0] text-[#0F172A] hover:bg-[#F3F4F1] font-mono text-[10.5px] uppercase tracking-[0.12em] rounded-sm"
+                data-testid="download-mapping-snapshot"
+                title="Download a 3-sheet Excel of the auto-suggested Exempt, ITC and Exclusion ledgers (no need to generate first)"
+              >
+                <DownloadSimple size={12}/> Mapping Snapshot
+              </a>
+            )}
             {step === "special" && (
               <Button
                 onClick={proceedSpecial}
