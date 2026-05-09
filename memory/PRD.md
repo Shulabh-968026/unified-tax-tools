@@ -1,5 +1,33 @@
 # MSS × Assure — Audit Utilities (Merged)
 
+## Bugfix · Clause 44 Consolidated Tile Status (Release 4.4.13, 2026-02-09)
+
+**User report**: At Consolidation scope, the Clause 44 tile was showing "DATA MISSING" even when both divisions had generated runs (i.e. the Consolidated view was actually ready to render). Mode-A semantics: Consolidated = computed merge of division runs, no uploads at consolidation scope → the existing Library-deps-driven status chip can never light up here.
+
+### What shipped — Fix 8
+**Frontend** (`pages/ClientUtilities.jsx`):
+- New `synthClause44ConsolidationStatus` memo synthesises a `libraryStatus` payload for the Clause 44 tile when in Consolidation scope on a multi-division client. Each division becomes a "dependency"; `current_file_id` populates ⇔ that division has a generated run for the working FY.
+- New `clause44RunsByDivision` state + effect — fetches `GET /api/runs?client_id=…&period=…` and indexes runs by `division_id` (best-of generated > non-generated).
+- `UTILITIES.map(...)` callsite updated: the Clause 44 tile receives the synthesised status; all other tiles continue to use the Library-deps payload.
+- Piggybacks on the existing 4-state chip logic in `lib/utilities.jsx` (`UtilityCard`):
+  - 0 divisions generated → red **Data Missing**.
+  - Some generated → amber **Partial Data Ready · k/n**.
+  - All generated → green **Report Ready** (because the merged view is one click away — no Generate needed).
+
+### Verified
+- Lint clean. Frontend smoke-screenshot confirms the page renders without JS errors.
+- The chip update is purely additive — the existing tile rendering for non-consolidation scope and for non-Clause-44 modules is untouched.
+
+### How to verify in live data
+1. Open GMS Processors → Consolidation scope → FY 2024-25.
+2. With both Tiruppur + Mumbai division runs generated, the Clause 44 tile chip flips from `Data Missing` (red) to `Report Ready` (green).
+3. Mark one division's run as not-yet-generated (or re-upload + don't generate) → chip becomes `Partial Data Ready · 1/2` (amber).
+4. Outside Consolidation scope (any specific division view) → chip continues to read the Library-deps state for that scope.
+
+### Files touched
+**Frontend:** `pages/ClientUtilities.jsx` (synth status memo + runs fetch effect + tile-render override).
+
+
 ## Feature · Clause 44 Consolidated Report — Clean Cut to Mode A (Release 4.4.12, 2026-02-09)
 
 **User clarification**: *"Consolidation is nothing but a sum total of individual divisions reports. Uploads are done at division level, Consolidated tab should only automatically populate with excel upload. Nothing else."* — i.e. Mode A only. Not touching other modules.

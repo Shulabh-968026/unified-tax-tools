@@ -4,7 +4,7 @@ import AppShell, { PageHeader } from "@/components/AppShell";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ArrowLeft, Stack, Buildings, Folder, AppWindow, CalendarBlank } from "@phosphor-icons/react";
-import { getClient, http } from "@/lib/api";
+import { getClient, http, listRuns } from "@/lib/api";
 import { UTILITIES, UtilityCard } from "@/lib/utilities";
 import { toast } from "sonner";
 import ClientLibraryPanel from "@/components/ClientLibraryPanel";
@@ -17,6 +17,12 @@ export default function ClientUtilities() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [client, setClient] = useState(null);
   const [libByModule, setLibByModule] = useState({});
+  // Release 4.4.13 — Mode-A consolidation tile status.  At Consolidation
+  // scope, the Clause 44 tile's data-status chip can't be derived from
+  // Library uploads (there are none — Mode A ships division-scoped
+  // uploads only).  Instead we drive it from the per-division generation
+  // coverage for the working FY.  Cached in this state.
+  const [clause44RunsByDivision, setClause44RunsByDivision] = useState(null);
   // Tab persistence — `?tab=library` opens straight into the data
   // library, default `utilities`.  Lets us deep-link from elsewhere.
   const tab = searchParams.get("tab") === "library" ? "library" : "utilities";
@@ -69,6 +75,74 @@ export default function ClientUtilities() {
       catch { toast.error("Client not found"); navigate("/dashboard", { replace: true }); }
     })();
   }, [clientId, navigate]);
+
+  // Release 4.4.13 — fetch Clause 44 runs for the FY when the auditor is
+  // in Consolidation scope on a multi-division client.  Used to compute
+  // the data-status chip on the Clause 44 tile (Mode A — Consolidated is
+  // a computed merge of generated division runs).
+  useEffect(() => {
+    if (!clientId || !client) return;
+    const isMultiClient = client.type === "multi";
+    const inConsolidation = !isMultiClient || scope.kind === "consolidation";
+    if (!isMultiClient || !inConsolidation) {
+      setClause44RunsByDivision(null);
+      return;
+    }
+    let cancelled = false;
+    listRuns({ client_id: clientId, period: fy })
+      .then((resp) => {
+        if (cancelled) return;
+        const rows = Array.isArray(resp) ? resp : (resp?.runs || []);
+        const byDiv = {};
+        for (const r of rows) {
+          if (!r.division_id) continue;            // skip stray non-division
+          // Track best-of (generated > non-generated) per division.
+          const cur = byDiv[r.division_id];
+          if (!cur || (r.generated && !cur.generated)) {
+            byDiv[r.division_id] = r;
+          }
+        }
+        setClause44RunsByDivision(byDiv);
+      })
+      .catch(() => { if (!cancelled) setClause44RunsByDivision({}); });
+    return () => { cancelled = true; };
+  }, [clientId, client, fy, scope.kind]);
+
+  // Release 4.4.13 — synthesise a `libraryStatus` payload for the
+  // Clause 44 tile when in Consolidation scope.  Each division becomes
+  // a "dependency"; current_file_id is set ⇔ that division has a
+  // generated run for this FY.  This piggybacks on the existing 4-state
+  // chip logic in `UtilityCard` (Data Missing → Partial → Data Ready →
+  // Report Ready) without requiring any change to that component.
+  const synthClause44ConsolidationStatus = useMemo(() => {
+    if (!client) return null;
+    const isMultiClient = client.type === "multi";
+    if (!isMultiClient) return null;
+    if (scope.kind !== "consolidation") return null;
+    if (clause44RunsByDivision === null) return null;
+    const divs = client.divisions || [];
+    if (divs.length === 0) return null;
+    const allGenerated = divs.every(
+      (d) => clause44RunsByDivision[d.division_id]?.generated,
+    );
+    return {
+      dependencies: divs.map((d) => {
+        const r = clause44RunsByDivision[d.division_id];
+        return {
+          key:             `division_${d.division_id}_run`,
+          label:           `${d.name} run`,
+          current_file_id: r?.generated ? d.division_id : null,
+        };
+      }),
+      // Once every division has a generated run, the Consolidated view
+      // is a one-click read.  Treat that as "Report Ready" so the chip
+      // turns green — matches the auditor's mental model that "all
+      // divisions reported = consolidated is ready".
+      report_generated: allGenerated,
+      outdated:         false,
+      missing:          false,
+    };
+  }, [client, scope.kind, clause44RunsByDivision]);
 
   const onLibraryChange = (status) => {
     const map = {};
@@ -233,15 +307,25 @@ export default function ClientUtilities() {
             </div>
 
             <div className="mt-7 grid sm:grid-cols-2 lg:grid-cols-3 gap-px bg-[#E5E5E0] border border-[#E5E5E0] rounded-sm overflow-hidden" data-testid="utilities-grid">
-              {UTILITIES.map((u) => (
-                <UtilityCard
-                  key={u.id}
-                  utility={u}
-                  onOpen={onOpen}
-                  libraryStatus={u.module_key ? libByModule[u.module_key] : null}
-                  scope={isMultiDiv(divisions) ? scope : null}
-                />
-              ))}
+              {UTILITIES.map((u) => {
+                // Release 4.4.13 — Clause 44 in Consolidation scope uses
+                // a synthesised, division-coverage-driven libraryStatus
+                // (see `synthClause44ConsolidationStatus`).  All other
+                // tiles continue to use the Library-deps payload.
+                const libStatus =
+                  (u.module_key === "clause44" && synthClause44ConsolidationStatus)
+                    ? synthClause44ConsolidationStatus
+                    : (u.module_key ? libByModule[u.module_key] : null);
+                return (
+                  <UtilityCard
+                    key={u.id}
+                    utility={u}
+                    onOpen={onOpen}
+                    libraryStatus={libStatus}
+                    scope={isMultiDiv(divisions) ? scope : null}
+                  />
+                );
+              })}
             </div>
 
             <p className="mt-6 text-[12px] text-[#8A8A83] font-mono">

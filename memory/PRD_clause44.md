@@ -499,4 +499,5 @@ asyncio.run(go())
 | 4.4.10 | 2026-02-09 | Excel sanitisation (control-char strip) |
 | 4.4.11 | 2026-02-09 | Excel ≡ on-screen — fresh re-classification on every export read |
 | 4.4.12 | 2026-02-09 | Consolidated = computed merge (Mode A only); consolidation-scope upload rejected |
+| 4.4.13 | 2026-02-09 | Consolidated tile chip — division-coverage-driven (Data Missing → Partial → Report Ready) |
 
