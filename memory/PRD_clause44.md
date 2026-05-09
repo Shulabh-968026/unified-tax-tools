@@ -264,7 +264,201 @@ On every page-load, the frontend silently drops:
 
 ---
 
-## 11 · Roadmap
+## 11 · Engineer Onboarding
+
+A new engineer should be productive on Clause 44 in half a day with this section.
+
+### 11.1 Code map
+
+```
+/app/backend/modules/clause44/
+├── controller.py          ← FastAPI routes (~1320 lines).  Entry points
+│                            for all `/api/runs/...` and
+│                            `/api/clients/{id}/consolidated*` endpoints.
+│                            Mongo upserts, scope resolution, fresh
+│                            re-classification path.
+├── service.py             ← Pure-function engine (~1420 lines).  No
+│                            FastAPI / Mongo imports — easy to unit-test
+│                            offline.  Houses:
+│                              · `compute_pools`        — Pool 1/2/3
+│                              · `classify_vouchers`    — cohort cascade
+│                              · `compute_recon_and_filter` — Para 79.4
+│                              · `merge_runs_for_consolidation` — Mode A
+│                              · `filter_exempt_by_itc_overlap` — 4.4.8
+│                              · `_classify_itc_kind`   — Input/Output
+│                              · `_is_blocked_from_usage_upgrade` — 4.4.6/7
+│                              · `_is_exclusion_hint`, `_is_exempt_hint`
+│                            Constants:  `_FA_HEADS`,
+│                            `_ITC_ELIGIBLE_HEADS`, `_REVENUE_HEADS_EXCLUDE`,
+│                            `_USAGE_BLOCK_NAME_PATTERNS`, etc.
+└── exports.py             ← Excel writers (openpyxl).  `build_export_response`
+                             (main 7-sheet workbook) and
+                             `build_mapping_export_response` (3-sheet
+                             snapshot).  All voucher / narration data is
+                             routed through `_clean_row()` to strip
+                             control chars (Release 4.4.10).
+
+/app/frontend/src/pages/clause44/
+├── Clause44Run.jsx        ← Run-level shell.  Owns the 5-step state
+│                            (import / itc / exempt / exclusion / report),
+│                            the action cluster (Proceed / Generate /
+│                            Mapping Snapshot / Export Excel), the legacy
+│                            URL shim (`?step=special` → `?step=itc`),
+│                            and the on-load stale-tick cleanup.
+├── StepITC.jsx            ← Step 02 — Pool 2 (BS-side ITC ledger picks).
+├── StepExempt.jsx         ← Step 03 — Pool 1.  Calls
+│                            `POST /runs/{id}/exempt-pool` on mount with
+│                            the locked ITC selection to fetch the
+│                            cross-checked pool; renders amber banner
+│                            with `12/80` overlap chips.
+├── StepExclusion.jsx      ← Step 04 — Pool 3 with bucket dropdowns.
+├── StepReport.jsx         ← Step 05 — Schedule + Reconciliation tabs +
+│                            drill-down + Generate / Export.
+├── LedgerTable.jsx        ← Shared table row renderer used by all 3
+│                            pool steps.  Handles the kind / kind-source
+│                            chip enrichment, voucher counters, etc.
+└── StepSpecialLedgers.jsx ← Legacy combined ITC+Exempt step.  No longer
+                             imported (Release 4.4.8 split).  Pending
+                             cleanup.
+
+/app/frontend/src/pages/
+├── ClientHome.jsx         ← Per-client dashboard.  Hosts the runs list,
+│                            quick-start panel (with the Mode-A
+│                            consolidation-aware CTA), upload dialog.
+└── Consolidated.jsx       ← Computed merge viewer.  Reads
+                             `GET /api/clients/{id}/consolidated`.
+                             Mode-A only.
+
+/app/backend/tests/         ← Offline unit + integration tests.
+                             111 passing tests across 14 files at
+                             Release 4.4.12.  Run with:
+                               cd /app/backend && pytest tests/
+                                 -k "clause44 and not live"
+                                 --ignore=tests/test_bc_release_4_6_live.py
+                                 --ignore=tests/test_clause44_backend.py
+```
+
+### 11.2 Mongo collections used
+
+| Collection | Purpose | Key fields |
+|---|---|---|
+| `runs` | One document per `(client_id, period, scope_key)` working document. Lazy fields `accounting` and `ledgers_xlsx` hydrated from Library on demand. | `run_id` (PK), `client_id`, `period`, `scope_kind`, `scope_key`, `division_id`, `generated`, `archived` |
+| `clients` | Client master with `divisions[]` array. | `client_id`, `name`, `type` ("single" / "multi"), `divisions` |
+| `library_files` | Pinned file blobs, dedup'd by SHA. Drives the Library Reuse pattern. | `file_id`, `client_id`, `period`, `scope_key`, `key`, `sha256`, `pinned` |
+| `divisions` | Division master (multi-division clients). | `division_id`, `client_id`, `name`, `gstin_group_id` |
+
+**Recommended composite indexes** (already present):
+- `runs`: `(client_id, period, scope_key)` — unique constraint
+- `runs`: `(client_id, period, generated, scope_kind, division_id)` — drives Consolidated query
+- `library_files`: `(client_id, period, scope_key, key, pinned)`
+
+### 11.3 Where to start reading
+
+1. Open `service.py` and read top-to-bottom — the engine is plain Python with no framework noise.
+2. Open `controller.py` and grep for `@router` — every route has a doc-string explaining what release it's from.
+3. Run the offline test suite (`pytest tests/test_clause44_*.py`) and skim a couple of test files. The tests are written narratively and double as reference docs.
+4. Open `Clause44Run.jsx` and trace `step` through the cascade. The 5 step components are tiny (~150 lines each).
+
+### 11.4 Common engineering tasks — patterns
+
+**Adding a new ICAI rule (e.g. blocking a new ledger pattern from auto-tick)**
+1. Add the pattern to the appropriate constant in `service.py` (`_USAGE_BLOCK_NAME_PATTERNS`, `_FA_HEADS`, `_ITC_ELIGIBLE_HEADS`, etc.).
+2. If a new helper is needed, add it as a private function next to its constant.
+3. Wire it into `compute_pools._enrich_itc` or `compute_recon_and_filter` (pure-function — no controller change).
+4. Add unit tests in the matching `test_clause44_*` file. The tests use synthetic ledger / voucher dicts; no Mongo / FastAPI required.
+5. The fresh-re-classification contract (Release 4.4.11) means the change applies to *existing* generated runs without re-Generate. No migration.
+
+**Adding a new step to the wizard**
+1. Create `StepFoo.jsx` mirroring `StepExempt.jsx` (smallest existing step).
+2. Update `STEPS` array in `Clause44Run.jsx`.
+3. Add proceed/back handlers and wire the action-cluster JSX.
+4. Add a row to the test for stepper navigation in `tests/frontend/test_clause44_step_navigation.spec.tsx` (or the closest equivalent).
+
+**Adding a new column to the working-paper Excel**
+1. Open `exports.py`, find the relevant `_write_*_sheet` function.
+2. Append the header label to the `headers` list.
+3. Append the value to the row tuple — wrap any string-typed value in `_clean()` if it could carry user / Tally data.
+4. Update column widths array.
+5. Update the matching test in `test_clause44_export_*.py` to assert the new column's index + value.
+
+**Adding a new endpoint**
+1. Add the route to `controller.py` with the standard `Cookie + Header` auth dependency.
+2. Always include the `_ensure_run_data` + `_run_classification` fresh-classify spread for any endpoint that returns engine-derived data.
+3. Always exclude `_id` in the Mongo projection (`{"_id": 0}`).
+4. Always wrap Mongo writes that mutate the input dict with `{...d}` to avoid the `_id`-leak gotcha.
+
+### 11.5 Common failure modes & where to look
+
+| Symptom | Look at |
+|---|---|
+| `IllegalCharacterError` in Excel export | `exports.py` — verify the offending `ws.append` is wrapped in `_clean_row()` |
+| Recon "Capital expenditure additions" row shows ₹0 | `service.py::compute_recon_and_filter` — check `head` field in `ledgers_xlsx`; head must be in `_FA_HEADS` (case-insensitive) |
+| ITC pool wrongly pre-tics a TDS / advance-tax ledger | `service.py::_is_blocked_from_usage_upgrade` — check name / group / head match the negative list |
+| Exempt pool wrongly pre-ticks a ledger that has ITC vouchers | `service.py::filter_exempt_by_itc_overlap` — verify ITC selection is being passed to the endpoint |
+| Consolidated view shows division data twice | `controller.py::get_consolidated` — confirm the query has `scope_kind: {$ne: "consolidation"}` AND `division_id: {$ne: None}` |
+| Excel and on-screen recon disagree | `controller.py::export_run` — confirm the fresh re-classify spread is in place (Release 4.4.11) |
+| `KeyError: 'client_id'` on `getRun` | Run document was created via legacy upload before scope backfill — check `scope_kind` + `division_id` are populated |
+
+### 11.6 Glossary (ICAI-speak ↔ engine terms)
+
+| ICAI term | Engine term |
+|---|---|
+| Para 79.4 | Reconciliation 5-line format (`pl_total + capex_total − Σ deductions = reportable`) |
+| Para 79.18 | "Capital expenditure additions" recon row (`recon.capex_total`) |
+| Para 79.20 | "Value eligible for ITC" column on the Col 5 cohort sheet |
+| Col 2 | Total expenditure (gross) — `summary.col2_total` |
+| Col 3 | Exempt purchases — `summary.col3` |
+| Col 4 | Composition vendor purchases — `summary.col4` |
+| Col 5 | Other registered, ITC eligible — `summary.col5` |
+| Col 6 | Total registered — Col 4 + Col 5 (memo line) |
+| Col 7 | Unregistered / RCM / Foreign — `summary.col7` |
+| Col 8 | Excluded items — `summary.col8` |
+| Input A | Exempt-by-nature ledgers (Pool 1) |
+| Input B | Exempt-by-non-ITC vouchers (inferred at voucher level) |
+| Three-pool model | Pool 1 (Exempt) / Pool 2 (ITC) / Pool 3 (Exclusions) — Release 4.4 |
+
+### 11.7 Useful one-liners
+
+```bash
+# Lint
+cd /app/backend && ruff check modules/clause44/
+
+# Run only Clause 44 offline tests
+cd /app/backend && python -m pytest tests/ -k "clause44 and not live" \
+  --ignore=tests/test_bc_release_4_6_live.py \
+  --ignore=tests/test_clause44_backend.py -q
+
+# Tail backend errors during a live debug
+tail -f /var/log/supervisor/backend.err.log
+
+# Hit the consolidated endpoint locally
+API_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d'=' -f2)
+curl -s "$API_URL/api/clients/<client-id>/consolidated?period=2024-25"
+
+# Re-classify a single run from a Python REPL
+cd /app/backend && python -c "
+import asyncio
+from modules.clause44.controller import _fetch_run, _ensure_run_data, _run_classification
+async def go():
+    r = await _ensure_run_data(await _fetch_run('<run-id>'))
+    fresh = _run_classification(r)
+    print('capex_total:', fresh['recon']['capex_total'])
+    print('reportable:',  fresh['recon']['reportable_total'])
+asyncio.run(go())
+"
+```
+
+### 11.8 What NOT to do
+
+- **Don't add Mongo writes inside `service.py`.** It's a pure-function module; controller-only writes keep tests fast and the engine portable.
+- **Don't bypass `_clean_row()` when writing voucher data to Excel.** The `IllegalCharacterError` regression is real and recurring.
+- **Don't reintroduce `scope_kind="consolidation"` upload paths.** Mode-A only (Release 4.4.12). The two backend guards in `controller.py` will 400 you anyway.
+- **Don't auto-tick anything that isn't auditor-policy-driven.** Auditors are accountable; the engine's job is to suggest, not decide. Every auto-tick rule must be (a) keyword-explicit or (b) backed by a verifiable signal (e.g. voucher overlap with another auditor-confirmed list).
+- **Don't merge the Consolidated view from raw division `summary` numbers.** Always re-classify each contributing division run first (Release 4.4.11 contract), so the merged view inherits engine refinements.
+
+---
+
+## 12 · Roadmap
 
 ### P0 (next up)
 - 🔴 **Refine Exempt keyword/subhead positive list** — widen suggestion base (`freight`, `gta`, `goods transport`, `commission`, `brokerage`, `rent on residential`, `agricultural`); add subhead-based detection in addition to name-keyword. Awaiting auditor's refined rules.
@@ -283,7 +477,7 @@ On every page-load, the frontend silently drops:
 
 ---
 
-## 12 · Out of Scope
+## 13 · Out of Scope
 
 - Cross-module consolidation (Clause 44 + GST Recon + Balance Confirmation in one workbook) — handled by the firm's manual paper-file process today.
 - Real-time Tally connector (current model is JSON export upload).
@@ -292,7 +486,7 @@ On every page-load, the frontend silently drops:
 
 ---
 
-## 13 · Appendix · Release History
+## 14 · Appendix · Release History
 
 | Release | Date | What shipped |
 |---|---|---|
